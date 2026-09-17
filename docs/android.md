@@ -1,46 +1,55 @@
 # Android: toolchain and packaging
 
-**Status: written, never executed.** No device has been connected to this
-project. Everything below follows from verified facts about the environment
-(nixpkgs contents, Qt documentation, what is and is not on `PATH`), but the
-build itself has not been run. Treat it as a checklist to work through, not a
-transcript of something that worked.
+**Status: the toolchain has been run.** The build was executed against a
+moto g power 5G (2024) — arm64-v8a, Android 15, SDK 35 — on 2026-09-17.
+Everything in "The build" below is a transcript of what actually happened, not
+a plan. The on-device behaviour of the app is a separate question and is still
+tracked in the verification table at the bottom.
+
+Everything is driven by **`scripts/build-apk`**, which encodes all of it:
+
+```bash
+nix develop --command mycu-android-build -c './scripts/build-apk --install'
+```
+
+Read the header comment of that script before changing it — it documents two
+bugs in `pyside6-android-deploy` 6.11 that dictate the shape of the build.
 
 ---
 
-## M2 — Prove the toolchain with something that isn't your app
+## The build
 
-The order matters. Build **the stock PySide6 QML example** to an APK first. If
-the toolchain fights NixOS, you find out against twenty lines instead of while
-debugging your own transport.
+### 1. adb needs no system configuration
 
-### 1. NixOS: enable adb
+An earlier version of this document told you to set `programs.adb.enable` and
+add yourself to `adbusers` in `/etc/nixos/configuration.nix`, then log out and
+back in. **That is not necessary and you should not bother.**
 
-Neither of these exists in `/etc/nixos/configuration.nix` today (checked). Add:
+systemd-logind already grants the active seat's user an ACL on the plugged-in
+phone's USB node:
 
-```nix
-programs.adb.enable = true;                        # pulls in android-udev-rules
-users.users."kroma".extraGroups = [ "networkmanager" "wheel" "bluetooth" "adbusers" ];
+```console
+$ getfacl /dev/bus/usb/003/004
+user::rw-
+user:kroma:rw-        <- already there, no group membership involved
 ```
 
-Note that the second line **appends to your existing list** — the current value
-is `[ "networkmanager" "wheel" "bluetooth" ]`, so keep those.
+So `adb` works as soon as it is on `PATH`, which `flake.nix` now arranges via
+`android-tools` in both the devShell and the FHS env. No rebuild, no logout.
 
-```bash
-sudo nixos-rebuild switch --flake /etc/nixos#nixos
+This matters beyond convenience: `/etc/nixos` usually has unrelated pending
+edits in it, and `nixos-rebuild switch` would activate all of them at once just
+to get a phone talking to a laptop.
+
+What *is* needed is on the phone: Settings → About → tap Build Number seven
+times → Developer options → USB debugging. Then plug in and accept the RSA
+prompt. Until you accept it the device shows as `unauthorized`:
+
+```console
+$ adb devices -l
+ZD222VD73W    unauthorized usb:3-4        <- unlock the phone and accept
+ZD222VD73W    device       usb:3-4 ...    <- ready
 ```
-
-Then **log out and back in.** Group membership does not apply to your current
-session, and this is the single most common way to lose half an hour here.
-
-Verify:
-
-```bash
-adb devices          # accept the RSA prompt on the phone
-```
-
-On the phone: Settings → About → tap Build Number seven times → Developer
-options → USB debugging.
 
 ### 2. The FHS shell
 
@@ -60,66 +69,240 @@ mycu-android-build     # drops into the FHS shell
 nix run .#android-shell
 ```
 
-Inside it:
+`scripts/build-apk` creates `.venv-android` inside it and installs everything.
+Three things about that venv are load-bearing:
 
-```bash
-python -m venv .venv-android
-source .venv-android/bin/activate
-pip install pyside6==6.11.0 --no-cache-dir
+- **Python 3.11, not 3.13.** `pyside6-android-deploy` refuses to start on
+  anything newer ("Android deployment requires Python version 3.11 or lower.
+  This is due to a restriction in buildozer."), and Qt only publishes Android
+  wheels tagged `cp311`. `flake.nix` therefore puts `python311` in the FHS env
+  while the desktop devShell stays on 3.13. The two never meet.
+- **`requirements-android.txt`.** The deploy tool needs `jinja2`, `pkginfo`,
+  `tqdm` and `packaging==24.1`, which are *not* dependencies of the `pyside6`
+  wheel. Without them it exits with a bare "The following packages are
+  required but not installed".
+- **The host Qt tools need system libraries.** `qmlimportscanner` and friends
+  ship inside the manylinux wheel and expect an FHS system to provide
+  `libzstd`, `libgssapi_krb5` and `libbrotlidec`. A missing one surfaces only
+  as `exit status 127` from a subprocess, which is deeply unhelpful; run the
+  binary by hand to see the real error. These are in `flake.nix` now.
+- **Autotools must be *old*, not current.** python-for-android builds libffi
+  v3.4.2, whose `configure.ac` still calls the legacy `AC_PROG_LIBTOOL`.
+  libtool supplies that only as `AU_ALIAS([AC_PROG_LIBTOOL], [LT_INIT])`, and
+  **autoconf 2.73 no longer expands the alias** — the token survives into the
+  generated `configure`, trips autoconf's `^AC_` pattern check, and
+  `autoreconf -vif` fails:
+
+  ```
+  configure.ac:41: error: undefined or overquoted macro: AC_PROG_LIBTOOL
+  configure.ac:418: warning: AC_PROG_LD is m4_require'd but not m4_defun'd
+  ```
+
+  `flake.nix` therefore pins **`autoconf269`**. `m4` is also required
+  explicitly — `libtoolize` shells out to it and otherwise stops with
+  "Please install GNU M4", which is not obviously an autotools-version
+  problem at all.
+- **…and p4a throws `ACLOCAL_PATH` away.** Even with the right autoconf, the
+  libffi recipe still failed with `possibly undefined macro: AC_PROG_LIBTOOL`,
+  while running `autoreconf -vif` by hand in the same directory worked. The
+  difference is that `pythonforandroid/archs.py` builds each recipe's
+  environment from scratch, copying only `PATH` and the HTTP proxy variables.
+
+  This is specifically a NixOS problem: aclocal's default macro directory is
+  compiled in as automake's own prefix, a `/nix/store` path containing no
+  libtool macros. The FHS env exposes them at `/usr/share/aclocal` and points
+  `ACLOCAL_PATH` there — so when p4a drops the variable, aclocal silently
+  omits `libtool.m4` from `aclocal.m4` and `AC_PROG_LIBTOOL` survives
+  unexpanded into `configure`. **Silently** is the operative word: aclocal
+  succeeds, and the failure only appears two steps later.
+
+  `scripts/build-apk` writes shim `aclocal`/`libtoolize` scripts that
+  re-export `ACLOCAL_PATH` and puts them early on `PATH`, which p4a *does*
+  preserve. To confirm the diagnosis rather than trusting it, run `autoreconf
+  -vif` in the libffi build directory under `env -u ACLOCAL_PATH` with and
+  without the shim on `PATH`: exit 1 versus exit 0.
+- **Headers, not just libraries.** nixpkgs splits headers into a package's
+  `dev` output, and `targetPkgs` only pulls in the default one. That bit hard
+  with ncurses: `/usr/lib/libncurses.so` existed but `/usr/include/curses.h`
+  did not, so the host CPython's `configure` detected curses *from the library
+  alone*, enabled `_curses` and `_curses_panel`, and then died at compile time
+  with a wall of `unknown type name 'WINDOW'`. Those are Makefile targets, not
+  optional `setup.py` modules, so **`make` aborts** instead of skipping them
+  and the whole build fails about fifteen minutes in. `ncurses.dev` is in
+  `targetPkgs` now. If another host-build failure looks like this, check for
+  the matching `.dev` output before anything else.
+
+`BUILDOZER_HOME` is set to `.buildozer-home/` in the project, but be aware
+**buildozer 1.5.0 ignores it** for its global directory: the SDK and NDK land
+in `~/.buildozer` and `~/.pyside6_android_deploy` regardless, several GB of
+them. `git clean` will not reclaim those.
+
+### 3. The Android wheels
+
+These are the Qt-for-Android builds and they are **not on PyPI** — only on
+`download.qt.io`. `scripts/build-apk` fetches them into `.android-wheels/`:
+
+```
+https://download.qt.io/official_releases/QtForPython/pyside6/pyside6-6.11.0-6.11.0-cp311-cp311-android_aarch64.whl
+https://download.qt.io/official_releases/QtForPython/shiboken6/shiboken6-6.11.0-6.11.0-cp311-cp311-android_aarch64.whl
 ```
 
-That pulls ~1 GB of wheels. `BUILDOZER_HOME` is already pointed at
-`.buildozer-home/` in the project so the SDK/NDK downloads land somewhere you
-can `git clean`, not in `~`.
+`aarch64` is right for this phone (`adb shell getprop ro.product.cpu.abi` →
+`arm64-v8a`). The `x86_64` variants exist for an emulator.
 
-### 3. Hello world first
+**The `cp311` in those filenames is load-bearing. The device's CPython must be
+3.11.** This is the single most expensive thing to get wrong here, because it
+does not fail at build time.
 
-```bash
-pyside6-android-deploy \
-  --wheel-pyside <path to the PySide6 Android wheel> \
-  --wheel-shiboken <path to the shiboken6 Android wheel> \
-  --name hello \
-  --init            # writes a pysidedeploy.spec you can inspect and re-run
+The trap is that the wheels look version-independent. Every Python extension
+module in them is named `*.abi3.so` — `QtCore.abi3.so`, `libpyside6.abi3.so`,
+`libshiboken6.abi3.so` — and stable-ABI modules *are* forward-compatible, so
+it is easy to conclude that a wheel built for 3.11 will load on anything
+newer. It will not: **`libshiboken6.abi3.so` carries a hard `DT_NEEDED` on
+`libpython3.11.so`** regardless of its abi3 name. The APK then builds, signs,
+installs and launches; Qt gets as far as logging `Qt platform plugin started`;
+and then:
+
+```
+dlopen failed: library "libpython3.11.so" not found:
+  needed by .../lib/arm64/libshiboken6.abi3.so
+java.lang.UnsatisfiedLinkError ... qtMainLoopThread
 ```
 
-Point it at a stock PySide6 QML example, build, then:
+Check the link dependency, not the filename:
 
 ```bash
-adb install -r hello.apk
-adb logcat | grep -i python
+python3 -c "
+import re, zipfile
+b = zipfile.ZipFile('.android-wheels/shiboken6-6.11.0-6.11.0-cp311-cp311-android_aarch64.whl'
+     ).read('shiboken6/libshiboken6.abi3.so')
+print(sorted(set(re.findall(rb'libpython[0-9.]+\.so', b))))   # -> [b'libpython3.11.so']
+"
 ```
 
-**Only when that runs on the phone** should you point the tool at this repo.
+`pyside6-android-deploy` writes `p4a.branch = develop`, and python-for-android
+moved its `python3` recipe to **CPython 3.14** in commit `e1bd249`
+(2025-10-28). `scripts/build-apk` therefore also pins
+
+```
+p4a.commit = 3762c88c56e3443efb8eba2a02a2604b680240fd   # 2025-10-26, python3 3.11.13
+```
+
+— the commit immediately before that bump, so the Qt bootstrap stays current
+while CPython stays 3.11.13. The script additionally compares shiboken's
+`DT_NEEDED` against the `libpython*.so` actually inside the finished APK and
+**fails the build** if they disagree, so this cannot silently reach the phone
+again. Revisit the pin when Qt ships Android wheels for a newer CPython.
+
+### 4. The Android SDK licence
+
+buildozer downloads the SDK on first run and then stops on Google's licence
+prompt, because its stdin is not a terminal. The failure is reported several
+minutes later as a bare non-zero exit from `buildozer android debug` with no
+mention of licences. `scripts/build-apk` accepts them up front via
+`sdkmanager --licenses`; acceptance is recorded in
+`~/.buildozer/android/platform/android-sdk/licenses/` and persists.
 
 ---
 
-## M3 — Port this app
+## Packaging this app
 
-### Modules to bundle
+### The entry point must be `main.py`
 
-`pyside6-android-deploy` prunes aggressively by default. This app needs, beyond
-the defaults:
+python-for-android's bootstrap imports a top-level module called exactly
+`main.py`. `main.py` in the repo root is that shim; it calls
+`mycu.ui.app.main([])` with an empty argv, because `sys.argv` on Android is
+whatever the bootstrap left behind and feeding it to `argparse` risks a
+`SystemExit(2)` that looks, on a phone, like the app simply failing to open.
 
-- **`QtWebView`** — without it there is no login and no transport. This is the
-  most likely thing to be missing on the first attempt; the symptom is
-  `ImportError: PySide6.QtWebView` in logcat, which
-  `mycu/platform/android.py` turns into an explicit message pointing here.
-- `QtQuick`, `QtQuickControls2`, `QtQml`
-- `QtNetwork`
+### QtWebEngine, and why the build uses a staging copy
 
-Do **not** try to bundle `QtWebEngine`. It does not exist on Android.
+`pyside6-android-deploy` decides what to bundle by **scanning every `.py` and
+`.qml` file under the project directory**. Two files here are desktop-only and
+name QtWebEngine in an import:
 
-### lxml
+```
+mycu/platform/desktop.py           from PySide6.QtWebEngineQuick import …
+mycu/ui/qml/WebSurfaceDesktop.qml  import QtWebEngine
+```
 
-`lxml` is a C extension and python-for-android needs a recipe for it. Two paths:
+QtWebEngine does not exist on Android, so if the scanner sees either, the build
+dies with `FileNotFoundError: libQt6WebEngineCore_arm64-v8a.so not found inside
+the wheel`.
 
-1. Use the `lxml` recipe from python-for-android (it exists, but has historically
-   needed libxml2/libxslt cross-compiled).
-2. **Avoid the problem entirely** — if M0 shows the chapel page is JSON, `lxml`
-   is not needed at all. Delete the HTML branch from `chapel.py`, drop `lxml`
-   from `pyproject.toml`, and the APK gets simpler and smaller.
+**Pinning `modules` in `pysidedeploy.spec` does not fix this**, which is worth
+knowing because it looks like it should. Two bugs in the 6.11 tool:
 
-This is a concrete reason to do M0 before M2.
+1. `deploy_lib/config.py` ends `Config.__init__` with `self.modules = []`. That
+   is the property *setter*, which writes an empty `modules` back into the
+   parsed config before `AndroidConfig` reads it. A pinned value is always
+   discarded and the scan always runs.
+2. `deploy_lib/android/android_config.py` reads `ndk_path` under
+   `elif not existing_config_file:` — inverted. Supplying a spec that already
+   contains `ndk_path` makes it read `None` and crash with
+   `TypeError: unsupported operand type(s) for /: 'NoneType' and 'str'`.
+
+So `scripts/build-apk` builds from `android-build/`, a copy of the project
+with those two files removed, and lets the tool generate its own spec there.
+Your working tree is never modified, so an interrupted build cannot leave the
+repo half-changed. A guard in the script fails the build if a QtWebEngine
+*import* reappears in the staging tree — matched on import syntax, not the bare
+word, since the prose in this codebase mentions QtWebEngine constantly.
+
+**The staging directory must not start with a dot.** It was `.android-build`
+at first, and the build failed at the very last step with:
+
+```
+BUILD FAILURE: No main.py(c) found in your app directory.
+```
+
+buildozer's `_copy_application_sources()` skips hidden directories with
+
+```python
+if True in [x.startswith('.') for x in root.split(sep)]: continue
+```
+
+which tests the **absolute** path rather than the path relative to
+`source.dir`. One dotted component anywhere above the project makes every file
+look hidden, so buildozer copies nothing, reports nothing, and only p4a's
+entry-point check notices — about forty minutes of recipe building later. The
+same trap applies to keeping the whole project under a dotted directory.
+
+Nothing is lost on device: `mycu.platform.current_backend()` imports the
+desktop backend by name and only when not on Android.
+
+### Modules actually bundled
+
+Auto-discovered from the staging tree, and recorded in the generated
+`pysidedeploy.spec`:
+
+```
+modules = Core,Gui,Network,OpenGL,Qml,Quick,QuickControls2,WebView
+android plugins = platforms_qtforandroid,webview_qtwebview_android
+excluded_qml_plugins = QtCharts,QtQuick3D,QtSensors,QtTest,QtWebEngine
+```
+
+**`WebView` is the one that matters** — without it there is no login and no
+transport. The symptom is `ImportError: PySide6.QtWebView` in logcat, which
+`mycu/platform/android.py` turns into an explicit message pointing here.
+
+### C extensions: there are none, keep it that way
+
+Every C extension in the runtime path needs a python-for-android
+cross-compilation recipe, which is the difference between a packaging exercise
+and a porting project.
+
+`lxml` used to be one. The chapel page turned out to be JSON, but the
+**meal-plan page is server-rendered HTML**, so the dependency did not simply
+disappear with M0 — it moved to `meals.py`. It was retired instead by
+replacing that one parser with `mycu/core/minihtml.py`, ~80 lines of
+`html.parser` implementing the four DOM operations `meals.py` needs.
+
+`pyproject.toml`'s `dependencies` is therefore pure-Python, and
+`tests/test_core_is_qt_free.py::test_core_imports_with_no_c_extension_dependencies_available`
+blocks `lxml` and friends at import time and re-parses the real fixture, so a
+reintroduced C extension fails in the test suite rather than 40 minutes into an
+APK build.
 
 ### Permissions
 
@@ -129,7 +312,21 @@ generated `AndroidManifest.xml`.
 
 ### Signing
 
-Generate a release keystore locally:
+`pysidedeploy.spec` has `mode = debug`, so buildozer produces a **debug-signed
+APK**. For a personal app on your own phone that is the right choice and needs
+no key management: the APK installs over `adb`, and nothing about the app's
+access to your own records depends on the signature.
+
+Two consequences worth knowing:
+
+- A debug-signed APK cannot be uploaded to Play, and some MDM-managed profiles
+  refuse to install one. Neither applies here.
+- The debug key is generated per machine (`~/.android/debug.keystore`). If it
+  is ever regenerated, the next install is treated as a *different app* and
+  `adb install -r` fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`; uninstall
+  first. That wipes the WebView cookie jar, so you sign in again.
+
+Switching to `mode = release` produces an `.aab` and needs a real keystore:
 
 ```bash
 keytool -genkey -v -keystore mycu-release.keystore \
@@ -160,23 +357,42 @@ Each is marked `# VERIFY:` in the source:
 
 | Where | What to check |
 |---|---|
-| `qml/WebSurfaceAndroid.qml` | The `loadingChanged` handler's `WebView.LoadFailedStatus` enum spelling against the Qt 6.11 Android build. Most likely place for a QML runtime error. |
+| ~~`qml/WebSurfaceAndroid.qml`~~ | **Resolved statically — no device needed.** `plugins.qmltypes` inside the `android_aarch64` wheel gives `LoadStatus = {LoadStartedStatus, LoadStoppedStatus, LoadSucceededStatus, LoadFailedStatus}`, `loadingChanged(QQuickWebViewLoadRequest)`, and `url`/`status`/`errorString` on the request. The QML is correct as written. |
 | `platform/android.py` | Whether the federated logout round trip really drops the Self-Service cookie, not just the Entra one. |
-| transport, end to end | That a large body survives `runJavaScript` on QtWebView. It was verified at 287 KB on QtWebEngine; the marshalling limits on the system WebView are not documented. If it truncates, the fix is to chunk the body in the read script. |
+| transport, end to end | That a large body survives `runJavaScript` on QtWebView. It was verified at 300 KB on QtWebEngine by `scripts/smoke-transport`; the marshalling limits on the system WebView are not documented. If it truncates, the fix is to chunk the body in the read script. |
 
-### The optional JNI upgrade
+The wheel is worth interrogating before reaching for the phone — anything about
+Qt's *API shape* is answerable offline:
 
-If `QJniObject` turns out to exist in the Android PySide6 build, then
-`android.webkit.CookieManager.getInstance().getCookie(url)` yields the real
-cookies and the WebView transport can be swapped for a plain `httpx` client —
-faster, cleaner, better error handling.
-
-It was **not** found in the desktop x86_64 build, but Qt compiles its JNI
-classes only on Android, so that proves nothing either way. Check on-device with:
-
-```python
-from PySide6 import QtCore
-print([n for n in dir(QtCore) if 'Jni' in n])
+```bash
+python3 -c "
+import zipfile
+z = zipfile.ZipFile('.android-wheels/pyside6-6.11.0-6.11.0-cp311-cp311-android_aarch64.whl')
+print(z.read('PySide6/Qt/qml/QtWebView/plugins.qmltypes').decode())
+"
 ```
+
+### The optional JNI upgrade — ruled out
+
+The idea was: if `QJniObject` exists in the Android PySide6 build, then
+`android.webkit.CookieManager.getInstance().getCookie(url)` yields the real
+cookies, and the WebView transport could be swapped for a plain `httpx` client.
+
+**It does not exist.** Checked against the shipped Android binding rather than
+inferred from the desktop build:
+
+```console
+$ python3 -c "
+import zipfile
+d = zipfile.ZipFile('.android-wheels/pyside6-6.11.0-6.11.0-cp311-cp311-android_aarch64.whl').read('PySide6/QtCore.abi3.so')
+print([s for s in (b'QJniObject', b'QJniEnvironment', b'QAndroidApplication') if s in d])
+"
+[]
+```
+
+No JNI symbols at all in the Android `QtCore`. So the WebView transport is not
+a stopgap pending a better approach — on PySide6 6.11 it is *the* approach, and
+`docs/architecture.md`'s reasoning stands unchanged. Revisit only if a future
+PySide6 exposes the JNI classes.
 
 Strictly an optimisation. Only attempt it once the APK ships.

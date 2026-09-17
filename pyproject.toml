@@ -6,10 +6,15 @@ requires-python = ">=3.12"
 
 # Dependencies are supplied by flake.nix on desktop. This list exists for
 # pyside6-android-deploy, which reads project metadata to decide what to bundle
-# into the APK, and it must stay in sync with the devShell's pythonEnv.
+# into the APK.
+#
+# Deliberately pure-Python: every C extension here needs a cross-compilation
+# recipe in python-for-android. `lxml` used to be in this list for the
+# meal-plan page; it was replaced by `mycu.core.minihtml` (stdlib
+# `html.parser`) precisely so the APK needs no native build beyond Qt itself.
+# Do not add a C-extension dependency without reading docs/android.md first.
 dependencies = [
     "PySide6>=6.11",
-    "lxml>=5",
 ]
 
 [project.optional-dependencies]

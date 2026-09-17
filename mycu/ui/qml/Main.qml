@@ -63,12 +63,17 @@ ApplicationWindow {
             }
 
             ToolButton {
-                text: "↻"                       // ↻
-                font.pixelSize: 20
+                // Plain word, not a glyph. This was "↻" (U+21BB), which the
+                // desktop font has and the phone's Roboto does not — on the
+                // moto g power it rendered as a tofu box. "⋮" below survives
+                // because U+22EE *is* in Roboto, so the two are not
+                // interchangeable risks. Anything outside basic Latin needs
+                // checking on-device before it goes in the toolbar.
+                text: qsTr("Refresh")
                 enabled: !window.showingLogin
                 onClicked: window.refreshCurrent()
                 ToolTip.visible: hovered
-                ToolTip.text: "Refresh"
+                ToolTip.text: qsTr("Refresh")
             }
 
             ToolButton {
@@ -183,7 +188,13 @@ ApplicationWindow {
         standardButtons: Dialog.Ok
 
         Label {
-            width: parent.width
+            // availableWidth, not parent.width. The Dialog derives its
+            // implicitHeight from this Label, so binding the Label's width to
+            // the Dialog's own width closes the loop and Qt logs
+            // "Binding loop detected for property implicitHeight" on every
+            // launch. availableWidth is the content box and does not depend
+            // on the content.
+            width: aboutDialog.availableWidth
             wrapMode: Text.Wrap
             text: "A personal client for your own Cedarville records.\n\n"
                   + "Backend: " + bridge.platformName + "\n"

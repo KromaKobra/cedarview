@@ -8,7 +8,7 @@ What is done, what is not, and exactly what only you can do.
 
 Verified by running it, not by reading it:
 
-- **215 tests pass** (`pytest`) — parsing, transport protocol, expiry detection,
+- **225 tests pass** (`pytest`) — parsing, transport protocol, expiry detection,
   session persistence, the login state machine, viewmodels, the QML contract.
   No test can open a socket; `conftest.py` blocks it.
 - **The app runs.** `python -m mycu --demo` loads the QML, populates the list
@@ -25,10 +25,16 @@ Verified by running it, not by reading it:
   `/CedarInfo/ChapelAttendance` → 302 → `/cedarinfo/chapelskip` → 302 →
   `login.microsoftonline.com/81c32413-…/saml2?…&RelayState=%2Fcedarinfo%2Fchapelskip`.
 
+- **The Android app runs on hardware.** Built, installed and launched on a
+  moto g power 5G (2024) — arm64-v8a, Android 15. On the phone: QtWebView
+  initialises, the QML loads, and the Dining and next-chapel views show live
+  data fetched over HTTPS. `scripts/build-apk` does the whole thing.
+
 ## What has never been executed
 
-- Any authenticated request to Cedarville.
-- Any Android build, install or launch. No device has been connected.
+- A completed interactive sign-in **on the phone**, and therefore the
+  authenticated chapel-skip fetch on Android. Everything up to the Microsoft
+  sign-in page is confirmed working there.
 - `scripts/check-live` (it needs a login on the first line of work it does).
 
 ---
@@ -142,10 +148,13 @@ nix run .#android-shell
 If the toolchain fights NixOS, you want to find out against twenty lines of
 hello-world, not while debugging the transport.
 
-**A shortcut worth taking:** if discovery shows the page is JSON, delete the
-HTML branch from `chapel.py` and drop `lxml` from `pyproject.toml` before you
-start. `lxml` is a C extension needing a python-for-android recipe, and not
-needing it at all is much shorter than making it cross-compile.
+**Done, but not the way this predicted.** The chapel page did turn out to be
+JSON — but the shortcut above was wrong about `lxml` disappearing with it,
+because the **meal-plan page is server-rendered HTML** and inherited the
+dependency. It was retired instead by replacing that one parser with
+`mycu/core/minihtml.py` (~80 lines of stdlib `html.parser`). The runtime path
+is now pure Python, so the APK needs no cross-compiled C extension, and
+`tests/test_core_is_qt_free.py` fails if one is reintroduced.
 
 ## 4. Android port — wiring, once the toolchain works
 

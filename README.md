@@ -12,14 +12,14 @@ Python + PySide6 + QML, packaged with Nix.
 
 | | |
 |---|---|
-| Core, transport, login, viewmodels, QML | **written, 215 tests passing** |
+| Core, transport, login, viewmodels, QML | **written, 225 tests passing** |
 | WebView transport, desktop | **verified end to end** — `scripts/smoke-transport`, 7/7 |
 | **Dining menus (Home Cooking)** | ✅ **working against the live API**, real fixture committed |
 | **Next chapel speaker** | ✅ **working against the live API**, real fixture committed |
 | **Chapel skips** | ✅ **working against the real API**, real scrubbed fixtures |
 | Live authenticated request | ✅ made — three JSON endpoints found and parsed |
 | **Meals left + dollar balances** | ✅ **working against the real page**, real scrubbed fixture |
-| Android | **written, never built or run** — no device has been connected |
+| **Android** | ✅ **built, installed and running** on a moto g power 5G (2024), arm64-v8a / Android 15. Dining and next-chapel show live data on the phone; `scripts/build-apk` drives the whole build |
 
 **`docs/data-sources.md` is the one to read**: where each of the six data points
 actually lives, what's verified, and the numbered list of things only you can
@@ -38,7 +38,7 @@ That runs the whole app — QML, viewmodels, list model, the lot — against
 `tests/fixtures/`. It is how you develop the UI without a session.
 
 ```bash
-pytest                              # 215 tests, no network, no display needed
+pytest                              # 225 tests, no network, no display needed
 python scripts/smoke-transport      # proves the WebView transport works
 ```
 
@@ -86,11 +86,12 @@ docs/             discovery (M0), architecture, android, next-steps
 
 | File | Read it when |
 |---|---|
-| `docs/data-sources.md` | **now** — the six data points, and what I need from you |
+| **`docs/android-status.md`** | **first, if you are picking Android back up** — what is done, how the build works, what is left |
+| `docs/data-sources.md` | the six data points, and what I need from you |
 | `docs/next-steps.md` | right after |
-| `docs/discovery.md` | before touching the parser — this is the blocking task |
+| `docs/discovery.md` | before touching the parser |
 | `docs/architecture.md` | before changing the transport or adding a provider |
-| `docs/android.md` | at M2, and when the APK misbehaves |
+| `docs/android.md` | the toolchain reference, and when the APK misbehaves |
 | `tests/fixtures/README.md` | when replacing the synthetic fixtures |
 
 ## Operating notes

@@ -84,6 +84,60 @@ print('ok')
     assert "ok" in result.stdout
 
 
+def test_core_imports_with_no_c_extension_dependencies_available() -> None:
+    """The core must parse everything using only the standard library.
+
+    Every non-stdlib C extension in the runtime path needs a
+    python-for-android cross-compilation recipe before the APK can be built,
+    which is the difference between a packaging exercise and a porting
+    project. ``lxml`` was the last one — the meal-plan page moved to
+    :mod:`mycu.core.minihtml` to retire it — so this blocks it and its usual
+    companions outright and imports every provider.
+
+    If this fails, the APK build in ``scripts/build-apk`` will fail too, much
+    later and far less clearly. See docs/android.md.
+    """
+    script = """
+import sys
+
+BANNED = ('lxml', 'bs4', 'soupsieve', 'html5lib', 'numpy', 'pandas', 'httpx')
+
+class Blocker:
+    def find_module(self, name, path=None):
+        if name.split('.')[0] in BANNED:
+            raise ImportError(f'{name} is deliberately unavailable in this check')
+        return None
+
+    def find_spec(self, name, path=None, target=None):
+        return self.find_module(name, path)
+
+sys.meta_path.insert(0, Blocker())
+
+import mycu.core.minihtml
+import mycu.core.providers.chapel
+import mycu.core.providers.chapel_schedule
+import mycu.core.providers.dining
+import mycu.core.providers.meals
+
+# Importing is not enough: the old code imported lxml lazily, inside the
+# parse function, so actually parse a page with the extensions blocked.
+from pathlib import Path
+fixture = Path('tests/fixtures/cedarinfo_meals.html').read_text()
+plan = mycu.core.providers.meals.parse_meals(fixture)
+assert plan.meals_remaining == 19, plan
+assert plan.dining_dollars == 112.08, plan
+print('ok')
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        cwd=str(CORE.parents[1]),
+    )
+    assert result.returncode == 0, result.stderr
+    assert "ok" in result.stdout
+
+
 def test_the_platform_package_does_not_shadow_the_stdlib() -> None:
     """``mycu.platform`` must not become the stdlib's ``platform``.
 

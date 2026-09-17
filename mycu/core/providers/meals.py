@@ -47,9 +47,9 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any
 
 from ..errors import ParseError
+from ..minihtml import Element, parse as parse_html
 from ..models import MealPlan
 from ..transport import Response
 from .base import Provider
@@ -86,17 +86,12 @@ def parse_meals(body: str) -> MealPlan:
     legitimately have no meal plan, and a confident ``0`` would be worse than
     an honest blank.
     """
-    try:
-        from lxml import html as lxml_html
-    except ImportError as exc:  # pragma: no cover - dependency is in the flake
-        raise ParseError("lxml is required to parse the meal-plan page") from exc
-
     if not (body or "").strip():
         raise ParseError("empty response body for the meal-plan page")
 
-    tree = lxml_html.fromstring(body)
+    tree = parse_html(body)
 
-    paragraphs = [(_text(p), p) for p in tree.xpath("//p")]
+    paragraphs = [(_text(p), p) for p in tree.find_all("p")]
     if not paragraphs:
         raise ParseError("no paragraphs in the meal-plan page — it has changed shape")
 
@@ -148,7 +143,7 @@ def _first_strong(node) -> str:
     words "do not", so anything less specific than "the first one" will
     eventually return that instead of an amount.
     """
-    for strong in node.xpath(".//strong | .//b"):
+    for strong in node.find_all("strong", "b"):
         text = _text(strong)
         if text:
             return text
@@ -183,12 +178,13 @@ def _find_text(paragraphs, markers) -> str:
     return ""
 
 
-def _student_name(tree) -> str:
+def _student_name(tree: Element) -> str:
     """The ``<h5>`` inside the meal-plan fieldset, if it is there."""
-    for node in tree.xpath("//fieldset[.//legend]//h5 | //fieldset//h5"):
-        text = _text(node)
-        if text:
-            return text
+    for fieldset in tree.find_all("fieldset"):
+        for node in fieldset.find_all("h5"):
+            text = _text(node)
+            if text:
+                return text
     return ""
 
 
@@ -215,5 +211,5 @@ def _as_money(text: str) -> float | None:
         return None
 
 
-def _text(node: Any) -> str:
+def _text(node: Element) -> str:
     return re.sub(r"\s+", " ", node.text_content()).strip()

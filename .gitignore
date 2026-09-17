@@ -22,6 +22,14 @@ __pycache__/
 htmlcov/
 .buildozer/
 .buildozer-home/
+# ~1 GB of PySide6 Android wheels, created by scripts/build-apk inside the FHS
+# shell. Rebuildable from pyproject.toml; never belongs in the repo.
+.venv-android/
+# The Android-target PySide6/shiboken6 wheels (~80 MB), fetched from
+# download.qt.io. Redownloadable; see docs/android.md.
+.android-wheels/
+# NDK/SDK cache created by pyside6-android-deploy.
+.pyside6_android_deploy/
 bin/
 deployment/
 *.apk
@@ -29,3 +37,6 @@ deployment/
 .direnv/
 result
 result-*
+# Staging copy of the project that scripts/build-apk hands to
+# pyside6-android-deploy (see the header of that script).
+android-build/

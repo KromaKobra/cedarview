@@ -1,22 +1,96 @@
 #!/usr/bin/env bash
 # Android build driver.
 #
-# HONEST STATUS: this has never been run. No device has been connected to this
-# project and `pyside6-android-deploy` has never been invoked from it. What
-# follows is a checked, ordered driver for the steps in docs/android.md — it
-# verifies preconditions properly and fails loudly, but the build command at the
-# end is the part you will be debugging, not the part that is known to work.
+#   nix develop                  # then:
+#   mycu-android-build           # the FHS env — REQUIRED
+#   ./scripts/build-apk          # this script
 #
-#   nix run .#android-shell      # FHS env — REQUIRED, this will not work outside it
-#   ./scripts/build-apk
+# or in one shot:
 #
+#   nix develop --command mycu-android-build -c ./scripts/build-apk
+#
+# Flags:
+#   --install    adb install -r the APK onto the connected device afterwards
+#   --clean      discard the staging tree and the buildozer state first
+#
+# ---------------------------------------------------------------------------
+# Why this builds from a COPY of the project (android-build/)
+# ---------------------------------------------------------------------------
+#
+# NOTE ON THE NAME: it is `android-build/`, not `.android-build/`, and that
+# matters. buildozer's _copy_application_sources() filters hidden directories
+# with
+#
+#     if True in [x.startswith('.') for x in root.split(sep)]: continue
+#
+# which tests the **absolute** path, not the path relative to source.dir. A
+# staging directory called `.android-build` therefore makes every single file
+# look hidden, buildozer copies nothing at all, and the build dies much later
+# and very confusingly with:
+#
+#     BUILD FAILURE: No main.py(c) found in your app directory.
+#
+# Do not rename this to a dotted directory, and do not put the project under
+# one either.
+#
+# pyside6-android-deploy decides which Qt modules to bundle by scanning every
+# .py and .qml file under the project directory. Two files in this repo are
+# desktop-only and name QtWebEngine:
+#
+#     mycu/platform/desktop.py          from PySide6.QtWebEngineQuick import …
+#     mycu/ui/qml/WebSurfaceDesktop.qml import QtWebEngine
+#
+# QtWebEngine does not exist on Android, so if the scanner sees either of them
+# the build dies with:
+#
+#     FileNotFoundError: libQt6WebEngineCore_arm64-v8a.so not found inside the wheel
+#
+# Pinning `modules` in pysidedeploy.spec does NOT help, and it is worth
+# recording why, because it looks like it should. Two bugs in the 6.11 tool:
+#
+#   1. deploy_lib/config.py, end of Config.__init__, runs `self.modules = []`.
+#      That is the property SETTER, which writes an empty `modules` back into
+#      the parsed config — before AndroidConfig reads it. A pinned value is
+#      therefore always discarded and the scan always runs.
+#
+#   2. deploy_lib/android/android_config.py reads ndk_path under
+#      `elif not existing_config_file:` — inverted, so supplying a spec that
+#      already contains ndk_path makes it read None and crash with
+#      `TypeError: unsupported operand type(s) for /: 'NoneType' and 'str'`.
+#
+# Both are sidestepped by building in a staging tree that simply does not
+# contain the desktop files, and letting the tool generate its own spec there
+# from scratch. Nothing in your working tree is moved or modified, which also
+# means an interrupted build cannot leave the repo in a half-state.
+#
+# Desktop behaviour is unaffected: mycu.platform.current_backend() imports the
+# desktop backend by name and only when not on Android, so the copy that goes
+# into the APK never needs those two files.
+
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-VENV="${ROOT}/.venv-android"
-KEYSTORE="${ROOT}/mycu-release.keystore"
+VENV="$ROOT/.venv-android"
+WHEELS="$ROOT/.android-wheels"
+STAGE="$ROOT/android-build"
+
+PYSIDE_VERSION="6.11.0"          # must match the desktop Qt in flake.nix
+ARCH="aarch64"                   # the phone is arm64-v8a
+QT_DL="https://download.qt.io/official_releases/QtForPython"
+WHEEL_PYSIDE="$WHEELS/pyside6-${PYSIDE_VERSION}-${PYSIDE_VERSION}-cp311-cp311-android_${ARCH}.whl"
+WHEEL_SHIBOKEN="$WHEELS/shiboken6-${PYSIDE_VERSION}-${PYSIDE_VERSION}-cp311-cp311-android_${ARCH}.whl"
+
+DO_INSTALL=0
+DO_CLEAN=0
+for arg in "$@"; do
+  case "$arg" in
+    --install) DO_INSTALL=1 ;;
+    --clean)   DO_CLEAN=1 ;;
+    *) printf 'unknown flag: %s\n' "$arg" >&2; exit 2 ;;
+  esac
+done
 
 step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 die()  { printf '\033[31merror:\033[0m %s\n' "$1" >&2; exit 1; }
@@ -25,99 +99,367 @@ die()  { printf '\033[31merror:\033[0m %s\n' "$1" >&2; exit 1; }
 
 step "Checking preconditions"
 
-# The FHS env sets BUILDOZER_HOME; nothing else does. This is the single most
-# common way to get a confusing failure 20 minutes into a build.
 [[ -n "${BUILDOZER_HOME:-}" ]] || die \
-  "not inside the Android FHS shell. Run 'nix run .#android-shell' first.
-   buildozer and python-for-android need an FHS layout; the plain devShell
-   cannot provide one. See docs/android.md."
+  "not inside the Android FHS shell. Run 'nix develop --command mycu-android-build'
+   first (or 'nix run .#android-shell'). buildozer and python-for-android need
+   an FHS layout; the plain devShell cannot provide one. See docs/android.md."
 
 command -v java >/dev/null || die "no JDK on PATH (expected inside the FHS env)"
-command -v adb  >/dev/null || die \
-  "adb not found. Add to /etc/nixos/configuration.nix:
-       programs.adb.enable = true;
-       users.users.\"kroma\".extraGroups = [ ... \"adbusers\" ];
-   then 'sudo nixos-rebuild switch --flake /etc/nixos#nixos' AND LOG OUT AND BACK IN."
 
-if ! adb devices | tail -n +2 | grep -q device; then
-  printf '\033[33mwarning:\033[0m no device visible to adb. The APK will still\n'
-  printf '         build; you just will not be able to install it.\n'
+# python-for-android's CPython build, and the only Android wheels Qt publishes,
+# are both 3.11; pyside6-android-deploy refuses to run on anything newer.
+PYVER="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
+[[ "$PYVER" == "3.11" ]] || die \
+  "python3 in the FHS env is $PYVER, need 3.11. pyside6-android-deploy refuses
+   to start on newer ('Android deployment requires Python version 3.11 or
+   lower'), and Qt only ships cp311 Android wheels. Fix the androidFhs
+   targetPkgs in flake.nix."
+
+if command -v adb >/dev/null; then
+  if ! adb devices | tail -n +2 | grep -q '\sdevice$'; then
+    printf '\033[33mwarning:\033[0m no authorised device visible to adb.\n'
+    printf '         The APK will still build. If the phone shows as\n'
+    printf '         "unauthorized", unlock it and accept the RSA prompt.\n'
+    DO_INSTALL=0
+  fi
+else
+  printf '\033[33mwarning:\033[0m adb not on PATH; --install unavailable.\n'
+  DO_INSTALL=0
 fi
 
 echo "ok"
 
+if (( DO_CLEAN )); then
+  step "Cleaning"
+  rm -rf "$STAGE" "$ROOT/.buildozer" "$ROOT/deployment"
+fi
+
 # --- Toolchain --------------------------------------------------------------
 
-if [[ ! -d "$VENV" ]]; then
-  step "Creating the Android build venv (this downloads ~1 GB)"
-  python -m venv "$VENV"
+if [[ ! -x "$VENV/bin/pyside6-android-deploy" ]]; then
+  step "Creating the Android build venv (downloads ~700 MB)"
+  rm -rf "$VENV"
+  python3 -m venv "$VENV"
   # shellcheck disable=SC1091
   source "$VENV/bin/activate"
   pip install --upgrade pip
-  # Must match the desktop Qt version in flake.nix (6.11.x) or the QML will be
-  # compiled against a different Qt than it runs on.
-  pip install "pyside6==6.11.0" --no-cache-dir
+  pip install "pyside6==${PYSIDE_VERSION}" --no-cache-dir
+  # The deploy tool's own extras (jinja2, pkginfo, tqdm, packaging==24.1). They
+  # are not dependencies of the pyside6 wheel, and without them the tool exits
+  # with a bare "The following packages are required but not installed".
+  pip install -r "$VENV/lib/python3.11/site-packages/PySide6/scripts/requirements-android.txt"
 else
   # shellcheck disable=SC1091
   source "$VENV/bin/activate"
 fi
 
 command -v pyside6-android-deploy >/dev/null || die \
-  "pyside6-android-deploy is still not on PATH after installing the wheel.
-   It is not packaged in nixpkgs and only ships in the PyPI wheels."
+  "pyside6-android-deploy is still not on PATH after installing the wheel."
 
-# --- Signing ----------------------------------------------------------------
+# --- Android wheels ---------------------------------------------------------
+#
+# These are the Qt-for-Android builds of PySide6/shiboken6. They are NOT on
+# PyPI — only on download.qt.io — and they are what actually ends up in the
+# APK. The x86_64 variants exist too, for an emulator.
 
-if [[ ! -f "$KEYSTORE" ]]; then
-  step "No release keystore found"
-  cat <<'EOF'
-Generate one:
+if [[ ! -f "$WHEEL_PYSIDE" || ! -f "$WHEEL_SHIBOKEN" ]]; then
+  step "Downloading the PySide6 Android wheels (~80 MB)"
+  mkdir -p "$WHEELS"
+  [[ -f "$WHEEL_PYSIDE"   ]] || curl -fL --retry 3 -o "$WHEEL_PYSIDE" \
+    "$QT_DL/pyside6/$(basename "$WHEEL_PYSIDE")"
+  [[ -f "$WHEEL_SHIBOKEN" ]] || curl -fL --retry 3 -o "$WHEEL_SHIBOKEN" \
+    "$QT_DL/shiboken6/$(basename "$WHEEL_SHIBOKEN")"
+fi
 
-    keytool -genkey -v -keystore mycu-release.keystore \
-            -alias mycu -keyalg RSA -keysize 4096 -validity 10000
+# Cheap guard against a truncated or HTML-error download, which otherwise
+# surfaces much later as an incomprehensible zipfile error.
+python3 - "$WHEEL_PYSIDE" "$WHEEL_SHIBOKEN" <<'PY'
+import sys, zipfile
+for path in sys.argv[1:]:
+    if not zipfile.is_zipfile(path):
+        sys.exit(f"error: {path} is not a valid wheel — delete it and re-run")
+    if "PySide6/QtWebView.abi3.so" in zipfile.ZipFile(path).namelist():
+        print("QtWebView present in the PySide6 Android wheel")
+PY
 
-It is gitignored. BACK IT UP OUTSIDE THIS REPO — it is not recoverable, and
-losing it means you can never upgrade an already-installed build in place.
+# --- Staging tree -----------------------------------------------------------
 
-Continuing with a debug-signed APK, which is fine for your own phone.
-EOF
+step "Staging the project without the desktop-only files"
+
+# Only the sources we manage are replaced. $STAGE/.buildozer holds the
+# python-for-android build tree — a cross-compiled CPython, libffi, OpenSSL and
+# the Qt libs, tens of minutes of work — so wiping it on every run would make
+# each build as slow as the first. `--clean` is the way to discard it.
+mkdir -p "$STAGE"
+rm -rf "$STAGE/mycu" "$STAGE/main.py" "$STAGE/pyproject.toml"
+
+cp "$ROOT/main.py" "$ROOT/pyproject.toml" "$STAGE/"
+cp -r "$ROOT/mycu" "$STAGE/mycu"
+
+# The two files that would drag QtWebEngine into the module scan. See the long
+# comment at the top of this script.
+rm -f "$STAGE/mycu/platform/desktop.py"
+rm -f "$STAGE/mycu/ui/qml/WebSurfaceDesktop.qml"
+find "$STAGE" -name '__pycache__' -type d -prune -exec rm -rf {} +
+
+# Fail loudly rather than produce an APK with no login, if either file is ever
+# renamed and this script is not updated with it.
+#
+# Only real import statements matter: the Python scanner looks for PySide6
+# imports and qmlimportscanner parses QML `import` lines. The word QtWebEngine
+# appears all over this codebase's prose — every docstring explaining why
+# Android uses QtWebView instead — and none of that affects the build, so the
+# pattern is anchored to import syntax rather than matching the bare word.
+WEBENGINE_IMPORT='^[[:space:]]*(import[[:space:]]+QtWebEngine|from[[:space:]]+PySide6\.QtWebEngine|import[[:space:]]+PySide6\.QtWebEngine)'
+if grep -rEl --include='*.py' --include='*.qml' "$WEBENGINE_IMPORT" "$STAGE" >/dev/null 2>&1; then
+  grep -rEn --include='*.py' --include='*.qml' "$WEBENGINE_IMPORT" "$STAGE" >&2
+  die "QtWebEngine is still IMPORTED in the staging tree (above). The module
+   scan will fail on libQt6WebEngineCore_${ARCH}.so. Update the prune list."
+fi
+
+# --- Android SDK licences ---------------------------------------------------
+#
+# buildozer downloads the SDK on first run and then stops dead on Google's
+# licence prompt, because its stdin is not a terminal:
+#
+#     Accept? (y/N): Skipping following packages as the license is not accepted
+#
+# …and the build fails several minutes later with a bare non-zero exit from
+# `buildozer android debug`, which does not mention licences at all.
+#
+# Note the SDK goes to ~/.buildozer, NOT to $BUILDOZER_HOME — buildozer 1.5.0
+# ignores that variable for the global directory, despite what the comment in
+# flake.nix used to claim. Acceptance is recorded in $SDK/licenses/ and
+# persists, so this is a one-off on a given machine.
+
+SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/.buildozer/android/platform/android-sdk}"
+if [[ -x "$SDK_ROOT/tools/bin/sdkmanager" && ! -f "$SDK_ROOT/licenses/android-sdk-license" ]]; then
+  step "Accepting the Android SDK licences"
+  yes | "$SDK_ROOT/tools/bin/sdkmanager" --licenses --sdk_root="$SDK_ROOT" >/dev/null 2>&1 || true
+  [[ -f "$SDK_ROOT/licenses/android-sdk-license" ]] \
+    && echo "accepted; recorded in $SDK_ROOT/licenses/" \
+    || printf '\033[33mwarning:\033[0m licence acceptance did not stick; the build may stop at the prompt.\n'
 fi
 
 # --- Build ------------------------------------------------------------------
 
-step "Building"
-cat <<'EOF'
-Modules this app needs bundled beyond the defaults:
+step "Building (python-for-android compiles CPython for $ARCH; this is slow)"
 
-    QtWebView        <- without it there is no login and no transport
-    QtQuick QtQuickControls2 QtQml QtNetwork
+cd "$STAGE"
 
-Do NOT bundle QtWebEngine; it does not exist on Android.
-
-If M0 showed the chapel page is JSON, delete the HTML branch from
-mycu/core/providers/chapel.py and drop lxml from pyproject.toml first — lxml is
-a C extension and needs a python-for-android recipe. Avoiding it entirely is a
-much shorter path than making it cross-compile.
-EOF
-
-set -x
-pyside6-android-deploy \
+# Phase 1 — generate the config, then stop.
+#
+# No pysidedeploy.spec exists here on purpose: letting the tool create its own
+# is what keeps it on the code path where ndk_path and modules are handled
+# correctly (see the header). `--init` returns straight after writing
+# pysidedeploy.spec and buildozer.spec, and --keep-deployment-files stops the
+# `finally:` block deleting the generated recipes and jars on the way out.
+rm -f pysidedeploy.spec buildozer.spec
+pyside6-android-deploy --init --keep-deployment-files \
   --name mycu \
-  --init            # writes pysidedeploy.spec — EDIT IT, then re-run without --init
-set +x
+  --wheel-pyside "$WHEEL_PYSIDE" \
+  --wheel-shiboken "$WHEEL_SHIBOKEN"
 
-cat <<'EOF'
+[[ -f buildozer.spec ]] || die "--init did not produce a buildozer.spec"
 
-Now edit pysidedeploy.spec:
-  - add QtWebView to the modules list
-  - check `permissions` is INTERNET and nothing more
-  - point `qml_files` at mycu/ui/qml
+# Phase 1a — pin the permissions.
+#
+# THIS IS WHY THE BUILD IS SPLIT IN TWO. pyside6-android-deploy sets
+# android.permissions to the UNION of every permission any bundled Qt module
+# declares in its dependency XML — not what the app uses. On this project that
+# came out as:
+#
+#     ACCESS_NETWORK_STATE, WRITE_EXTERNAL_STORAGE, INTERNET, ACCESS_FINE_LOCATION
+#
+# An app that reads your own chapel attendance has no business asking for your
+# location or for external storage. The app makes HTTPS requests and nothing
+# else, so the manifest says INTERNET and nothing else.
+#
+# Re-pinned on every build because phase 1 rewrites buildozer.spec each time.
+#
+# The p4a pin is the second edit, and it is not optional either:
+#
+# pyside6-android-deploy writes `p4a.branch = develop`, and python-for-android
+# moved its python3 recipe to **CPython 3.14** in commit e1bd249 (2025-10-28).
+# Qt's Android wheels are built against **3.11** — and while nearly everything
+# in them is named `*.abi3.so`, which suggests the stable ABI makes the version
+# irrelevant, `libshiboken6.abi3.so` carries a hard DT_NEEDED on
+# `libpython3.11.so`. The APK builds and installs perfectly happily, then dies
+# on launch:
+#
+#     dlopen failed: library "libpython3.11.so" not found:
+#       needed by .../lib/arm64/libshiboken6.abi3.so
+#     java.lang.UnsatisfiedLinkError ... qtMainLoopThread
+#
+# Check it yourself rather than trusting the abi3 suffix:
+#
+#     python3 -c "import re,zipfile; print(sorted(set(re.findall(
+#       rb'libpython[0-9.]*\.so',
+#       zipfile.ZipFile('$WHEEL_SHIBOKEN').read('shiboken6/libshiboken6.abi3.so')))))"
+#
+# P4A_COMMIT is the commit immediately before the 3.14 bump, so the qt
+# bootstrap stays current while CPython stays 3.11.13. Revisit when Qt ships
+# Android wheels for a newer CPython.
+P4A_COMMIT="3762c88c56e3443efb8eba2a02a2604b680240fd"   # 2025-10-26, python3 3.11.13
 
-Then re-run this script (it will skip --init once the spec exists), and:
+step "Pinning permissions to INTERNET and p4a to a CPython 3.11 revision"
+python3 - buildozer.spec "$P4A_COMMIT" <<'PY'
+import re, sys
+path, p4a_commit = sys.argv[1], sys.argv[2]
+text = open(path).read()
 
-    adb install -r mycu.apk
+before = re.search(r'^android\.permissions\s*=.*$', text, re.M)
+text, n = re.subn(r'^android\.permissions\s*=.*$',
+                  'android.permissions = android.permission.INTERNET', text, flags=re.M)
+if n != 1:
+    sys.exit(f"error: expected exactly one android.permissions line, found {n}")
+print("was:", before.group(0) if before else "(absent)")
+print("now: android.permissions = android.permission.INTERNET")
+
+# p4a.commit may or may not already be present; set it either way.
+if re.search(r'^p4a\.commit\s*=.*$', text, re.M):
+    text = re.sub(r'^p4a\.commit\s*=.*$', f'p4a.commit = {p4a_commit}', text, flags=re.M)
+elif re.search(r'^p4a\.branch\s*=.*$', text, re.M):
+    text = re.sub(r'^(p4a\.branch\s*=.*)$', rf'\1\np4a.commit = {p4a_commit}', text, flags=re.M)
+else:
+    sys.exit("error: no p4a.branch line to anchor p4a.commit to")
+open(path, 'w').write(text)
+print(f"now: p4a.commit = {p4a_commit}  (CPython 3.11.13)")
+PY
+
+# Phase 1b — put ACLOCAL_PATH back for python-for-android's subprocesses.
+#
+# p4a builds each recipe's environment from scratch in
+# `pythonforandroid/archs.py`: it copies PATH and the HTTP proxy variables and
+# nothing else. ACLOCAL_PATH does not survive, and on NixOS that is fatal for
+# the libffi recipe, which runs `autoreconf -vif`.
+#
+# The reason it matters here and not on Ubuntu: aclocal's default macro
+# directory is compiled in as automake's own prefix — a /nix/store path that
+# contains no libtool macros. The FHS env exposes them at /usr/share/aclocal
+# instead, and points ACLOCAL_PATH there. Strip that variable and aclocal
+# silently omits libtool.m4 from aclocal.m4, so libffi's AC_PROG_LIBTOOL
+# survives unexpanded into `configure` and autoconf rejects it:
+#
+#     configure.ac:41: error: possibly undefined macro: AC_PROG_LIBTOOL
+#
+# PATH *is* preserved, so a shim early on PATH restores the variable for every
+# aclocal the build runs, without patching p4a.
+step "Installing an aclocal shim for python-for-android's scrubbed env"
+SHIM="$STAGE/.autotools-shim"
+rm -rf "$SHIM"; mkdir -p "$SHIM"
+for tool in aclocal libtoolize; do
+  real="$(command -v "$tool" || true)"
+  [[ -n "$real" ]] || die "$tool not found in the FHS env"
+  cat > "$SHIM/$tool" <<EOF
+#!/bin/sh
+export ACLOCAL_PATH="/usr/share/aclocal\${ACLOCAL_PATH:+:\$ACLOCAL_PATH}"
+exec "$real" "\$@"
+EOF
+  chmod +x "$SHIM/$tool"
+done
+export PATH="$SHIM:$PATH"
+echo "shimmed: $(command -v aclocal)"
+
+# Phase 2 — the actual build. This is what pyside6-android-deploy would have
+# run itself; invoking it directly is what lets the edits above take effect.
+step "Running buildozer"
+# Deliberately not `set -e`-fatal on its own. With no TTY attached buildozer
+# finishes the packaging, prints "# Android packaging done!", and *then* exits
+# non-zero after failing to restore terminal state ("stty: 'standard input':
+# Inappropriate ioctl for device"). Trusting its exit code alone throws away a
+# perfectly good APK. The presence of the APK is the real success test, and it
+# is checked immediately below, so a genuine failure is still caught.
+BUILDOZER_RC=0
+python3 -m buildozer android debug || BUILDOZER_RC=$?
+
+cd "$ROOT"
+
+# buildozer reports "available in the bin directory" but actually leaves the
+# file in its working directory, so look in both.
+APK="$(find "$STAGE" -maxdepth 2 -name '*.apk' -print 2>/dev/null | sort | tail -1)"
+if [[ -z "$APK" ]]; then
+  die "buildozer exited $BUILDOZER_RC and produced no .apk; read the log above"
+fi
+if (( BUILDOZER_RC != 0 )); then
+  printf '\033[33mnote:\033[0m buildozer exited %d but produced an APK; continuing.\n' "$BUILDOZER_RC"
+fi
+
+cp "$APK" "$ROOT/mycu.apk"
+step "Built $(du -h "$ROOT/mycu.apk" | cut -f1) -> $ROOT/mycu.apk"
+
+# Verify that the CPython bundled in the APK is the one shiboken actually links
+# against. Getting this wrong produces an APK that builds, installs and then
+# dies instantly on launch with an UnsatisfiedLinkError that never reaches
+# Python, so it is worth one second of zipfile reading here.
+step "Checking the bundled libpython matches shiboken's DT_NEEDED"
+python3 - "$ROOT/mycu.apk" "$WHEEL_SHIBOKEN" <<'PY'
+import re, sys, zipfile
+
+apk, shiboken_wheel = sys.argv[1], sys.argv[2]
+
+blob = zipfile.ZipFile(shiboken_wheel).read('shiboken6/libshiboken6.abi3.so')
+needed = sorted({m.decode() for m in re.findall(rb'libpython[0-9.]+\.so', blob)})
+if not needed:
+    print("shiboken links no libpython explicitly; nothing to check")
+    raise SystemExit(0)
+
+bundled = sorted({n.rsplit('/', 1)[-1]
+                  for n in zipfile.ZipFile(apk).namelist()
+                  if re.search(r'libpython[0-9.]+\.so$', n)})
+print("shiboken needs:", ", ".join(needed))
+print("apk bundles:   ", ", ".join(bundled) or "(none)")
+
+missing = [n for n in needed if n not in bundled]
+if missing:
+    raise SystemExit(
+        f"error: the APK does not bundle {missing}. It will install and then "
+        f"crash at startup with UnsatisfiedLinkError. Fix P4A_COMMIT in this "
+        f"script so python-for-android builds the matching CPython."
+    )
+print("ok")
+PY
+
+# Verify the shipped manifest, not the spec we edited. A permission creeping
+# back in is exactly the kind of thing that should fail the build rather than
+# be noticed later in the app's settings page.
+AAPT="$(find "$SDK_ROOT/build-tools" -name 'aapt' -type f 2>/dev/null | sort | tail -1)"
+if [[ -n "$AAPT" ]]; then
+  step "Permissions in the built APK"
+  PERMS="$("$AAPT" dump permissions "$ROOT/mycu.apk" 2>/dev/null | grep -oE 'android\.permission\.[A-Z_]+' | sort -u)"
+  echo "${PERMS:-(none)}"
+  UNEXPECTED="$(grep -v '^android\.permission\.INTERNET$' <<<"$PERMS" || true)"
+  [[ -z "$UNEXPECTED" ]] || die "unexpected permissions in the APK:
+$UNEXPECTED
+   The permission pinning in phase 1a did not take. Do not install this build."
+else
+  printf '\033[33mwarning:\033[0m aapt not found; APK permissions unverified.\n'
+fi
+
+# The generated spec is the record of what actually went into the APK — module
+# list, plugins, permissions. Keep a copy next to the APK for inspection.
+[[ -f "$STAGE/pysidedeploy.spec" ]] && cp "$STAGE/pysidedeploy.spec" "$ROOT/pysidedeploy.spec"
+
+# --- Install ----------------------------------------------------------------
+
+if (( DO_INSTALL )); then
+  step "Installing"
+  adb install -r "$ROOT/mycu.apk"
+  cat <<'EOF'
+
+Now watch it start:
+
     adb logcat -c && adb logcat | grep -iE 'python|qml|mycu'
 
 Things flagged for on-device verification are marked '# VERIFY:' in the source
 and listed in docs/android.md.
 EOF
+else
+  cat <<EOF
+
+Install it with:
+
+    adb install -r $ROOT/mycu.apk
+    adb logcat -c && adb logcat | grep -iE 'python|qml|mycu'
+EOF
+fi

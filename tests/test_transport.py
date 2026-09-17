@@ -191,3 +191,113 @@ def test_a_lookalike_host_does_not_count() -> None:
 
 def test_a_real_idp_subdomain_still_counts() -> None:
     assert looks_like_login("https://eu.login.microsoftonline.com/x/saml2")
+
+
+# ---------------------------------------------------------------------------
+# TLS trust store
+# ---------------------------------------------------------------------------
+
+def test_ssl_context_has_certificate_authorities() -> None:
+    """A context with no CAs verifies nothing.
+
+    On desktop the system bundle supplies these. On Android nothing does —
+    there is no OpenSSL default cert path in the app sandbox — and the symptom
+    is CERTIFICATE_VERIFY_FAILED on every HTTPS request, which reads like a
+    network fault. `ssl_context()` falls back to Android's own CA directory;
+    this asserts the result is actually usable wherever the suite runs.
+    """
+    from mycu.core.transport import ssl_context
+
+    assert ssl_context().cert_store_stats()["x509_ca"] > 0
+
+
+def test_ssl_context_is_cached() -> None:
+    """Building it per request would re-read the whole CA directory."""
+    from mycu.core.transport import ssl_context
+
+    assert ssl_context() is ssl_context()
+
+
+def test_ssl_context_verifies_and_checks_hostnames() -> None:
+    """The fallback must not quietly weaken verification."""
+    import ssl as ssl_module
+
+    from mycu.core.transport import ssl_context
+
+    context = ssl_context()
+    assert context.verify_mode == ssl_module.CERT_REQUIRED
+    assert context.check_hostname is True
+
+
+def test_android_ca_paths_are_absolute_directories() -> None:
+    """Typos here degrade silently into 'no CAs found'."""
+    from mycu.core.transport import ANDROID_CA_PATHS
+
+    assert ANDROID_CA_PATHS
+    assert all(p.startswith("/") for p in ANDROID_CA_PATHS)
+    assert all("cacerts" in p for p in ANDROID_CA_PATHS)
+
+
+def test_android_ca_fallback_actually_loads_certificates(tmp_path, monkeypatch) -> None:
+    """Exercise the Android branch on a desktop, with a fake CA directory.
+
+    This is the test that matters. The first attempt at this fallback used
+    ``load_verify_locations(capath=...)``, which OpenSSL treats as a *lazy*
+    lookup: nothing loads, ``cert_store_stats()`` keeps reporting zero, and
+    verification still fails — but every test passed, because on a desktop the
+    default context already has CAs and the fallback never ran. So build a
+    directory in Android's shape and drive the fallback directly.
+    """
+    import re as _re
+    import ssl as _ssl
+
+    from mycu.core import transport
+
+    # Android's files are a PEM block followed by an `openssl x509 -text` dump
+    # and a fingerprint line. Reproduce that shape from the real system bundle
+    # so the PEM extraction is tested against genuine certificates.
+    bundle = Path(_ssl.get_default_verify_paths().cafile or "")
+    if not bundle.is_file():
+        pytest.skip("no system CA bundle to build a fixture from")
+
+    blocks = _re.findall(
+        r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----",
+        bundle.read_text(errors="replace"),
+        _re.DOTALL,
+    )[:5]
+    assert blocks, "system CA bundle held no PEM blocks"
+
+    fake_store = tmp_path / "cacerts"
+    fake_store.mkdir()
+    for index, block in enumerate(blocks):
+        # The trailing junk is the point: a naive reader would choke on it.
+        (fake_store / f"{index:08x}.0").write_text(
+            block
+            + "\n-----\nCertificate:\n    Data:\n        Version: 3 (0x2)\n"
+            + "SHA1 Fingerprint=AA:BB:CC\n"
+        )
+
+    monkeypatch.setattr(transport, "ANDROID_CA_PATHS", (str(fake_store),))
+
+    empty = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+    assert empty.cert_store_stats()["x509_ca"] == 0
+
+    transport._load_android_cas(empty)
+    assert empty.cert_store_stats()["x509_ca"] == len(blocks)
+
+
+def test_android_ca_fallback_survives_a_junk_directory(tmp_path, monkeypatch) -> None:
+    """A directory with nothing usable must log, not raise."""
+    import ssl as _ssl
+
+    from mycu.core import transport
+
+    junk = tmp_path / "cacerts"
+    junk.mkdir()
+    (junk / "not-a-cert.0").write_text("this is not a certificate\n")
+
+    monkeypatch.setattr(transport, "ANDROID_CA_PATHS", (str(junk),))
+
+    empty = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
+    transport._load_android_cas(empty)          # must not raise
+    assert empty.cert_store_stats()["x509_ca"] == 0

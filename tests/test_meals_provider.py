@@ -161,6 +161,38 @@ def test_an_amount_without_a_strong_tag_still_parses() -> None:
     assert parse_meals(html).dining_dollars == 22.50
 
 
+def test_unclosed_paragraphs_do_not_merge_into_one() -> None:
+    """Cedarville's markup is hand-written; a missing </p> must not fuse lines.
+
+    If the three sentences collapsed into a single "paragraph", the first
+    <strong> rule would return 3 for every figure and the dining/flex
+    distinction would be lost. Note the inline <span> before the next <p>:
+    the paragraph is not the innermost open element at that point.
+    """
+    html = """
+    <fieldset>
+      <p>You have <strong>3</strong> meal(s) remaining <span>this week</span>
+      <p>You have <strong>$40.00</strong> remaining in Meal Plan Dining Dollars.
+      <p>You have <strong>$5.00</strong> remaining in purchased Voluntary Flex Dollars.
+    </fieldset>
+    """
+    plan = parse_meals(html)
+    assert plan.meals_remaining == 3
+    assert plan.dining_dollars == 40.00
+    assert plan.flex_dollars == 5.00
+
+
+def test_script_contents_are_not_read_as_page_text() -> None:
+    """The live page is ~35 KB and full of analytics tags."""
+    html = """
+    <div>
+      <script>var meals = "You have $999.99 remaining in Meal Plan Dining Dollars.";</script>
+      <p>You have <strong>$12.00</strong> remaining in Meal Plan Dining Dollars.</p>
+    </div>
+    """
+    assert parse_meals(html).dining_dollars == 12.00
+
+
 # ---------------------------------------------------------------------------
 # The provider
 # ---------------------------------------------------------------------------

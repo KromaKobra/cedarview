@@ -18,7 +18,9 @@ Session expiry is *detected, not predicted*: see :func:`looks_like_login`.
 from __future__ import annotations
 
 import json
+import logging
 import re
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Protocol, runtime_checkable
@@ -62,6 +64,8 @@ LOGIN_BODY_MARKERS = (
 
 #: Sent by the WebView-driven requests. Honest about what this is: a personal
 #: client reading one student's own records.
+log = logging.getLogger(__name__)
+
 USER_AGENT_SUFFIX = "myCU/0.1 (personal student-records client)"
 
 
@@ -263,6 +267,128 @@ class FixtureTransport:
         )
 
 
+#: Where Android keeps its system CA certificates. Directories of files named
+#: by subject hash (``01419da9.0``), which is exactly the layout OpenSSL's
+#: ``capath`` expects. Ordered most-canonical-first; the first one that exists
+#: and is non-empty wins. All three are usually present and identical — the
+#: APEX path is the modern one, ``/etc`` is a symlink to ``/system/etc``.
+ANDROID_CA_PATHS = (
+    "/apex/com.android.conscrypt/cacerts",
+    "/system/etc/security/cacerts",
+    "/etc/security/cacerts",
+)
+
+#: Matches one PEM certificate. Android's CA files are a PEM block followed by
+#: the human-readable `openssl x509 -text` dump and a fingerprint line, so the
+#: blocks have to be cut out rather than the file used whole.
+PEM_BLOCK = re.compile(
+    r"-----BEGIN CERTIFICATE-----.*?-----END CERTIFICATE-----",
+    re.DOTALL,
+)
+
+_ssl_context_cache: object | None = None
+_ssl_context_lock = threading.Lock()
+
+
+def ssl_context():
+    """An SSL context with a working trust store, on desktop *and* Android.
+
+    On a normal Linux box ``ssl.create_default_context()`` finds the system CA
+    bundle and there is nothing to do. **On Android it silently finds nothing**
+    — there is no OpenSSL default cert path in the app sandbox — so every HTTPS
+    request through :class:`HttpTransport` fails with::
+
+        [SSL: CERTIFICATE_VERIFY_FAILED] unable to get local issuer certificate
+
+    which looks like a server or network problem and is neither. Android does
+    ship a perfectly good CA store, just not where OpenSSL looks, so point the
+    context at it explicitly.
+
+    The check is "did the default context actually load any CAs", not "are we
+    on Android". That keeps the desktop path untouched, needs no platform
+    detection here (:mod:`mycu.core` stays platform-agnostic), and would also
+    rescue a desktop box with an unusual cert layout.
+
+    Deliberately **not** solved by adding ``certifi``: a bundled CA list goes
+    stale, ships a second source of truth for trust decisions, and means this
+    app would keep trusting a CA the phone's owner had distrusted. Reading the
+    phone's own store means "trusted" here means exactly what it means
+    everywhere else on the device.
+
+    .. rubric:: Why the certificates are read rather than pointed at
+
+    The obvious implementation is ``load_verify_locations(capath=...)``, since
+    Android's directories use OpenSSL's hashed-filename layout (``01419da9.0``).
+    It does not work, and it fails *silently*:
+
+    * OpenSSL treats a ``capath`` as a **lazy** lookup. Nothing is loaded when
+      you add it, so ``cert_store_stats()`` still reports zero CAs and there is
+      no way to tell a good path from a typo.
+    * The lazy lookup then did not resolve these files anyway — verification
+      kept failing with all three directories registered.
+
+    Reading the files and passing ``cadata`` is deterministic and verifiable:
+    afterwards ``cert_store_stats()`` reports a real number, which is asserted
+    below. Each Android CA file is a PEM block followed by a human-readable
+    ``openssl x509 -text`` dump, so the blocks are extracted rather than the
+    file being used whole.
+    """
+    global _ssl_context_cache
+
+    with _ssl_context_lock:
+        if _ssl_context_cache is not None:
+            return _ssl_context_cache
+
+        import ssl
+
+        context = ssl.create_default_context()
+        if context.cert_store_stats()["x509_ca"] == 0:
+            _load_android_cas(context)
+
+        _ssl_context_cache = context
+        return context
+
+
+def _load_android_cas(context) -> None:
+    """Load the device's trusted CAs into ``context``, in place."""
+    import ssl
+
+    for candidate in ANDROID_CA_PATHS:
+        directory = Path(candidate)
+        if not directory.is_dir():
+            continue
+
+        pem: list[str] = []
+        for entry in sorted(directory.iterdir()):
+            try:
+                pem.extend(PEM_BLOCK.findall(entry.read_text(errors="replace")))
+            except OSError:
+                continue  # unreadable or not a file; the rest are still good
+
+        if not pem:
+            continue
+
+        try:
+            context.load_verify_locations(cadata="\n".join(pem) + "\n")
+        except ssl.SSLError as exc:
+            log.warning("ssl: %s held no usable certificates: %s", candidate, exc)
+            continue
+
+        loaded = context.cert_store_stats()["x509_ca"]
+        if loaded:
+            log.info("ssl: loaded %d system CAs from %s", loaded, candidate)
+            return
+
+    # Fail loudly here rather than at every request: a context with no CAs
+    # cannot verify anything, and the resulting per-request error blames the
+    # network instead.
+    log.error(
+        "ssl: no CA certificates found (tried %s). HTTPS verification will "
+        "fail for every request.",
+        ", ".join(ANDROID_CA_PATHS),
+    )
+
+
 class HttpTransport:
     """A plain HTTP client, for origins that need no session.
 
@@ -296,7 +422,9 @@ class HttpTransport:
         )
 
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_s) as reply:
+            with urllib.request.urlopen(
+                request, timeout=self.timeout_s, context=ssl_context()
+            ) as reply:
                 body = reply.read().decode(
                     reply.headers.get_content_charset() or "utf-8", errors="replace"
                 )

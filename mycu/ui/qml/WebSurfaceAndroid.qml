@@ -37,11 +37,18 @@ Item {
 
         onUrlChanged: root.currentUrl = view.url.toString()
 
-        // VERIFY on-device: QtWebView's loadingChanged carries a
-        // WebViewLoadRequest with `status` and `errorString`. Confirm the enum
-        // spelling against the Qt 6.11 Android build — this is the single most
-        // likely place for a QML runtime error, and `adb logcat | grep -i qml`
-        // will show it immediately if it is wrong.
+        // VERIFIED against the Qt 6.11 Android build, by reading
+        // PySide6/Qt/qml/QtWebView/plugins.qmltypes out of the
+        // android_aarch64 wheel rather than by guessing:
+        //
+        //   Enum LoadStatus = LoadStartedStatus, LoadStoppedStatus,
+        //                     LoadSucceededStatus, LoadFailedStatus
+        //   Signal loadingChanged(QQuickWebViewLoadRequest loadRequest)
+        //   QQuickWebViewLoadRequest: url, status, errorString  (all readonly)
+        //
+        // So the spelling below is right and this is no longer the likeliest
+        // source of a QML runtime error. If it ever does break,
+        // `adb logcat | grep -i qml` shows it immediately.
         onLoadingChanged: function (request) {
             if (request.status === WebView.LoadFailedStatus) {
                 console.warn("load failed:", request.url, request.errorString)
