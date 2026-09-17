@@ -279,3 +279,51 @@ class UpcomingChapel:
     @property
     def on(self) -> date | None:
         return self.starts_at.date() if self.starts_at else None
+
+
+# ---------------------------------------------------------------------------
+# Meal plan
+#
+# Verified against the real page (selfservice.cedarville.edu/Cedarinfo/Meals,
+# 2026-09-17). Server-rendered: no table, no JSON — the numbers are prose in
+# <strong> tags. Real capture (trimmed, scrubbed) in tests/fixtures/.
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class MealPlan:
+    """The three balances the meal-plan page reports.
+
+    .. important::
+       **There are two different dollar balances**, and conflating them would
+       misreport money:
+
+       * :attr:`dining_dollars` — "Meal Plan Dining Dollars". Part of the meal
+         plan, and they **expire at the end of the term**.
+       * :attr:`flex_dollars` — "purchased Voluntary Flex Dollars". Bought
+         separately, and they **do not expire**.
+
+       "Flex dollars" colloquially often means the first one, but on this page
+       it is unambiguously the second. Both are surfaced, each labelled with its
+       own expiry, rather than picking one and hoping.
+
+    Every field is optional: a student with no meal plan, or a page that changes
+    shape, must render as "not reported" rather than as a confident zero.
+    """
+
+    meals_remaining: int | None = None
+    dining_dollars: float | None = None
+    flex_dollars: float | None = None
+    student_name: str = ""
+    prox_card_id: str = ""
+
+    @property
+    def has_any(self) -> bool:
+        return any(
+            v is not None
+            for v in (self.meals_remaining, self.dining_dollars, self.flex_dollars)
+        )
+
+    @staticmethod
+    def money(value: float | None) -> str:
+        """``112.08`` -> ``"$112.08"``; ``None`` -> ``""`` (never ``"$0.00"``)."""
+        return "" if value is None else f"${value:,.2f}"

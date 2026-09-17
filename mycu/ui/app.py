@@ -185,6 +185,7 @@ def main(argv: list[str] | None = None) -> int:
     #   a completed login -> retry the fetch
     chapel.sessionExpired.connect(login.onSessionExpired)
     login.loggedIn.connect(chapel.refresh)
+    login.loggedIn.connect(dining.refreshPlan)
     login.signedOut.connect(lambda: log.info("signed out"))
 
     if not args.demo:
@@ -225,6 +226,7 @@ def main(argv: list[str] | None = None) -> int:
         chapel.refresh()
         chapel.refreshSchedule()
         dining.refresh()
+        dining.refreshPlan()
 
     return app.exec()
 

@@ -63,6 +63,115 @@ Item {
             }
         }
 
+        // ---- Meal plan ------------------------------------------------------
+        // Behind the Cedarville sign-in, unlike the menu below it. Hidden
+        // entirely until it loads: an empty row of "$0.00"s would misstate
+        // money, which is the one thing this panel must never do.
+        //
+        // The two dollar figures are deliberately shown separately and with
+        // their expiry spelled out. They are different balances — dining
+        // dollars expire at the end of term, voluntary flex dollars do not —
+        // and collapsing them into one number would be wrong.
+        Rectangle {
+            Layout.fillWidth: true
+            Layout.preferredHeight: planRow.implicitHeight + 24
+            visible: dining.hasPlan
+            color: Qt.rgba(0, 0, 0, 0.02)
+
+            RowLayout {
+                id: planRow
+                anchors.centerIn: parent
+                width: parent.width - 32
+                spacing: 8
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: 1
+                    spacing: 1
+                    visible: dining.mealsRemaining >= 0
+
+                    Label {
+                        text: dining.mealsRemaining
+                        font.pixelSize: 22
+                        font.bold: true
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+                    Label {
+                        text: dining.mealsRemaining === 1 ? "meal left" : "meals left"
+                        font.pixelSize: 11
+                        opacity: 0.6
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+                    Label {
+                        text: "this week"
+                        font.pixelSize: 10
+                        opacity: 0.45
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+                }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: 1
+                    spacing: 1
+                    visible: dining.diningDollars.length > 0
+
+                    Label {
+                        text: dining.diningDollars
+                        font.pixelSize: 22
+                        font.bold: true
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+                    Label {
+                        text: "dining dollars"
+                        font.pixelSize: 11
+                        opacity: 0.6
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+                    Label {
+                        text: "expire end of term"
+                        font.pixelSize: 10
+                        color: "#b45309"
+                        opacity: 0.8
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+                }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    Layout.preferredWidth: 1
+                    spacing: 1
+                    visible: dining.flexDollars.length > 0
+
+                    Label {
+                        text: dining.flexDollars
+                        font.pixelSize: 22
+                        font.bold: true
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+                    Label {
+                        text: "flex dollars"
+                        font.pixelSize: 11
+                        opacity: 0.6
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+                    Label {
+                        text: "never expire"
+                        font.pixelSize: 10
+                        opacity: 0.45
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+                }
+            }
+
+            Rectangle {
+                anchors.bottom: parent.bottom
+                width: parent.width
+                height: 1
+                color: Qt.rgba(0, 0, 0, 0.08)
+            }
+        }
+
         // ---- Error ----------------------------------------------------------
         Rectangle {
             Layout.fillWidth: true

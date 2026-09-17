@@ -6,8 +6,7 @@ browser window on your screen, you sign in normally, you press **Capture**, and
 it reports the *structure* of what comes back.
 
     nix develop --command python scripts/discover chapel
-    nix develop --command python scripts/discover transact
-    nix develop --command python scripts/discover papercut
+    nix develop --command python scripts/discover meals
     nix develop --command python scripts/discover chapel-schedule   # no login
 
 .. rubric:: What it does and does not show
@@ -69,13 +68,6 @@ TARGETS = {
         "note": "Meal plan — flex dollars and meals left. Same Cedarville\n"
                 "sign-in as chapel, so you may already be signed in.\n"
                 "Wait for the numbers to appear, then press Capture.",
-    },
-    "papercut": {
-        "start": "https://printing.cedarville.edu/user",
-        "probes": ["https://printing.cedarville.edu/app?service=page/UserSummary"],
-        "note": "PaperCut — print quota. SEPARATE login (not your Microsoft\n"
-                "account). Open the summary page showing your balance, then\n"
-                "press Capture.",
     },
     "chapel-schedule": {
         "start": "https://www.cedarville.edu/chapel",
@@ -365,8 +357,7 @@ ApplicationWindow {{
         # The current page ALWAYS goes first. It got skipped whenever the trace
         # found anything at all, which is exactly backwards: a server-rendered
         # page has the data in its own HTML and often traces nothing but a chart
-        # image. That gap lost both the Meals page and the PaperCut balance on
-        # the first run.
+        # image. That gap lost the Meals page entirely on the first run.
         probes = [current] + list(spec["probes"]) + list(args.extra) + discovered
 
         seen: set[str] = set()

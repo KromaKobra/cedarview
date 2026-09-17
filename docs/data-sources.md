@@ -3,8 +3,8 @@
 Reconnaissance done 2026-09-16/17. Everything marked **verified** was checked
 against the live service; everything else is explicitly flagged as unknown.
 
-The headline: **these six things live on four or five different systems, and
-only one of them is on `selfservice.cedarville.edu`.** That is the single most
+The headline: **the six things live on three systems, two of which need no login at
+all.** That is the single most
 important fact for planning, and it is why the transport now routes by origin.
 
 | # | Want | Lives on | Auth | Status |
@@ -12,9 +12,8 @@ important fact for planning, and it is why the transport now routes by origin.
 | 2 | Home Cooking, every meal | `diningdata.cedarville.edu` | **none** | ✅ **done, live** |
 | 4 | Next chapel speaker | `mediaserve.cedarville.edu` | **none** | ✅ **done, live** |
 | 3 | Chapel skips remaining | `selfservice.cedarville.edu` | SAML / Entra | ✅ **done, real API** |
-| 1 | Flex dollar balance | `selfservice.cedarville.edu/Cedarinfo/Meals` | same Cedarville sign-in | ⏳ one more capture |
-| 6 | Meals left this week | same page as #1 | same | ⏳ one more capture |
-| 5 | Print quota balance | `printing.cedarville.edu` (PaperCut) | **separate** login | ⏸️ deferred by choice |
+| 1 | Flex dollar balance | `selfservice.cedarville.edu/Cedarinfo/Meals` | same Cedarville sign-in | ✅ **done, real page** |
+| 6 | Meals left this week | same page as #1 | same | ✅ **done, real page** |
 
 ---
 
@@ -109,94 +108,63 @@ anywhere in the real data.
 
 ---
 
-## ⏳ 1 & 6. Flex dollars and meals left — on Self-Service after all
+## ✅ 1 & 6. Flex dollars and meals left — DONE
 
 **Transact is not needed.** These live at
 
 ```
-https://selfservice.cedarville.edu/Cedarinfo/Meals
+GET https://selfservice.cedarville.edu/Cedarinfo/Meals
 ```
 
-— the same origin and the same Microsoft sign-in as chapel. That is much better
-news than the Transact route: no second credential, no second cookie jar, and
-the existing WebView transport reaches it unchanged.
+— same origin, same Microsoft sign-in as chapel. No second credential, no
+second cookie jar, existing transport unchanged.
 
-**Still needed: one more capture.** The first run traced no XHR for that page,
-which means it is server-rendered — and `scripts/discover` had a bug that
-skipped probing the current page whenever the trace found *anything* (here, a
-tracking pixel). So the page's own HTML was never saved. That bug is fixed: the
-current page is now always probed first.
+Server-rendered, and worth stating plainly: **no table, no JSON.** The numbers
+are prose inside `<strong>` tags in one `<fieldset>`:
 
-```bash
-python scripts/discover meals
+```html
+<fieldset>
+  <legend><strong>Meal Plan Information</strong></legend>
+  <h5>Sample Student</h5>
+  <p>You have <strong>19</strong> meal(s) remaining in your meal plan for the current week.</p>
+  <p>You have <strong>$112.08</strong> remaining in Meal Plan Dining Dollars.
+     These dollars expire at the <span style="color:red;">end of the current term</span>, so use them!</p>
+  <p>You have <strong>$0.00</strong> remaining in purchased Voluntary Flex Dollars.
+     These dollars <strong>do not</strong> expire at the end of the current term.</p>
+  <p>Your Prox Card ID: <strong>0000</strong></p>
+</fieldset>
 ```
 
-## ⏸️ 5. Print quota — PaperCut, deferred
+### Two traps in that markup
 
-Found: `https://printing.cedarville.edu/user` →
-`<title>PaperCut Login for Cedarville University</title>`. Note it resolves to
-**the same IP as `selfservice.cedarville.edu`** (163.11.75.167), but that is
-shared hosting, not shared auth.
+1. **There are *two* dollar balances, not one.** "Meal Plan Dining Dollars"
+   expire at the end of term; "Voluntary Flex Dollars" are purchased separately
+   and do not. You asked for "flex dollar balance" — on this page that is
+   unambiguously the second one, which currently reads **$0.00**. Reporting only
+   that would be technically right and practically useless, so the app shows
+   both, each labelled with its own expiry. Say the word if you want only one.
+2. **The Voluntary Flex paragraph contains a second `<strong>`** — the
+   `<strong>do not</strong>` in "These dollars **do not** expire". Reading "a
+   `<strong>` in the paragraph" would eventually return the string `"do not"`
+   instead of an amount. Only the *first* `<strong>` per paragraph is read, and
+   a test guards it.
 
-The login is a plain `inputUsername` / `inputPassword` form posting to `/app`,
-with a `jsessionid`. No SAML — it is a genuinely separate credential.
+Paragraphs are matched by phrase, never by position, so a reordering upstream
+cannot silently shift the values. Every figure is independently optional: a
+missing one renders as blank, never as a confident `0` or `$0.00`.
 
-**Does it interfere with the Cedarville sign-in? No.** Different origin,
-different cookie, no shared state; the Entra session is untouched either way.
-The real cost is different: it is the only part of the app that would ask you to
-type a password *into the app's own window* rather than onto Microsoft's page.
+## ✂️ 5. Print quota — dropped
 
-Deferred by choice — you called it the least important, and it needs another
-capture anyway (the balance is in the `/app?service=page/UserSummary` HTML; the
-first run only traced the balance-history PNG). If you want it later:
+Removed from scope at your request, and removed from the code: there is no
+PaperCut target in `scripts/discover` and no provider for it.
 
-```bash
-python scripts/discover papercut
-```
-
-Nothing else in the app changes to accommodate it.
-
-## ✅ 4. Next chapel speaker — DONE
-
-Found by `scripts/discover chapel-schedule`, which read the page's own
-resource-timing log. Guessing had failed: `cedarville.edu/chapel` renders its
-Upcoming tab client-side, so the schedule is nowhere in the served HTML, and
-probing `/upcoming`, `/schedule`, `?future=1` on the old `/ChapelMedia/` path
-all 404'd.
-
-The page actually calls a **v2 API** nobody would have guessed the shape of:
-
-```
-GET https://mediaserve.cedarville.edu/ChapelMedia/api/v2/chapels/upcoming?page=1&count=N
-```
-
-**Unauthenticated.** 51 entries available when checked.
-
-```json
-{"TotalCount": 51, "Page": 1, "RetrievedCount": 20,
- "Items": [{"Id": "ICiRTos5BUiwi_xQP8LHyg",
-            "Title": "Garrett Higbee",
-            "Date": "2026-09-17T14:00:00Z",
-            "Description": "…",
-            "YouTubeId": "ySIBhMll7k0",
-            "Speakers": ["Garrett Higbee"],
-            "WillLiveStream": true}]}
-```
-
-Sibling endpoints on the same API: `/chapels/recent`, `/chapels/popular`,
-`/chapel/live`.
-
-Two things the real data teaches, both handled:
-
-- **`Speakers` is often empty.** "Worship Chapel" and "SGA" are real scheduled
-  chapels with no named speaker. Anything assuming `Speakers[0]` exists crashes
-  on the *second* item in the live feed.
-- **`Title` is usually the speaker's name verbatim**, so rendering
-  "title — speaker" gives "Garrett Kell — Garrett Kell".
-
-`Date` is ISO 8601 UTC (14:00Z = 10:00 Eastern); it is converted to local time
-rather than assuming the phone is in Ohio. "Next" means the soonest chapel
-*still in the future* — the feed keeps today's listed after it has started.
+Recorded for whoever wants it later: the balance is on
+`printing.cedarville.edu/app?service=page/UserSummary`, behind a plain
+`inputUsername` / `inputPassword` form — a genuinely separate credential, not
+your Microsoft account. It does **not** interfere with the Cedarville session
+(different origin, different cookie, no shared state); the reason to leave it
+out is that it would be the only part of the app asking you to type a password
+into the app's own window rather than onto Microsoft's page.
 
 ---
 
@@ -207,8 +175,7 @@ Rather than asking you to read HAR files, there is now a tool that does it.
 ```bash
 nix develop
 python scripts/discover chapel            # Microsoft sign-in
-python scripts/discover transact          # flex dollars + meals
-python scripts/discover papercut          # print quota
+python scripts/discover meals             # flex dollars + meals left
 python scripts/discover chapel-schedule   # NO LOGIN — hunts for the Upcoming XHR
 ```
 

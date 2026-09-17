@@ -173,8 +173,15 @@ def looks_like_login(url: str, body: str = "") -> bool:
     unrelated reasons, and guessing would send the user to a login page they did
     not need.
     """
-    lowered = (url or "").lower()
-    if any(host in lowered for host in IDP_HOSTS):
+    # Match on the HOST, never on the whole URL string. A substring test looks
+    # equivalent and is not: analytics and tracking URLs routinely carry a
+    # `ref=https://login.microsoftonline.com/` parameter, and a Self-Service
+    # page whose URL happened to include one would be declared expired — kicking
+    # the user to a sign-in they did not need. Observed for real in a capture:
+    # `t.vibe.co/pixel/s?...&ref=https://login.microsoftonline.com/` raised
+    # SessionExpired.
+    host = (urlsplit(url or "").hostname or "").lower()
+    if host and any(host == idp or host.endswith("." + idp) for idp in IDP_HOSTS):
         return True
 
     if body:

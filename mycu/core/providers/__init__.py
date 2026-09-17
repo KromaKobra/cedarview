@@ -24,6 +24,14 @@ from the origin, so neither provider has to care.
 
 from .base import Provider
 from .chapel import ChapelProvider
+from .chapel_schedule import ChapelScheduleProvider
 from .dining import DiningProvider
+from .meals import MealsProvider
 
-__all__ = ["Provider", "ChapelProvider", "DiningProvider"]
+__all__ = [
+    "Provider",
+    "ChapelProvider",
+    "ChapelScheduleProvider",
+    "DiningProvider",
+    "MealsProvider",
+]

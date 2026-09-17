@@ -12,14 +12,13 @@ Python + PySide6 + QML, packaged with Nix.
 
 | | |
 |---|---|
-| Core, transport, login, viewmodels, QML | **written, 190 tests passing** |
+| Core, transport, login, viewmodels, QML | **written, 215 tests passing** |
 | WebView transport, desktop | **verified end to end** — `scripts/smoke-transport`, 7/7 |
 | **Dining menus (Home Cooking)** | ✅ **working against the live API**, real fixture committed |
 | **Next chapel speaker** | ✅ **working against the live API**, real fixture committed |
 | **Chapel skips** | ✅ **working against the real API**, real scrubbed fixtures |
 | Live authenticated request | ✅ made — three JSON endpoints found and parsed |
-| Flex dollars / meals left | on `selfservice.../Cedarinfo/Meals` — needs one `scripts/discover meals` run |
-| Print quota (PaperCut) | deferred — separate login, least important |
+| **Meals left + dollar balances** | ✅ **working against the real page**, real scrubbed fixture |
 | Android | **written, never built or run** — no device has been connected |
 
 **`docs/data-sources.md` is the one to read**: where each of the six data points
@@ -39,7 +38,7 @@ That runs the whole app — QML, viewmodels, list model, the lot — against
 `tests/fixtures/`. It is how you develop the UI without a session.
 
 ```bash
-pytest                              # 190 tests, no network, no display needed
+pytest                              # 215 tests, no network, no display needed
 python scripts/smoke-transport      # proves the WebView transport works
 ```
 

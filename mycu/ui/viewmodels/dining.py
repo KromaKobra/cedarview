@@ -17,8 +17,9 @@ from PySide6.QtCore import (
 )
 
 from ...core.errors import ParseError, TransportError
-from ...core.models import HOME_COOKING, DayMenu
+from ...core.models import HOME_COOKING, DayMenu, MealPlan
 from ...core.providers.dining import DEFAULT_DAYS, DiningProvider
+from ...core.providers.meals import MealsProvider
 from ..tasks import run_in_background
 
 log = logging.getLogger(__name__)
@@ -96,6 +97,13 @@ class DiningViewModel(QObject):
         self._error = ""
         self._loaded = False
 
+        # The meal plan is a *different* source from the menus: a server-
+        # rendered Self-Service page behind the Cedarville sign-in, versus the
+        # public menu API. It sits on this screen because that is where a reader
+        # expects it, and it loads independently so a failure in one never
+        # blanks the other.
+        self._plan = MealPlan()
+
     # ------------------------------------------------------------------
 
     @Property(QObject, constant=True)
@@ -150,6 +158,51 @@ class DiningViewModel(QObject):
         return any(d.on > self._selected_date() for d in self._menus)
 
     # ------------------------------------------------------------------
+
+    # ---- Meal plan ----------------------------------------------------
+    # `-1` / "" are the "not reported" sentinels: QML has no null, and a
+    # confident 0 or "$0.00" for an unknown balance would misstate money.
+
+    @Property(int, notify=changed)
+    def mealsRemaining(self) -> int:
+        remaining = self._plan.meals_remaining
+        return remaining if remaining is not None else -1
+
+    @Property(str, notify=changed)
+    def diningDollars(self) -> str:
+        """Meal Plan Dining Dollars — these **expire at the end of term**."""
+        return MealPlan.money(self._plan.dining_dollars)
+
+    @Property(str, notify=changed)
+    def flexDollars(self) -> str:
+        """Voluntary Flex Dollars — purchased separately, these **do not expire**."""
+        return MealPlan.money(self._plan.flex_dollars)
+
+    @Property(bool, notify=changed)
+    def hasPlan(self) -> bool:
+        return self._plan.has_any
+
+    @Slot()
+    def refreshPlan(self) -> None:
+        """Load the meal-plan balances. Needs the Cedarville session."""
+        provider = MealsProvider(self._transport)
+
+        def done(plan: object) -> None:
+            self._plan = plan  # type: ignore[assignment]
+            log.info(
+                "meal plan: %s meals, dining=%s, flex=%s",
+                self._plan.meals_remaining,
+                self._plan.dining_dollars,
+                self._plan.flex_dollars,
+            )
+            self.changed.emit()
+
+        def failed(exc: object) -> None:
+            # Quiet on purpose: the menu is the bulk of this screen and should
+            # not be replaced by an error banner because one panel is missing.
+            log.warning("meal plan unavailable: %r", exc)
+
+        run_in_background(provider.fetch, done, failed)
 
     @Slot()
     def refresh(self) -> None:

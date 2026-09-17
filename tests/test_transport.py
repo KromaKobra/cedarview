@@ -160,3 +160,34 @@ def test_json_fixture_wins_over_html(tmp_path: Path) -> None:
 
     response = FixtureTransport(tmp_path).get("/cedarinfo/chapelskip")
     assert response.json() == {"from": "json"}
+
+
+# ---------------------------------------------------------------------------
+# Expiry detection must key on the host, not the URL string
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        # Observed for real in a `scripts/discover meals` capture: this raised
+        # SessionExpired because the IdP name appears in a query parameter.
+        "https://t.vibe.co/pixel/s?aid=X&url=https://selfservice.cedarville.edu/Cedarinfo/Meals"
+        "&ref=https://login.microsoftonline.com/&ts=1789620230162",
+        f"{BASE_URL}/Cedarinfo/Meals?returnUrl=https%3A%2F%2Flogin.microsoftonline.com%2F",
+        "https://analytics.example.com/collect?dr=https://login.microsoftonline.com/",
+    ],
+)
+def test_an_idp_in_a_query_parameter_is_not_an_expired_session(url: str) -> None:
+    """A false positive here bounces the user to a sign-in they did not need."""
+    assert not looks_like_login(url)
+
+
+def test_a_lookalike_host_does_not_count() -> None:
+    # Suffix matching must be on a dot boundary, or `evil-login.microsoftonline.com.attacker.tld`
+    # style hosts would read as trusted IdPs.
+    assert not looks_like_login("https://login.microsoftonline.com.example.net/saml2")
+    assert not looks_like_login("https://notlogin.microsoftonline.com/saml2")
+
+
+def test_a_real_idp_subdomain_still_counts() -> None:
+    assert looks_like_login("https://eu.login.microsoftonline.com/x/saml2")

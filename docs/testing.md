@@ -2,7 +2,7 @@
 
 ```bash
 nix develop
-pytest                                  # 190 tests, ~2s, no network, no display
+pytest                                  # 215 tests, ~2s, no network, no display
 python scripts/smoke-transport          # real QtWebEngine, loopback server
 python -m mycu --demo                   # the whole app against fixtures
 python scripts/check-live               # one real authenticated request
