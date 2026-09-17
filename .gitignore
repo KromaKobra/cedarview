@@ -1,0 +1,31 @@
+# --- Secrets. Nothing here is recoverable or safe to publish. ---
+# Release signing keystore for the APK. Losing it means you can never ship an
+# upgrade to an already-installed build. Back it up OUTSIDE this repo.
+*.keystore
+*.jks
+keystore.properties
+
+# Captured HAR files and raw responses from M0 discovery: these contain live
+# session cookies, your student ID and your name. Scrub before promoting a body
+# into tests/fixtures/.
+docs/captures/
+*.har
+
+# Persisted session state (cookies). App-private storage only.
+.session/
+
+# --- Build / tooling ---
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.buildozer/
+.buildozer-home/
+bin/
+deployment/
+*.apk
+*.aab
+.direnv/
+result
+result-*

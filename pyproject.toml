@@ -1,0 +1,34 @@
+[project]
+name = "mycu"
+version = "0.1.0"
+description = "A personal client for your own Cedarville student records"
+requires-python = ">=3.12"
+
+# Dependencies are supplied by flake.nix on desktop. This list exists for
+# pyside6-android-deploy, which reads project metadata to decide what to bundle
+# into the APK, and it must stay in sync with the devShell's pythonEnv.
+dependencies = [
+    "PySide6>=6.11",
+    "lxml>=5",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pytest-cov"]
+
+[project.scripts]
+mycu = "mycu.ui.app:run"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["mycu*"]
+
+[tool.setuptools.package-data]
+"mycu.ui" = ["qml/*.qml"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --strict-markers"
+filterwarnings = ["error::DeprecationWarning:mycu.*"]

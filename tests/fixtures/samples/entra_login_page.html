@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<!--
+  SYNTHETIC FIXTURE — an abbreviated stand-in for what login.microsoftonline.com
+  serves when the Self-Service session has expired.
+
+  Its job in the test suite is negative: this must NEVER reach a parser. It is
+  trimmed to the markers `looks_like_login` keys off, plus enough surrounding
+  shape to be realistic. The real page is ~300 KB of inlined JavaScript.
+-->
+<html dir="ltr" lang="en">
+<head>
+  <title>Sign in to your account</title>
+  <meta name="robots" content="none">
+</head>
+<body>
+  <form method="POST" name="hiddenform" action="https://login.microsoftonline.com/81c32413-015d-4ba8-a93b-e1c28e355738/saml2">
+    <input type="hidden" name="SAMLRequest" value="REDACTED">
+    <input type="hidden" name="RelayState" value="%2Fcedarinfo%2Fchapelskip">
+  </form>
+  <div id="lightbox">
+    <div id="loginHeader">Sign in to your account</div>
+  </div>
+  <script type="text/javascript">
+    //<![CDATA[
+    $Config={"fShowPersistentCookiesWarning":false,"urlMsaSignUp":"","sFT":"REDACTED"};
+    //]]>
+  </script>
+</body>
+</html>

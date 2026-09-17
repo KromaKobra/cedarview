@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Prove the WebView transport works, without touching Cedarville.
+
+This exercises the single riskiest piece of the design end to end:
+
+    QML surface  ->  evalAsync  ->  in-page fetch()  ->  window.__mycu[token]
+                 ->  poll  ->  evalResult  ->  Response on a worker thread
+
+against a throwaway HTTP server on 127.0.0.1. If this passes, the transport,
+the QML contract, the polling loop and the cross-thread handoff are all
+correct, and the only thing left that can go wrong with real data is
+authentication and parsing.
+
+It is a script rather than a test because the suite forbids sockets outright
+(``tests/conftest.py``) — and that rule is worth more than folding this in.
+
+    nix develop --command python scripts/smoke-transport
+
+Exits 0 on success. Add ``--android`` on-device to run the same checks against
+QtWebView instead of QtWebEngine.
+"""
+
+from __future__ import annotations
+
+import http.server
+import json
+import sys
+import threading
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+BODY = {"records": [{"date": "2026-09-16", "status": "absent"}], "note": "x" * 300_000}
+
+failures: list[str] = []
+checks: list[str] = []
+
+
+def check(name: str, ok: bool, detail: str = "") -> None:
+    checks.append(name)
+    print(f"  {'PASS' if ok else 'FAIL'}  {name}{'  — ' + detail if detail else ''}")
+    if not ok:
+        failures.append(name)
+
+
+class Handler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self) -> None:  # noqa: N802
+        if self.path == "/slow":
+            import time
+            time.sleep(1.5)
+
+        payload = json.dumps(BODY).encode()
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, *args) -> None:
+        pass
+
+
+def main() -> int:
+    android = "--android" in sys.argv
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    port = server.server_address[1]
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    origin = f"http://127.0.0.1:{port}"
+    print(f"local server on {origin}\n")
+
+    from mycu.platform import current_backend
+
+    backend = current_backend()
+    if not android:
+        backend.before_app()
+
+    from PySide6.QtCore import QTimer, QUrl
+    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtQml import QQmlApplicationEngine
+
+    app = QGuiApplication(sys.argv[:1])
+    if android:
+        backend.after_app(app)
+
+    from mycu.core.errors import TransportError
+    from mycu.ui.tasks import run_in_background
+    from mycu.ui.transport_webview import WebViewTransport
+
+    qml_dir = Path(__file__).resolve().parents[1] / "mycu" / "ui" / "qml"
+    surface_file = qml_dir / backend.surface_qml
+
+    # Wrap the surface in a throwaway window so it has a scene to live in.
+    wrapper = qml_dir.parent / "_smoke_window.qml"
+    wrapper.write_text(
+        "import QtQuick\n"
+        "import QtQuick.Window\n"
+        f'import "{qml_dir.as_uri()}" as Surfaces\n'
+        "Window {\n"
+        "    width: 800; height: 600; visible: true\n"
+        # Found via objectName rather than a property alias: PySide6 has no
+        # converter for a bare QML type, but findChild returns it as a QObject,
+        # which is all the transport ever needs it to be.
+        f'    Surfaces.{surface_file.stem} {{ objectName: "surface"; anchors.fill: parent }}\n'
+        "}\n",
+        encoding="utf-8",
+    )
+
+    engine = QQmlApplicationEngine()
+    engine.load(QUrl.fromLocalFile(str(wrapper)))
+    if not engine.rootObjects():
+        print("FAIL: the QML surface did not load at all")
+        wrapper.unlink(missing_ok=True)
+        return 1
+
+    from PySide6.QtCore import QObject
+
+    window = engine.rootObjects()[0]
+    surface = window.findChild(QObject, "surface")
+    check("QML surface loads", surface is not None)
+    if surface is None:
+        wrapper.unlink(missing_ok=True)
+        return 1
+
+    transport = WebViewTransport()
+    transport.attach_surface(surface)
+
+    results: dict[str, object] = {}
+
+    def work() -> None:
+        # 1. Plain fetch of a large JSON body.
+        try:
+            response = transport.get(f"{origin}/data")
+            results["response"] = response
+        except Exception as exc:  # noqa: BLE001
+            results["response_error"] = exc
+
+        # 2. Two requests in flight must not be confused for one another.
+        try:
+            a = transport.get(f"{origin}/a")
+            b = transport.get(f"{origin}/b")
+            results["distinct"] = (a.url, b.url)
+        except Exception as exc:  # noqa: BLE001
+            results["distinct_error"] = exc
+
+        # 3. A timeout must raise, not hang forever.
+        try:
+            transport.get(f"{origin}/slow", timeout_s=0.3)
+            results["timeout"] = "did not raise"
+        except TransportError:
+            results["timeout"] = "raised TransportError"
+        except Exception as exc:  # noqa: BLE001
+            results["timeout"] = f"raised {type(exc).__name__}"
+
+    def start() -> None:
+        # Navigate to the origin first: the fetch runs in the *page's* context,
+        # so a same-origin request needs the page to be on that origin. This is
+        # the same reason the real app aims the surface at Self-Service.
+        surface.navigate(f"{origin}/data")
+        QTimer.singleShot(
+            1200,
+            lambda: run_in_background(work, lambda _: app.quit(), lambda _: app.quit()),
+        )
+
+    QTimer.singleShot(200, start)
+    QTimer.singleShot(25_000, app.quit)   # hard stop
+    app.exec()
+    wrapper.unlink(missing_ok=True)
+    server.shutdown()
+
+    print()
+    response = results.get("response")
+    check(
+        "in-page fetch returns a body",
+        response is not None and getattr(response, "status", 0) == 200,
+        str(results.get("response_error", "")),
+    )
+    if response is not None:
+        check(
+            "a large body survives runJavaScript",
+            len(response.body) > 250_000,
+            f"{len(response.body)} bytes",
+        )
+        check(
+            "the response parses as JSON",
+            isinstance(response.json(), dict),
+        )
+        check(
+            "Content-Type comes through",
+            "json" in response.headers.get("content-type", ""),
+            response.headers.get("content-type", ""),
+        )
+
+    distinct = results.get("distinct")
+    check(
+        "concurrent requests are not confused",
+        distinct is not None and distinct[0].endswith("/a") and distinct[1].endswith("/b"),
+        str(results.get("distinct_error", distinct)),
+    )
+
+    check(
+        "a stalled request times out instead of hanging",
+        results.get("timeout") == "raised TransportError",
+        str(results.get("timeout")),
+    )
+
+    print(f"\n{len(checks) - len(failures)}/{len(checks)} checks passed")
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

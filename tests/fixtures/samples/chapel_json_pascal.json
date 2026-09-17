@@ -1,0 +1,17 @@
+{
+  "_comment": "SYNTHETIC FIXTURE - not from Cedarville. PascalCase keys, the ASP.NET default. Mixes ISO-with-time and US display dates, which is what Razor view models tend to produce.",
+  "StudentName": "Sample Student",
+  "Term": "Fall 2026",
+  "SkipsAllowed": 6,
+  "SkipsUsed": 3,
+  "Records": [
+    { "ChapelDate": "2026-08-26T00:00:00", "Status": "Present", "Speaker": "Opening Convocation", "Notes": "" },
+    { "ChapelDate": "2026-08-28T00:00:00", "Status": "Absent",  "Speaker": "Dr. A. Speaker",      "Notes": "" },
+    { "ChapelDate": "2026-08-31T00:00:00", "Status": "Present", "Speaker": "Student Testimony",   "Notes": "" },
+    { "ChapelDate": "9/2/2026", "Status": "Excused Absence", "Speaker": "Guest Chapel", "Notes": "Approved absence" },
+    { "ChapelDate": "2026-09-04T00:00:00", "Status": "Absent",  "Speaker": "Worship Chapel",      "Notes": "" },
+    { "ChapelDate": "2026-09-09T00:00:00", "Status": "Present", "Speaker": "Missions Emphasis",   "Notes": "" },
+    { "ChapelDate": "2026-09-11T00:00:00", "Status": "Absent",  "Speaker": "Faculty Chapel",      "Notes": "" },
+    { "ChapelDate": "2026-09-14T00:00:00", "Status": "Present", "Speaker": "Dr. B. Speaker",      "Notes": "" }
+  ]
+}

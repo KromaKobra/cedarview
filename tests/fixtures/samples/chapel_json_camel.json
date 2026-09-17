@@ -1,0 +1,21 @@
+{
+  "_comment": "SYNTHETIC FIXTURE - not from Cedarville. camelCase keys buried under an ASP.NET-style envelope, to exercise _find_record_list's nested search. Also reports 'remaining' instead of 'used', so the provider has to derive one from the other.",
+  "d": {
+    "success": true,
+    "model": {
+      "student": { "displayName": "Sample Student", "id": "REDACTED" },
+      "termName": "Fall 2026",
+      "allowance": { "allowedSkips": 6, "skipsRemaining": 3 },
+      "attendanceRecords": [
+        { "date": "8/26/2026", "attendanceStatus": "P", "eventTitle": "Opening Convocation" },
+        { "date": "8/28/2026", "attendanceStatus": "A", "eventTitle": "Dr. A. Speaker" },
+        { "date": "8/31/2026", "attendanceStatus": "P", "eventTitle": "Student Testimony" },
+        { "date": "9/2/2026",  "attendanceStatus": "E", "eventTitle": "Guest Chapel" },
+        { "date": "9/4/2026",  "attendanceStatus": "A", "eventTitle": "Worship Chapel" },
+        { "date": "9/9/2026",  "attendanceStatus": "P", "eventTitle": "Missions Emphasis" },
+        { "date": "9/11/2026", "attendanceStatus": "A", "eventTitle": "Faculty Chapel" },
+        { "date": "9/14/2026", "attendanceStatus": "P", "eventTitle": "Dr. B. Speaker" }
+      ]
+    }
+  }
+}

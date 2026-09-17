@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""Make one real authenticated request and report how it differs from the fixture.
+
+Run this when something breaks. It answers the question you will actually have —
+*"did Ellucian change the page, or did I break the app?"* — instead of leaving
+you guessing.
+
+    nix develop --command python scripts/check-live
+
+It opens a window, signs you in if needed (on Microsoft's page, as always),
+fetches `/cedarinfo/chapelskip` once, and prints:
+
+  * the final URL after the redirect chain
+  * whether the payload is JSON or HTML
+  * what the parser made of it
+  * a field-by-field comparison against `tests/fixtures/`
+
+It also writes the raw body to `docs/captures/` — gitignored, because it will
+contain your name and student ID. That file is your starting point for
+refreshing the fixtures (`docs/discovery.md`).
+
+Exits 0 if the response still has the shape the fixtures describe, 1 otherwise.
+"""
+
+from __future__ import annotations
+
+import argparse
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+FIXTURES = ROOT / "tests" / "fixtures"
+CAPTURES = ROOT / "docs" / "captures"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--path", default=None, help="path to fetch (default: the chapel page)")
+    parser.add_argument("--timeout", type=float, default=300.0,
+                        help="seconds to wait for you to finish signing in")
+    args = parser.parse_args()
+
+    from mycu.core.errors import MycuError
+    from mycu.core.providers.chapel import CHAPEL_PATH, parse_body
+    from mycu.core.session import SessionStore
+    from mycu.core.transport import FixtureTransport
+    from mycu.platform import current_backend
+
+    path = args.path or CHAPEL_PATH
+
+    backend = current_backend()
+    backend.before_app()
+
+    from PySide6.QtCore import QObject, QTimer, QUrl
+    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtQml import QQmlApplicationEngine
+
+    from mycu.ui.login import LoginController
+    from mycu.ui.tasks import run_in_background
+    from mycu.ui.transport_webview import WebViewTransport
+
+    app = QGuiApplication(sys.argv[:1])
+    app.setApplicationName("myCU check-live")
+
+    store = SessionStore()
+    store.ensure_dirs()
+    backend.configure_profile(store.profile_dir())
+
+    transport = WebViewTransport()
+    login = LoginController(store, backend)
+
+    qml_dir = ROOT / "mycu" / "ui" / "qml"
+    wrapper = qml_dir / "_checklive_window.qml"
+    wrapper.write_text(
+        "import QtQuick\n"
+        "import QtQuick.Window\n"
+        f'import "{qml_dir.as_uri()}" as Surfaces\n'
+        "Window {\n"
+        '    title: "myCU — sign in"\n'
+        "    width: 480; height: 800; visible: true\n"
+        f'    Surfaces.{Path(backend.surface_qml).stem} {{ objectName: "surface"; anchors.fill: parent }}\n'
+        "}\n",
+        encoding="utf-8",
+    )
+
+    engine = QQmlApplicationEngine()
+    engine.load(QUrl.fromLocalFile(str(wrapper)))
+    wrapper.unlink(missing_ok=True)
+    if not engine.rootObjects():
+        print("the web surface failed to load — are you in `nix develop`?")
+        return 1
+
+    # `window` MUST be kept in a Python variable. Chaining
+    # `engine.rootObjects()[0].findChild(...)` drops the only Python reference
+    # to the root object, and shiboken then deletes the underlying C++ object —
+    # the child comes back as a dead wrapper ("Internal C++ object already
+    # deleted", or a QObject mysteriously missing its QML-declared signals).
+    window = engine.rootObjects()[0]
+    surface = window.findChild(QObject, "surface")
+    if surface is None:
+        print("could not find the web surface in the loaded QML")
+        return 1
+
+    transport.attach_surface(surface)
+    surface.currentUrlChanged.connect(
+        lambda: login.onUrlChanged(str(surface.property("currentUrl") or ""))
+    )
+    login.navigateRequested.connect(lambda url: surface.navigate(url))
+
+    outcome: dict[str, object] = {}
+    started = time.monotonic()
+
+    def fetch_once() -> None:
+        try:
+            outcome["response"] = transport.get(path, timeout_s=60)
+        except MycuError as exc:
+            outcome["error"] = exc
+
+    def on_logged_in() -> None:
+        if outcome.get("started"):
+            return
+        outcome["started"] = True
+        print("signed in — fetching…")
+        run_in_background(fetch_once, lambda _: app.quit(), lambda _: app.quit())
+
+    login.loggedIn.connect(on_logged_in)
+
+    def deadline() -> None:
+        if not outcome.get("started") and time.monotonic() - started > args.timeout:
+            print(f"gave up waiting for sign-in after {args.timeout:.0f}s")
+            app.quit()
+
+    ticker = QTimer()
+    ticker.timeout.connect(deadline)
+    ticker.start(2000)
+
+    print(f"opening {path} — sign in if prompted")
+    login.begin(path)
+    app.exec()
+
+    # ---- Report ---------------------------------------------------------
+    if "error" in outcome:
+        print(f"\nFAILED: {type(outcome['error']).__name__}: {outcome['error']}")
+        return 1
+
+    response = outcome.get("response")
+    if response is None:
+        print("\nno response — sign-in did not complete")
+        return 1
+
+    print("\n" + "=" * 68)
+    print(f"final URL      {response.url}")
+    print(f"status         {response.status}")
+    print(f"content-type   {response.headers.get('content-type', '(none)')}")
+    print(f"size           {len(response.body):,} bytes")
+
+    stripped = response.body.lstrip()
+    kind = "JSON" if stripped[:1] in "{[" else "HTML"
+    print(f"payload        {kind}")
+
+    CAPTURES.mkdir(parents=True, exist_ok=True)
+    capture = CAPTURES / f"chapelskip-{time.strftime('%Y%m%d-%H%M%S')}.{kind.lower()}"
+    capture.write_text(response.body, encoding="utf-8")
+    print(f"raw body       {capture.relative_to(ROOT)}  (gitignored — scrub before committing)")
+
+    print("-" * 68)
+    try:
+        live = parse_body(response.body, content_type=response.headers.get("content-type", ""))
+    except Exception as exc:  # noqa: BLE001
+        print(f"PARSE FAILED: {type(exc).__name__}: {exc}")
+        print("\nThe page shape changed. Recapture per docs/discovery.md.")
+        return 1
+
+    print(f"records        {len(live.records)}")
+    print(f"term           {live.term or '(not found)'}")
+    print(f"allowed        {live.allowed if live.allowed is not None else '(not found)'}")
+    print(f"used           {live.used}")
+    print(f"student name   {'(found)' if live.student_name else '(not found)'}")
+    if live.records:
+        first = live.records[0]
+        print(f"first record   {first.on or first.raw_date!r} / {first.status.value} / {first.title!r}")
+
+    print("-" * 68)
+    try:
+        fixture = parse_body(FixtureTransport(FIXTURES).get(path).body)
+    except Exception:  # noqa: BLE001
+        print("no comparable fixture — skipping the shape comparison")
+        return 0
+
+    problems = []
+    if not live.records:
+        problems.append("live response has no records at all")
+    if bool(live.allowed is None) != bool(fixture.allowed is None):
+        problems.append(
+            f"'allowed' {'disappeared' if live.allowed is None else 'appeared'} "
+            "relative to the fixture"
+        )
+    if live.records and all(r.on is None for r in live.records):
+        problems.append("no date in any record parsed — the date format changed")
+    unknown = sum(1 for r in live.records if r.status.value == "unknown")
+    if unknown:
+        problems.append(
+            f"{unknown}/{len(live.records)} records have an unrecognised status — "
+            "add the real vocabulary to AttendanceStatus.parse"
+        )
+
+    if problems:
+        print("SHAPE CHANGED:")
+        for problem in problems:
+            print(f"  - {problem}")
+        return 1
+
+    print("shape matches the fixture. If the app is misbehaving, it isn't Ellucian.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

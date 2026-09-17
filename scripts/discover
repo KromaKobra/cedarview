@@ -1,0 +1,448 @@
+#!/usr/bin/env python3
+"""Open a login window, then report what the page actually serves.
+
+This is the tool that turns "I'd have to guess" into "I know". It opens a real
+browser window on your screen, you sign in normally, you press **Capture**, and
+it reports the *structure* of what comes back.
+
+    nix develop --command python scripts/discover chapel
+    nix develop --command python scripts/discover transact
+    nix develop --command python scripts/discover papercut
+    nix develop --command python scripts/discover chapel-schedule   # no login
+
+.. rubric:: What it does and does not show
+
+**Values are redacted by default.** The report prints key names, types, shapes,
+table headers, counts and vocabularies — everything needed to write a parser —
+but replaces the actual values with type placeholders. Your student ID, name and
+balances stay on your machine.
+
+The full raw body is written to ``docs/captures/`` (gitignored) so you have it
+for fixtures. Pass ``--show-values`` if you want real values in the report too;
+only do that if you are comfortable with where the report ends up.
+
+.. rubric:: How it finds endpoints you didn't know about
+
+After login it reads the page's own network log::
+
+    performance.getEntriesByType('resource')
+
+That lists every URL the page fetched, so an XHR that fills a tab shows up even
+when it is nowhere in the served HTML. Anything that looks like a data endpoint
+is then fetched and reported too. This is how to find the JSON behind a page
+without reading its JavaScript.
+
+.. rubric:: Your password
+
+Never touched. You type it into the site's own page inside the window; this
+script only ever sees which URL you ended up on and what the page returned.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+CAPTURES = ROOT / "docs" / "captures"
+
+
+# ---------------------------------------------------------------------------
+# Targets
+# ---------------------------------------------------------------------------
+
+TARGETS = {
+    "chapel": {
+        "start": "https://selfservice.cedarville.edu/cedarinfo/chapelskip",
+        "probes": ["https://selfservice.cedarville.edu/cedarinfo/chapelskip"],
+        "note": "Sign in with your Cedarville account (Microsoft page).",
+    },
+    "transact": {
+        "start": "https://selfservice.cedarville.edu/cedarinfo",
+        "probes": [],   # discovered from the resource trace after login
+        "note": "Transact cardholder site — flex dollars and meal plan.\n"
+                "After signing in, NAVIGATE TO THE BALANCE PAGE before pressing "
+                "Capture, so the trace sees the right requests.",
+    },
+    "papercut": {
+        "start": "https://printing.cedarville.edu/user",
+        "probes": [],
+        "note": "PaperCut — print quota. After signing in, make sure the\n"
+                "summary page showing your balance is open before capturing.",
+    },
+    "chapel-schedule": {
+        "start": "https://www.cedarville.edu/chapel",
+        "probes": [],
+        "note": "NO LOGIN NEEDED. Click the 'Upcoming' tab in the window, let\n"
+                "it load, then press Capture. We are hunting for the XHR that\n"
+                "fills it.",
+    },
+}
+
+#: Resource URLs worth following up on. Excludes the obvious page furniture so
+#: the report is readable rather than exhaustive.
+INTERESTING = re.compile(r"(api|json|ajax|service|data|feed|rest|graphql|\.ashx|\.asmx)", re.I)
+BORING = re.compile(
+    r"\.(css|js|png|jpe?g|gif|svg|webp|woff2?|ttf|eot|ico|mp4|webm)(\?|$)"
+    r"|googletagmanager|google-analytics|doubleclick|facebook|hotjar|cdn\.jsdelivr",
+    re.I,
+)
+
+
+# ---------------------------------------------------------------------------
+# Structural reporting
+# ---------------------------------------------------------------------------
+
+def describe_json(node, show_values: bool, depth: int = 0, max_depth: int = 6) -> str:
+    """Render a JSON value as a shape, with the values redacted by default."""
+    pad = "  " * depth
+    if depth > max_depth:
+        return "…"
+
+    if isinstance(node, dict):
+        if not node:
+            return "{}"
+        lines = ["{"]
+        for key, value in list(node.items())[:40]:
+            lines.append(f"{pad}  {key!r}: {describe_json(value, show_values, depth + 1)}")
+        if len(node) > 40:
+            lines.append(f"{pad}  … {len(node) - 40} more keys")
+        lines.append(pad + "}")
+        return "\n".join(lines)
+
+    if isinstance(node, list):
+        if not node:
+            return "[]  (empty)"
+        head = describe_json(node[0], show_values, depth + 1)
+        return f"[  x{len(node)}\n{pad}  {head}\n{pad}]"
+
+    if show_values:
+        return repr(node)
+
+    if node is None:
+        return "null"
+    if isinstance(node, bool):
+        return "<bool>"
+    if isinstance(node, int):
+        return "<int>"
+    if isinstance(node, float):
+        return "<float>"
+
+    text = str(node)
+    # Date-ish and short enumerated strings are shape, not secrets, and they are
+    # exactly what a parser needs to know. Everything longer is masked.
+    if re.fullmatch(r"[\d/:\-T+. ]{6,32}Z?", text) or re.fullmatch(r"/Date\(-?\d+\)/", text):
+        return f'"{text}"   <- date-ish'
+    if len(text) <= 24:
+        return f'"{text}"'
+    return f"<str len={len(text)}>"
+
+
+def describe_html(body: str, show_values: bool) -> str:
+    """Summarise a server-rendered page: its tables, headers and labelled numbers."""
+    try:
+        from lxml import html as lxml_html
+    except ImportError:
+        return "(lxml unavailable)"
+
+    tree = lxml_html.fromstring(body)
+    out: list[str] = []
+
+    tables = tree.xpath("//table")
+    out.append(f"{len(tables)} <table> element(s)")
+    for n, table in enumerate(tables[:8]):
+        headers = [_text(th) for th in table.xpath(".//th")]
+        rows = table.xpath(".//tbody/tr") or table.xpath(".//tr")
+        out.append(f"\n  table[{n}]  id={table.get('id')!r} class={table.get('class')!r}")
+        out.append(f"    headers: {headers}")
+        out.append(f"    rows: {len(rows)}")
+
+        body_rows = [r for r in rows if r.xpath("./td")]
+        if body_rows:
+            cells = [_text(td) for td in body_rows[0].xpath("./td")]
+            if show_values:
+                out.append(f"    first row: {cells}")
+            else:
+                out.append(f"    first row: {[_mask(c) for c in cells]}")
+            # The vocabulary of short repeated cell values is exactly what a
+            # status column looks like, and it is what a parser must map.
+            for col in range(len(cells)):
+                values = {
+                    _text(r.xpath("./td")[col])
+                    for r in body_rows
+                    if len(r.xpath("./td")) > col
+                }
+                short = {v for v in values if 0 < len(v) <= 20}
+                if short and len(short) <= 8:
+                    out.append(f"    col[{col}] distinct values: {sorted(short)}")
+
+    page_text = _text(tree)
+    labelled = re.findall(
+        r"([A-Za-z][A-Za-z ]{2,28}?)\s*[:=]?\s*\$?(\d[\d,]*\.?\d*)", page_text
+    )
+    if labelled:
+        out.append("\n  labelled numbers on the page:")
+        for label, value in labelled[:25]:
+            shown = value if show_values else "<num>"
+            out.append(f"    {label.strip()!r} -> {shown}")
+
+    forms = tree.xpath("//form")
+    if forms:
+        out.append(f"\n  {len(forms)} form(s):")
+        for form in forms[:5]:
+            names = [i.get("name") for i in form.xpath(".//input") if i.get("name")]
+            out.append(f"    action={form.get('action')!r} inputs={names}")
+
+    return "\n".join(out)
+
+
+def _text(node) -> str:
+    return re.sub(r"\s+", " ", node.text_content()).strip()
+
+
+def _mask(value: str) -> str:
+    if not value:
+        return ""
+    if re.fullmatch(r"[\d/:\-. ]{4,}", value):
+        return value            # dates are structure
+    return f"<{len(value)} chars>"
+
+
+# ---------------------------------------------------------------------------
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("target", choices=sorted(TARGETS))
+    parser.add_argument("--show-values", action="store_true",
+                        help="print real values, not just shapes (they end up in the report)")
+    parser.add_argument("--extra", action="append", default=[],
+                        help="an extra URL to probe after login; repeatable")
+    parser.add_argument("--timeout", type=float, default=900.0,
+                        help="seconds to wait for you to press Capture")
+    args = parser.parse_args()
+
+    spec = TARGETS[args.target]
+
+    from mycu.platform import current_backend
+
+    backend = current_backend()
+    backend.before_app()
+
+    from PySide6.QtCore import QObject, QTimer, QUrl
+    from PySide6.QtGui import QGuiApplication
+    from PySide6.QtQml import QQmlApplicationEngine
+
+    from mycu.core.errors import MycuError
+    from mycu.core.session import SessionStore
+    from mycu.ui.tasks import run_in_background
+    from mycu.ui.transport_webview import WebViewTransport
+
+    app = QGuiApplication(sys.argv[:1])
+    app.setApplicationName("myCU discover")
+
+    store = SessionStore()
+    store.ensure_dirs()
+    backend.configure_profile(store.profile_dir())
+
+    qml_dir = ROOT / "mycu" / "ui" / "qml"
+    wrapper = qml_dir / "_discover_window.qml"
+    wrapper.write_text(f"""
+import QtQuick
+import QtQuick.Controls
+import QtQuick.Layouts
+import "{qml_dir.as_uri()}" as Surfaces
+
+ApplicationWindow {{
+    id: win
+    visible: true
+    width: 1100; height: 900
+    title: "myCU discover — {args.target}"
+
+    signal captureRequested()
+    property bool capturing: false
+
+    header: ToolBar {{
+        RowLayout {{
+            anchors.fill: parent
+            anchors.margins: 8
+            Label {{
+                Layout.fillWidth: true
+                wrapMode: Text.Wrap
+                text: win.capturing
+                      ? "Capturing… leave this window open."
+                      : {json.dumps(spec["note"])}
+            }}
+            Button {{
+                text: win.capturing ? "Working…" : "Capture"
+                enabled: !win.capturing
+                highlighted: true
+                onClicked: {{ win.capturing = true; win.captureRequested() }}
+            }}
+        }}
+    }}
+
+    Surfaces.{Path(backend.surface_qml).stem} {{
+        objectName: "surface"
+        anchors.fill: parent
+    }}
+}}
+""", encoding="utf-8")
+
+    engine = QQmlApplicationEngine()
+    engine.load(QUrl.fromLocalFile(str(wrapper)))
+    wrapper.unlink(missing_ok=True)
+    if not engine.rootObjects():
+        print("the web surface failed to load — are you inside `nix develop`?")
+        return 1
+
+    # `window` must stay in a Python variable for the whole run. Chaining
+    # `engine.rootObjects()[0].findChild(...)` drops the last Python reference
+    # to the root object and shiboken deletes the C++ object underneath it; the
+    # surface then comes back as a dead wrapper.
+    window = engine.rootObjects()[0]
+    surface = window.findChild(QObject, "surface")
+    if surface is None:
+        print("could not find the web surface in the loaded QML")
+        return 1
+
+    transport = WebViewTransport()
+    transport.attach_surface(surface)
+
+    report: list[str] = []
+    started = time.monotonic()
+
+    def out(line: str = "") -> None:
+        print(line)
+        report.append(line)
+
+    def capture() -> None:
+        out("=" * 72)
+        out(f"TARGET: {args.target}")
+        out(f"values: {'SHOWN' if args.show_values else 'REDACTED (use --show-values to include)'}")
+        out("=" * 72)
+
+        current = transport.current_url
+        out(f"\ncurrent page: {current}")
+
+        # --- 1. What did this page fetch? --------------------------------
+        out("\n" + "-" * 72)
+        out("NETWORK TRACE — every URL this page requested")
+        out("-" * 72)
+        discovered: list[str] = []
+        try:
+            raw = transport.evaluate(
+                "JSON.stringify(performance.getEntriesByType('resource')"
+                ".map(function(e){return {n:e.name,t:e.initiatorType};}))"
+            )
+            entries = json.loads(str(raw)) if raw else []
+        except Exception as exc:  # noqa: BLE001
+            out(f"  (trace unavailable: {exc})")
+            entries = []
+
+        for entry in entries:
+            url = entry.get("n", "")
+            kind = entry.get("t", "")
+            if BORING.search(url):
+                continue
+            flag = ""
+            if kind in ("xmlhttprequest", "fetch") or INTERESTING.search(url):
+                flag = "  <<< DATA ENDPOINT"
+                if url not in discovered:
+                    discovered.append(url)
+            out(f"  [{kind}] {url}{flag}")
+
+        if not entries:
+            out("  (none — the page may have been served without client-side fetches)")
+
+        # --- 2. Probe -----------------------------------------------------
+        probes = list(spec["probes"]) + list(args.extra) + discovered
+        if not probes:
+            probes = [current]
+
+        seen: set[str] = set()
+        for url in probes:
+            if not url or url in seen:
+                continue
+            seen.add(url)
+
+            out("\n" + "-" * 72)
+            out(f"PROBE  {url}")
+            out("-" * 72)
+            try:
+                response = transport.get(url, timeout_s=45)
+            except MycuError as exc:
+                out(f"  FAILED: {type(exc).__name__}: {exc}")
+                continue
+
+            ctype = response.headers.get("content-type", "")
+            out(f"  final URL     {response.url}")
+            out(f"  status        {response.status}")
+            out(f"  content-type  {ctype or '(none)'}")
+            out(f"  size          {len(response.body):,} bytes")
+
+            CAPTURES.mkdir(parents=True, exist_ok=True)
+            stem = re.sub(r"[^A-Za-z0-9]+", "_", url)[:80].strip("_")
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            stripped = response.body.lstrip()
+            is_json = stripped[:1] in "{[" or "json" in ctype.lower()
+            path = CAPTURES / f"{args.target}-{stem}-{stamp}.{'json' if is_json else 'html'}"
+            path.write_text(response.body, encoding="utf-8")
+            out(f"  raw body      {path.relative_to(ROOT)}   (gitignored, full values)")
+
+            out("")
+            if is_json:
+                try:
+                    out("  JSON SHAPE:")
+                    out("    " + describe_json(
+                        json.loads(stripped), args.show_values
+                    ).replace("\n", "\n    "))
+                except json.JSONDecodeError as exc:
+                    out(f"  (claimed JSON but did not parse: {exc})")
+            else:
+                out("  HTML STRUCTURE:")
+                out("    " + describe_html(response.body, args.show_values).replace("\n", "\n    "))
+
+        out("\n" + "=" * 72)
+        out("done — close the window")
+
+    def on_capture() -> None:
+        def finish(_: object) -> None:
+            summary = CAPTURES / f"{args.target}-report-{time.strftime('%Y%m%d-%H%M%S')}.txt"
+            CAPTURES.mkdir(parents=True, exist_ok=True)
+            summary.write_text("\n".join(report), encoding="utf-8")
+            print(f"\nreport saved to {summary.relative_to(ROOT)}")
+            app.quit()
+
+        def failed(exc: object) -> None:
+            print(f"\ncapture failed: {type(exc).__name__}: {exc}")
+            app.quit()
+
+        run_in_background(capture, finish, failed)
+
+    window.captureRequested.connect(on_capture)
+
+    def deadline() -> None:
+        if time.monotonic() - started > args.timeout:
+            print(f"timed out after {args.timeout:.0f}s without a capture")
+            app.quit()
+
+    ticker = QTimer()
+    ticker.timeout.connect(deadline)
+    ticker.start(5000)
+
+    print(f"opening {spec['start']}")
+    print(spec["note"])
+    print("\nSign in if needed, get to the page you care about, then press Capture.\n")
+    surface.navigate(spec["start"])
+
+    return app.exec()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

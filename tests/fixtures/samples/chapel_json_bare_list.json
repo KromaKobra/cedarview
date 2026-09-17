@@ -1,0 +1,11 @@
+[
+  { "date": "2026-08-26", "status": "present", "title": "Opening Convocation" },
+  { "date": "2026-08-28", "status": "unexcused", "title": "Dr. A. Speaker" },
+  { "date": "2026-08-31", "status": "present", "title": "Student Testimony" },
+  { "date": "2026-09-02", "status": "excused", "title": "Guest Chapel" },
+  { "date": "2026-09-04", "status": "unexcused", "title": "Worship Chapel" },
+  { "date": "2026-09-09", "status": "present", "title": "Missions Emphasis" },
+  { "date": "2026-09-11", "status": "unexcused", "title": "Faculty Chapel" },
+  { "date": "2026-09-14", "status": "present", "title": "Dr. B. Speaker" },
+  { "date": "2026-09-16", "status": "Something Nobody Predicted", "title": "Unknown Status Chapel" }
+]

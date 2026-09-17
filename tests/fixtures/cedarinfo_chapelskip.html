@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<!--
+  SYNTHETIC FIXTURE — not from Cedarville. See tests/fixtures/README.md.
+
+  Stands in for a server-rendered Razor page on
+  https://selfservice.cedarville.edu/cedarinfo/chapelskip
+
+  Modelled on the Ellucian Design System 1.5.1 markup the host advertises:
+  a wrapper div, a summary paragraph stating the allowance, and one table with
+  <th> headers. The parser finds columns by header text, so the exact class
+  names and ordering here are not load-bearing — that is the point.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Chapel Attendance</title>
+</head>
+<body>
+<div class="esg-page">
+  <header class="esg-header">
+    <h1>Chapel Attendance</h1>
+  </header>
+
+  <section class="esg-card" id="chapel-summary">
+    <h2>Fall 2026</h2>
+    <p class="esg-text">
+      You are allowed 6 chapel skips this semester.
+      You have used 3 skips. You have 3 remaining.
+    </p>
+  </section>
+
+  <section class="esg-card">
+    <table class="esg-table" id="chapel-attendance">
+      <thead>
+        <tr>
+          <th scope="col">Date</th>
+          <th scope="col">Speaker</th>
+          <th scope="col">Status</th>
+          <th scope="col">Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>08/26/2026</td>
+          <td>Opening Convocation</td>
+          <td>Present</td>
+          <td></td>
+        </tr>
+        <tr>
+          <td>08/28/2026</td>
+          <td>Dr. A. Speaker</td>
+          <td>Absent</td>
+          <td></td>
+        </tr>
+        <tr>
+          <td>08/31/2026</td>
+          <td>Student Testimony</td>
+          <td>Present</td>
+          <td></td>
+        </tr>
+        <tr>
+          <td>09/02/2026</td>
+          <td>Guest Chapel</td>
+          <td>Excused</td>
+          <td>Approved absence</td>
+        </tr>
+        <tr>
+          <td>09/04/2026</td>
+          <td>Worship Chapel</td>
+          <td>Absent</td>
+          <td></td>
+        </tr>
+        <tr>
+          <td>09/09/2026</td>
+          <td>Missions Emphasis</td>
+          <td>Present</td>
+          <td></td>
+        </tr>
+        <tr>
+          <td>09/11/2026</td>
+          <td>Faculty Chapel</td>
+          <td>Absent</td>
+          <td></td>
+        </tr>
+        <tr>
+          <td>09/14/2026</td>
+          <td>Dr. B. Speaker</td>
+          <td>Present</td>
+          <td></td>
+        </tr>
+      </tbody>
+    </table>
+  </section>
+</div>
+</body>
+</html>
