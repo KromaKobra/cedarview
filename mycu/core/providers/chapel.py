@@ -1,37 +1,61 @@
-"""Chapel attendance — the first provider.
+"""Chapel skips — against the real API.
 
-    GET https://selfservice.cedarville.edu/CedarInfo/ChapelAttendance
-      -> 301/302 https://selfservice.cedarville.edu/cedarinfo/chapelskip
+**No longer a guess.** The earlier version of this module handled both JSON and
+HTML with tolerant key matching, because nobody had seen the page. Now we have:
+``scripts/discover chapel`` signed in, read the dashboard's own resource-timing
+log, and found three JSON endpoints that are nowhere in the served HTML.
 
-(Both hops verified live. Unauthenticated, the canonical path 302s to
-``login.microsoftonline.com/81c32413-.../saml2`` with
-``RelayState=%2Fcedarinfo%2Fchapelskip``.)
+.. rubric:: The endpoints
 
-.. rubric:: What is confirmed and what is not
+``/cedarinfo/chapelskip`` 302s to ``/CedarInfo/chapelskip/StudentDashboard``,
+a Vue 3 app which bootstraps itself with an inline ``const studentId = '…'``
+and then calls::
 
-**Confirmed:** the host, the path, the redirect, and that it is a SAML SP
-against Entra ID.
+    GET /CedarInfo/ChapelSkip/GetStudentSummaryJson?studentId=<id>
+    GET /CedarInfo/ChapelSkip/GetStudentLedgerJson?studentId=<id>
+    GET /CedarInfo/ChapelSkip/GetStudentFinesJson?studentId=<id>
 
-**Not confirmed:** whether ``/cedarinfo/chapelskip`` serves JSON or a
-server-rendered Razor page, and — if JSON — what its keys are called. That
-answer needs an authenticated session, which only you can produce
-(``docs/discovery.md``, milestone M0). ``/cedarinfo/`` is a Cedarville-custom
-module, so the JSON-heavy behaviour of Ellucian's stock ``/Student/`` areas is
-not evidence either way.
+All three need the Self-Service session, so they go through the WebView
+transport. They are plain GETs — the page's ``__RequestVerificationToken`` is
+for *removing* entries, not reading them, so no anti-forgery handling is needed
+on this path.
 
-This module therefore handles **both**, chosen at runtime by sniffing the
-response:
+Because the ID is a query parameter, the provider cannot skip straight to the
+JSON: it fetches the dashboard first and reads the bootstrap out of it. One
+extra request, once per refresh.
 
-* JSON -> :func:`parse_json`, with tolerant key matching over a list of
-  plausible spellings.
-* HTML -> :func:`parse_html`, which locates the attendance table by its header
-  text rather than by position or CSS class.
+.. rubric:: Summary payload (verified 2026-09-17)
 
-When M0 tells you which it is, delete the branch you do not need and replace the
-candidate-key lists with the real names. Everything marked ``# M0:`` is a guess
-awaiting that confirmation::
+.. code-block:: json
 
-    grep -rn 'M0:' mycu/
+    {"StudentId": "…", "StudentName": "…",
+     "Term": "2026FA", "TermName": "Fall Semester 2026",
+     "SkipsUsed": 2, "SkipsTotal": 18, "SkipsRemaining": 16,
+     "AllowanceBreakdown": [
+        {"Reason": "Skips Allowed",      "Count": 17, "Description": "Base semester allowance"},
+        {"Reason": "Manual Arrangement", "Count": 1,  "Description": "For manual arrangement reasons"}],
+     "RequirementReasons": ["Not a Distance Learner", "Registered for 15.5 credits (more than 6)",
+                            "Undergraduate Student"],
+     "IsRequiredToAttend": true, "IsInGoodStanding": true, "Status": "good"}
+
+.. rubric:: Ledger payload — a ledger, not an attendance register
+
+.. code-block:: json
+
+    [{"Count": 1,  "ChapelDate": "2026-08-20T10:00:00", "EntryType": "Chapel Skip",
+      "CreatedReason": "Absent from Chapel 8/20/2026", "CanRemove": false},
+     {"Count": -1, "ChapelDate": null,                  "EntryType": "Manual Adjustment",
+      "CreatedReason": "Had ID replaced", "CanRemove": true}]
+
+``ChapelDate`` is ``null`` for adjustments — they are not tied to a chapel.
+
+.. rubric:: The number you must not compute
+
+The ledger above sums to ``1``. The server reports ``SkipsUsed: 2``. Both are
+right on the server's own terms: the ``-1`` adjustment is *also* expressed as
+the ``+1`` "Manual Arrangement" line in ``AllowanceBreakdown`` (17 + 1 = 18
+total, 18 - 2 = 16 remaining). Recomputing from the ledger would show a
+different, wrong number. **Use the reported figures.**
 """
 
 from __future__ import annotations
@@ -39,106 +63,184 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import date, datetime
-from typing import Any, Iterable, Sequence
+from datetime import datetime
+from typing import Any
 
 from ..errors import ParseError
-from ..models import AttendanceStatus, ChapelRecord, ChapelSummary
-from ..transport import Response
+from ..models import AllowanceLine, ChapelLedgerEntry, ChapelSummary
+from ..transport import Response, Transport
 from .base import Provider
 
 log = logging.getLogger(__name__)
 
-#: Canonical path. The ``/CedarInfo/ChapelAttendance`` spelling redirects here,
-#: so we request the destination directly and save a round trip.
+#: The dashboard page. Requested only to read the student ID out of it.
 CHAPEL_PATH = "/cedarinfo/chapelskip"
 
-# --------------------------------------------------------------------------
-# Candidate field names.
-#
-# M0: every list below is a guess. Each is ordered most-likely-first and
-# matched case-insensitively with non-alphanumerics stripped, so "ChapelDate",
-# "chapel_date" and "Chapel Date" all collapse to the same key.
-# --------------------------------------------------------------------------
+SUMMARY_PATH = "/CedarInfo/ChapelSkip/GetStudentSummaryJson"
+LEDGER_PATH = "/CedarInfo/ChapelSkip/GetStudentLedgerJson"
+FINES_PATH = "/CedarInfo/ChapelSkip/GetStudentFinesJson"
 
-DATE_KEYS = ("date", "chapeldate", "eventdate", "attendancedate", "meetingdate", "day")
-STATUS_KEYS = ("status", "attendancestatus", "attendance", "code", "statuscode", "type")
-TITLE_KEYS = ("title", "speaker", "event", "description", "eventtitle", "topic")
-NOTE_KEYS = ("note", "notes", "comment", "comments", "reason", "excusereason")
-
-RECORD_LIST_KEYS = (
-    "records", "attendance", "attendancerecords", "chapelrecords",
-    "items", "data", "rows", "results", "events", "sessions", "list",
-)
-#: Note what is *absent* from these: bare "skips", bare "name", bare "date".
-#: They are too generic to survive the substring fallback in :func:`_pick` —
-#: "skips" matches "allowedSkips" and "skipsRemaining", and "name" matches
-#: "termName". A wrong-but-plausible number on the summary line is worse than no
-#: number, so the generic spellings are deliberately not searched for.
-ALLOWED_KEYS = ("skipsallowed", "allowedskips", "maxskips", "allotted", "allowance", "allowed")
-USED_KEYS = ("skipsused", "usedskips", "chapelskipsused", "unexcusedabsences", "absences", "used")
-REMAINING_KEYS = ("skipsremaining", "remainingskips", "remaining")
-TERM_KEYS = ("termname", "termdescription", "semester", "termid", "term")
-NAME_KEYS = ("studentname", "displayname", "fullname", "name")
-
-#: Header texts that identify each column of a server-rendered table. Matched
-#: as substrings of the normalised header cell.
-HTML_DATE_HEADERS = ("date", "day")
-HTML_STATUS_HEADERS = ("status", "attendance", "present", "absent", "code")
-HTML_TITLE_HEADERS = ("speaker", "title", "event", "topic", "description")
-HTML_NOTE_HEADERS = ("note", "comment", "reason")
-
-#: Date formats to try, in order. The first four cover essentially everything
-#: ASP.NET and Razor emit for a US institution.
-DATE_FORMATS = (
-    "%m/%d/%Y",
-    "%m/%d/%y",
-    "%Y-%m-%d",
-    "%b %d, %Y",
-    "%B %d, %Y",
-    "%d %b %Y",
-    "%m-%d-%Y",
-)
+#: How the Vue app hands itself the student ID. The real page's line reads
+#: ``            const studentId = '1234567'`` (ID shown scrubbed).
+STUDENT_ID_RE = re.compile(r"""\bstudentId\s*=\s*['"](\d+)['"]""")
 
 
-def _norm(text: str) -> str:
-    """Collapse a key or header to bare lowercase alphanumerics.
+class ChapelProvider(Provider[ChapelSummary]):
+    """Chapel skip balance and ledger for the signed-in student."""
 
-    ``"Chapel Date"``, ``"chapel_date"`` and ``"ChapelDate"`` all become
-    ``"chapeldate"``, which is what makes the candidate lists above tolerant of
-    whichever casing convention Cedarville happened to use.
+    path = CHAPEL_PATH
+    label = "Chapel"
+
+    def __init__(self, transport: Transport) -> None:
+        super().__init__(transport)
+        #: Cached between refreshes — it does not change for a given login, and
+        #: re-fetching a 59 KB page to re-read a constant would be wasteful.
+        self._student_id: str = ""
+
+    def fetch(self) -> ChapelSummary:
+        """Read the dashboard for the ID, then the three JSON endpoints.
+
+        Overridden rather than using the base single-request ``fetch`` because
+        this provider genuinely needs four requests.
+        """
+        student_id = self.student_id()
+
+        summary = self.transport.get(
+            f"{SUMMARY_PATH}?studentId={student_id}"
+        ).raise_for_session()
+        ledger = self.transport.get(
+            f"{LEDGER_PATH}?studentId={student_id}"
+        ).raise_for_session()
+
+        # Fines is the least important of the three and the most likely to be
+        # added, renamed or restricted later. A failure here must not cost you
+        # the skip count, which is the whole point of the screen.
+        fines_data: Any = []
+        try:
+            fines_data = self.transport.get(
+                f"{FINES_PATH}?studentId={student_id}"
+            ).raise_for_session().json()
+        except Exception as exc:  # noqa: BLE001
+            log.warning("chapel fines unavailable (continuing): %r", exc)
+
+        return build_summary(summary.json(), ledger.json(), fines_data)
+
+    def student_id(self) -> str:
+        """The signed-in student's ID, read from the dashboard's bootstrap."""
+        if not self._student_id:
+            page = self.transport.get(CHAPEL_PATH).raise_for_session()
+            self._student_id = extract_student_id(page.body)
+        return self._student_id
+
+    def parse(self, response: Response) -> ChapelSummary:
+        """Not used — :meth:`fetch` is overridden. Kept for the ABC."""
+        raise NotImplementedError("ChapelProvider composes several requests; use fetch()")
+
+
+def extract_student_id(html: str) -> str:
+    """Pull ``const studentId = '1234567'`` out of the dashboard page."""
+    match = STUDENT_ID_RE.search(html or "")
+    if not match:
+        raise ParseError(
+            "could not find the studentId bootstrap in the chapel dashboard. "
+            "The page is a Vue app that sets `const studentId = '…'` inline; if "
+            "that changed, recapture with `scripts/discover chapel`."
+        )
+    return match.group(1)
+
+
+def build_summary(summary: Any, ledger: Any, fines: Any = ()) -> ChapelSummary:
+    """Combine the three payloads into one :class:`ChapelSummary`."""
+    if not isinstance(summary, dict):
+        raise ParseError(
+            f"expected an object from {SUMMARY_PATH}, got {type(summary).__name__}"
+        )
+
+    return ChapelSummary(
+        # Reported, never computed. See this module's docstring.
+        used=_as_int(summary.get("SkipsUsed")),
+        total=_as_int(summary.get("SkipsTotal")),
+        remaining=_as_int(summary.get("SkipsRemaining")),
+        term=_text(summary.get("Term")),
+        term_name=_text(summary.get("TermName")),
+        student_name=_text(summary.get("StudentName")),
+        student_id=_text(summary.get("StudentId")),
+        allowance=_parse_allowance(summary.get("AllowanceBreakdown")),
+        requirement_reasons=tuple(
+            _text(r) for r in (summary.get("RequirementReasons") or []) if _text(r)
+        ),
+        is_required_to_attend=bool(summary.get("IsRequiredToAttend", True)),
+        is_in_good_standing=bool(summary.get("IsInGoodStanding", True)),
+        status=_text(summary.get("Status")),
+        entries=_parse_ledger(ledger),
+        fines=tuple(f for f in (fines or []) if isinstance(f, dict)),
+    )
+
+
+def _parse_allowance(raw: Any) -> tuple[AllowanceLine, ...]:
+    lines = []
+    for item in raw or []:
+        if not isinstance(item, dict):
+            continue
+        count = _as_int(item.get("Count"))
+        if count is None:
+            continue
+        lines.append(
+            AllowanceLine(
+                reason=_text(item.get("Reason")),
+                count=count,
+                description=_text(item.get("Description")),
+            )
+        )
+    return tuple(lines)
+
+
+def _parse_ledger(raw: Any) -> tuple[ChapelLedgerEntry, ...]:
+    """Parse the ledger, newest first.
+
+    Sorted on ``CreatedAt`` rather than ``ChapelDate``, because adjustments have
+    no chapel date at all and would otherwise have to be dropped or floated to
+    one end arbitrarily.
     """
-    return re.sub(r"[^a-z0-9]+", "", (text or "").lower())
+    if not isinstance(raw, list):
+        raise ParseError(f"expected a list from {LEDGER_PATH}, got {type(raw).__name__}")
+
+    entries = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        entries.append(
+            ChapelLedgerEntry(
+                on=_parse_dt(item.get("ChapelDate")),
+                count=_as_int(item.get("Count")) or 0,
+                entry_type=_text(item.get("EntryType")),
+                reason=_text(item.get("CreatedReason")),
+                created_at=_parse_dt(item.get("CreatedAt")),
+                can_remove=bool(item.get("CanRemove")),
+            )
+        )
+
+    entries.sort(key=lambda e: (e.created_at is None, e.created_at or datetime.min), reverse=True)
+    return tuple(entries)
 
 
-def _pick(mapping: dict[str, Any], candidates: Sequence[str], *, fuzzy: bool = True) -> Any:
-    """First value in ``mapping`` whose normalised key matches a candidate.
+def _parse_dt(value: Any) -> datetime | None:
+    """Parse ``2026-08-20T10:00:00`` / ``…:29.623``; ``None`` stays ``None``.
 
-    Exact normalised matches are always preferred, so a payload containing both
-    ``"date"`` and ``"dateCreated"`` resolves the way you want. Pass
-    ``fuzzy=False`` to disable the substring fallback entirely — which is what
-    :func:`_find_scalar` does on its first pass over a nested payload, so that a
-    precise match deep in the tree beats a sloppy match near the top.
+    These come back without a zone. They are local Cedarville times and are
+    treated as naive rather than being given a zone we would only be guessing
+    at — nothing here does arithmetic across zones.
     """
-    normalised = {_norm(k): v for k, v in mapping.items()}
-
-    for candidate in candidates:
-        if candidate in normalised and normalised[candidate] not in (None, ""):
-            return normalised[candidate]
-
-    if not fuzzy:
+    if not value:
         return None
-
-    for candidate in candidates:
-        for key, value in normalised.items():
-            if candidate in key and value not in (None, ""):
-                return value
-
-    return None
+    try:
+        return datetime.fromisoformat(str(value))
+    except ValueError:
+        log.debug("chapel: unparseable timestamp %r", value)
+        return None
 
 
 def _as_int(value: Any) -> int | None:
-    """Coerce ``6``, ``"6"``, ``"6 skips"`` or ``"6.0"`` to ``6``; else ``None``."""
     if value is None or isinstance(value, bool):
         return None
     if isinstance(value, (int, float)):
@@ -147,335 +249,17 @@ def _as_int(value: Any) -> int | None:
     return int(match.group()) if match else None
 
 
-def parse_date(raw: Any) -> date | None:
-    """Parse a date from whatever the payload happened to contain.
-
-    Handles the three shapes that actually turn up in ASP.NET output:
-
-    * ISO 8601 with or without a time component (``2026-09-16T00:00:00``);
-    * US-style display strings (``9/16/2026``, ``Sep 16, 2026``);
-    * the legacy Microsoft JSON epoch (``"/Date(1758000000000)/"``).
-
-    Returns ``None`` rather than raising — an unparseable date degrades one row
-    to showing its original text, which is better than losing the whole page.
-    """
-    if raw is None:
-        return None
-    if isinstance(raw, date) and not isinstance(raw, datetime):
-        return raw
-    if isinstance(raw, datetime):
-        return raw.date()
-
-    text = str(raw).strip()
-    if not text:
-        return None
-
-    epoch = re.fullmatch(r"/Date\((-?\d+)(?:[+-]\d{4})?\)/", text)
-    if epoch:
-        return datetime.fromtimestamp(int(epoch.group(1)) / 1000).date()
-
-    try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00")).date()
-    except ValueError:
-        pass
-
-    for fmt in DATE_FORMATS:
-        try:
-            return datetime.strptime(text, fmt).date()
-        except ValueError:
-            continue
-
-    # Last resort: a date embedded in a longer string ("Tue 9/16/2026").
-    embedded = re.search(r"\d{1,4}[/-]\d{1,2}[/-]\d{2,4}", text)
-    if embedded:
-        return parse_date(embedded.group())
-
-    log.debug("unparseable date %r", text)
-    return None
-
-
-# --------------------------------------------------------------------------
-# JSON branch
-# --------------------------------------------------------------------------
-
-def _find_record_list(data: Any) -> list[dict[str, Any]]:
-    """Locate the list of per-session records inside an arbitrary JSON payload.
-
-    Tried in order:
-
-    1. The payload *is* a list of objects.
-    2. A top-level key from :data:`RECORD_LIST_KEYS` holds one.
-    3. Any nested list of objects that looks like attendance rows — i.e. whose
-       first element has both a date-ish and a status-ish key.
-
-    Step 3 exists because ASP.NET habitually wraps payloads
-    (``{"d": {"Model": {"Records": [...]}}}``) and hunting for the wrapper by
-    hand is not worth it when the row shape is this recognisable.
-    """
-    if isinstance(data, list) and all(isinstance(x, dict) for x in data):
-        return data
-
-    if isinstance(data, dict):
-        for key in RECORD_LIST_KEYS:
-            for actual, value in data.items():
-                if _norm(actual) == key and isinstance(value, list):
-                    if all(isinstance(x, dict) for x in value):
-                        return value
-
-        best: list[dict[str, Any]] = []
-        for value in _walk(data):
-            if isinstance(value, list) and value and all(isinstance(x, dict) for x in value):
-                head = value[0]
-                if _pick(head, DATE_KEYS) is not None and _pick(head, STATUS_KEYS) is not None:
-                    if len(value) > len(best):
-                        best = value
-        if best:
-            log.info("chapel: found %d records in a nested list", len(best))
-            return best
-
-    return []
-
-
-def _walk(node: Any) -> Iterable[Any]:
-    """Yield every value in a nested JSON structure, depth first."""
-    yield node
-    if isinstance(node, dict):
-        for value in node.values():
-            yield from _walk(value)
-    elif isinstance(node, list):
-        for value in node:
-            yield from _walk(value)
-
-
-def _find_scalar(data: Any, candidates: Sequence[str]) -> Any:
-    """Search the whole payload for a scalar under one of ``candidates``.
-
-    Two passes over the tree: exact key matches first, everywhere, and only then
-    substring matches. Without that ordering an approximate hit in a shallow
-    wrapper object would beat the exact hit that is one level deeper — which for
-    a payload like ``{"model": {"student": {"displayName": …}}}`` is the
-    difference between reading the student's name and reading the term's.
-    """
-    for fuzzy in (False, True):
-        for node in _walk(data):
-            if isinstance(node, dict):
-                value = _pick(node, candidates, fuzzy=fuzzy)
-                if value is not None and not isinstance(value, (dict, list)):
-                    return value
-    return None
-
-
-def parse_json(data: Any) -> ChapelSummary:
-    """Build a :class:`ChapelSummary` from a decoded JSON payload."""
-    rows = _find_record_list(data)
-
-    records = []
-    for row in rows:
-        raw_date = _pick(row, DATE_KEYS)
-        records.append(
-            ChapelRecord(
-                on=parse_date(raw_date),
-                status=AttendanceStatus.parse(_stringify(_pick(row, STATUS_KEYS))),
-                raw_date="" if raw_date is None else str(raw_date),
-                title=_stringify(_pick(row, TITLE_KEYS)) or "",
-                note=_stringify(_pick(row, NOTE_KEYS)) or "",
-            )
-        )
-
-    allowed = _as_int(_find_scalar(data, ALLOWED_KEYS))
-    used = _as_int(_find_scalar(data, USED_KEYS))
-    remaining = _as_int(_find_scalar(data, REMAINING_KEYS))
-
-    # Prefer Cedarville's own arithmetic over ours: if it reports two of the
-    # three numbers, derive the third rather than recounting rows.
-    if used is None and allowed is not None and remaining is not None:
-        used = allowed - remaining
-    if used is None:
-        used = sum(1 for r in records if r.counts_as_skip)
-
-    return ChapelSummary(
-        records=tuple(records),
-        allowed=allowed,
-        used=used,
-        term=_stringify(_find_scalar(data, TERM_KEYS)) or "",
-        student_name=_stringify(_find_scalar(data, NAME_KEYS)) or "",
-    )
-
-
-def _stringify(value: Any) -> str:
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        return value.strip()
-    return str(value)
-
-
-# --------------------------------------------------------------------------
-# HTML branch
-# --------------------------------------------------------------------------
-
-def parse_html(body: str) -> ChapelSummary:
-    """Build a :class:`ChapelSummary` from a server-rendered page.
-
-    Columns are found by reading the ``<th>`` text, never by index, so a column
-    inserted upstream does not silently shift every field by one. If no table
-    with a recognisable date column exists, this raises :class:`ParseError` —
-    which is the correct outcome, because silently returning zero records would
-    read as "you have no absences".
-    """
-    try:
-        from lxml import html as lxml_html
-    except ImportError as exc:  # pragma: no cover - dependency is in the flake
-        raise ParseError(
-            "lxml is required to parse the HTML form of the chapel page; "
-            "it is in flake.nix's pythonEnv"
-        ) from exc
-
-    tree = lxml_html.fromstring(body)
-
-    for table in tree.xpath("//table"):
-        columns = _header_columns(table)
-        if "date" not in columns:
-            continue
-
-        records = []
-        for row in table.xpath(".//tbody/tr | .//tr[not(th)]"):
-            cells = [_text(c) for c in row.xpath("./td")]
-            if not cells:
-                continue
-
-            raw_date = _cell(cells, columns.get("date"))
-            status_text = _cell(cells, columns.get("status"))
-            records.append(
-                ChapelRecord(
-                    on=parse_date(raw_date),
-                    status=AttendanceStatus.parse(status_text),
-                    raw_date=raw_date,
-                    title=_cell(cells, columns.get("title")),
-                    note=_cell(cells, columns.get("note")),
-                )
-            )
-
-        if records:
-            page_text = _text(tree)
-            return ChapelSummary(
-                records=tuple(records),
-                allowed=_scan_number(page_text, ("allowed", "allotted", "allowance", "permitted")),
-                used=(
-                    _scan_number(page_text, ("used", "taken", "recorded"))
-                    or sum(1 for r in records if r.counts_as_skip)
-                ),
-                term=_scan_term(page_text),
-                student_name="",  # M0: only fill this in if the page shows it.
-            )
-
-    raise ParseError(
-        "no chapel attendance table found in the HTML response — the page "
-        "layout has probably changed; recapture it per docs/discovery.md"
-    )
-
-
-def _header_columns(table: Any) -> dict[str, int]:
-    """Map our column roles to indices, using the table's header text."""
-    headers = [_norm(_text(th)) for th in table.xpath(".//th")]
-    if not headers:
-        first = table.xpath(".//tr[1]/td")
-        headers = [_norm(_text(td)) for td in first]
-
-    roles = {
-        "date": HTML_DATE_HEADERS,
-        "status": HTML_STATUS_HEADERS,
-        "title": HTML_TITLE_HEADERS,
-        "note": HTML_NOTE_HEADERS,
-    }
-
-    found: dict[str, int] = {}
-    for role, needles in roles.items():
-        for index, header in enumerate(headers):
-            if any(needle in header for needle in needles) and index not in found.values():
-                found[role] = index
-                break
-    return found
-
-
-def _text(node: Any) -> str:
-    """Visible text of an element, whitespace collapsed."""
-    return re.sub(r"\s+", " ", node.text_content()).strip()
-
-
-def _cell(cells: list[str], index: int | None) -> str:
-    if index is None or index >= len(cells):
-        return ""
-    return cells[index]
-
-
-def _scan_number(text: str, needles: Sequence[str]) -> int | None:
-    """Find "you have used 3 of 6" style numbers near a keyword.
-
-    Looks *after* the keyword first and only then before it, and when looking
-    before takes the nearest number rather than the first. Direction matters a
-    great deal here: in
-
-        "You are allowed 6 chapel skips this semester. You have used 3 skips."
-
-    a symmetric window around "used" contains the 6 from the previous sentence
-    before it contains the 3 — and reporting "6 of 6 skips used" to someone who
-    has used 3 is exactly the kind of wrong that would matter.
-    """
-    for needle in needles:
-        for match in re.finditer(rf"\b{re.escape(needle)}\b", text, re.I):
-            after = re.search(r"\b(\d{1,3})\b", text[match.end(): match.end() + 40])
-            if after:
-                return int(after.group(1))
-
-            before = re.findall(r"\b(\d{1,3})\b", text[max(0, match.start() - 40): match.start()])
-            if before:
-                return int(before[-1])
-    return None
-
-
-def _scan_term(text: str) -> str:
-    """Pull a term label like "Fall 2026" out of the page text."""
-    match = re.search(r"\b(Fall|Spring|Summer|Winter)\s+(\d{4})\b", text, re.I)
-    return f"{match.group(1).title()} {match.group(2)}" if match else ""
-
-
-# --------------------------------------------------------------------------
-# The provider
-# --------------------------------------------------------------------------
-
-class ChapelProvider(Provider[ChapelSummary]):
-    """Chapel attendance for the logged-in student."""
-
-    path = CHAPEL_PATH
-    label = "Chapel"
-
-    def parse(self, response: Response) -> ChapelSummary:
-        return parse_body(response.body, content_type=response.headers.get("content-type", ""))
+def _text(value: Any) -> str:
+    return "" if value is None else " ".join(str(value).split())
 
 
 def parse_body(body: str, *, content_type: str = "") -> ChapelSummary:
-    """Dispatch to the JSON or HTML parser by sniffing the payload.
+    """Back-compat shim for ``scripts/check-live``.
 
-    The ``Content-Type`` header is used when present but is not trusted alone —
-    the in-page ``fetch()`` transport does not always surface headers, and
-    ASP.NET has been known to serve JSON as ``text/html``. So the body itself
-    gets the final say: if it parses as JSON, it is JSON.
+    Accepts a summary payload on its own and reports what it can, so the live
+    canary keeps working without needing all three requests.
     """
-    stripped = (body or "").lstrip()
-    if not stripped:
-        raise ParseError("empty response body for the chapel page")
-
-    looks_json = stripped[0] in "{[" or "json" in content_type.lower()
-    if looks_json:
-        try:
-            return parse_json(json.loads(stripped))
-        except json.JSONDecodeError:
-            if "json" in content_type.lower():
-                raise ParseError(
-                    f"Content-Type claimed JSON but the body did not parse: "
-                    f"{stripped[:200]!r}"
-                ) from None
-            # Fall through: a body starting with '{' can still be a page.
-
-    return parse_html(body)
+    try:
+        return build_summary(json.loads(body), [])
+    except json.JSONDecodeError as exc:
+        raise ParseError(f"chapel summary was not JSON: {body[:200]!r}") from exc

@@ -63,18 +63,19 @@ TARGETS = {
         "probes": ["https://selfservice.cedarville.edu/cedarinfo/chapelskip"],
         "note": "Sign in with your Cedarville account (Microsoft page).",
     },
-    "transact": {
-        "start": "https://selfservice.cedarville.edu/cedarinfo",
-        "probes": [],   # discovered from the resource trace after login
-        "note": "Transact cardholder site — flex dollars and meal plan.\n"
-                "After signing in, NAVIGATE TO THE BALANCE PAGE before pressing "
-                "Capture, so the trace sees the right requests.",
+    "meals": {
+        "start": "https://selfservice.cedarville.edu/Cedarinfo/Meals",
+        "probes": ["https://selfservice.cedarville.edu/Cedarinfo/Meals"],
+        "note": "Meal plan — flex dollars and meals left. Same Cedarville\n"
+                "sign-in as chapel, so you may already be signed in.\n"
+                "Wait for the numbers to appear, then press Capture.",
     },
     "papercut": {
         "start": "https://printing.cedarville.edu/user",
-        "probes": [],
-        "note": "PaperCut — print quota. After signing in, make sure the\n"
-                "summary page showing your balance is open before capturing.",
+        "probes": ["https://printing.cedarville.edu/app?service=page/UserSummary"],
+        "note": "PaperCut — print quota. SEPARATE login (not your Microsoft\n"
+                "account). Open the summary page showing your balance, then\n"
+                "press Capture.",
     },
     "chapel-schedule": {
         "start": "https://www.cedarville.edu/chapel",
@@ -361,9 +362,12 @@ ApplicationWindow {{
             out("  (none — the page may have been served without client-side fetches)")
 
         # --- 2. Probe -----------------------------------------------------
-        probes = list(spec["probes"]) + list(args.extra) + discovered
-        if not probes:
-            probes = [current]
+        # The current page ALWAYS goes first. It got skipped whenever the trace
+        # found anything at all, which is exactly backwards: a server-rendered
+        # page has the data in its own HTML and often traces nothing but a chart
+        # image. That gap lost both the Meals page and the PaperCut balance on
+        # the first run.
+        probes = [current] + list(spec["probes"]) + list(args.extra) + discovered
 
         seen: set[str] = set()
         for url in probes:

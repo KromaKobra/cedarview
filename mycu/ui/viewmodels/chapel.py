@@ -18,7 +18,7 @@ from PySide6.QtCore import (
 )
 
 from ...core.errors import ParseError, SessionExpired, TransportError
-from ...core.models import ChapelRecord, ChapelSummary, UpcomingChapel
+from ...core.models import ChapelLedgerEntry, ChapelSummary, UpcomingChapel
 from ...core.providers.chapel import ChapelProvider
 from ...core.providers.chapel_schedule import ChapelScheduleProvider, next_chapel
 from ...core.session import SessionStore
@@ -28,63 +28,60 @@ log = logging.getLogger(__name__)
 
 
 class ChapelListModel(QAbstractListModel):
-    """Exposes :class:`ChapelRecord` rows to a QML ``ListView``.
+    """Exposes the chapel-skip ledger to a QML ``ListView``.
 
-    Roles are named so QML reads ``model.dateText``, ``model.status`` and so on.
-    ``dateText`` is pre-formatted here rather than in QML because the fallback
-    (show the original string when the date would not parse) is a data decision,
-    not a presentation one.
+    Rows are *balance movements*, not attendance. ``whenText`` is pre-formatted
+    here because the fallback — show the reason when there is no chapel date,
+    which is the normal case for manual adjustments — is a data decision, not a
+    presentation one.
     """
 
-    DateRole = Qt.ItemDataRole.UserRole + 1
-    StatusRole = Qt.ItemDataRole.UserRole + 2
-    TitleRole = Qt.ItemDataRole.UserRole + 3
-    NoteRole = Qt.ItemDataRole.UserRole + 4
+    WhenRole = Qt.ItemDataRole.UserRole + 1
+    ReasonRole = Qt.ItemDataRole.UserRole + 2
+    TypeRole = Qt.ItemDataRole.UserRole + 3
+    CountRole = Qt.ItemDataRole.UserRole + 4
     SkipRole = Qt.ItemDataRole.UserRole + 5
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._records: list[ChapelRecord] = []
+        self._entries: list[ChapelLedgerEntry] = []
 
     def roleNames(self) -> dict[int, QByteArray]:
         return {
-            self.DateRole: QByteArray(b"dateText"),
-            self.StatusRole: QByteArray(b"status"),
-            self.TitleRole: QByteArray(b"title"),
-            self.NoteRole: QByteArray(b"note"),
-            self.SkipRole: QByteArray(b"countsAsSkip"),
+            self.WhenRole: QByteArray(b"whenText"),
+            self.ReasonRole: QByteArray(b"reason"),
+            self.TypeRole: QByteArray(b"entryType"),
+            self.CountRole: QByteArray(b"count"),
+            self.SkipRole: QByteArray(b"isSkip"),
         }
 
     def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
-        return 0 if parent.isValid() else len(self._records)
+        return 0 if parent.isValid() else len(self._entries)
 
     def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
-        if not index.isValid() or not 0 <= index.row() < len(self._records):
+        if not index.isValid() or not 0 <= index.row() < len(self._entries):
             return None
 
-        record = self._records[index.row()]
-        if role == self.DateRole:
-            if record.on is not None:
-                # Built by hand rather than with "%-d": the no-pad flag is a
-                # glibc extension and Android's bionic libc does not have it.
-                return (
-                    f"{record.on.strftime('%a %b')} "
-                    f"{record.on.day}, {record.on.year}"
-                )
-            return record.raw_date or "—"
-        if role == self.StatusRole:
-            return record.status.value
-        if role == self.TitleRole:
-            return record.title
-        if role == self.NoteRole:
-            return record.note
+        entry = self._entries[index.row()]
+        if role == self.WhenRole:
+            return entry.when
+        if role == self.ReasonRole:
+            # Suppress the reason when `when` is already showing it, which
+            # happens for every undated adjustment.
+            return "" if entry.when == entry.reason else entry.reason
+        if role == self.TypeRole:
+            return entry.entry_type
+        if role == self.CountRole:
+            # Signed, and rendered as "+1"/"-1" by the delegate: a manual
+            # adjustment giving a skip back should not look like another skip.
+            return entry.count
         if role == self.SkipRole:
-            return record.counts_as_skip
+            return entry.is_skip
         return None
 
-    def replace(self, records: "list[ChapelRecord] | tuple[ChapelRecord, ...]") -> None:
+    def replace(self, entries: "list[ChapelLedgerEntry] | tuple[ChapelLedgerEntry, ...]") -> None:
         self.beginResetModel()
-        self._records = list(records)
+        self._entries = list(entries)
         self.endResetModel()
 
 
@@ -146,30 +143,48 @@ class ChapelViewModel(QObject):
 
     @Property(str, notify=changed)
     def term(self) -> str:
-        return self._summary.term or self._state.last_term
+        return self._summary.label or self._state.last_term
 
     @Property(str, notify=changed)
     def studentName(self) -> str:
         return self._summary.student_name
 
+    # `used`, `allowed` and `remaining` are Cedarville's own figures, passed
+    # through untouched. -1 is the "not known" sentinel: QML has no null int,
+    # and 0 would render as "0 of 0 skips" — a confident lie.
+
     @Property(int, notify=changed)
     def used(self) -> int:
-        return self._summary.used if self._summary.used is not None else 0
+        return self._summary.used if self._summary.used is not None else -1
 
     @Property(int, notify=changed)
     def allowed(self) -> int:
-        """Allowed skips, or ``-1`` when the page did not tell us.
-
-        ``-1`` rather than ``0`` because QML has no null int, and zero would
-        render as "0 skips allowed" — a confident lie. The QML checks for the
-        sentinel and shows the count without a denominator instead.
-        """
-        return self._summary.allowed if self._summary.allowed is not None else -1
+        return self._summary.total if self._summary.total is not None else -1
 
     @Property(int, notify=changed)
     def remaining(self) -> int:
-        remaining = self._summary.remaining
-        return remaining if remaining is not None else -1
+        return self._summary.remaining if self._summary.remaining is not None else -1
+
+    @Property(str, notify=changed)
+    def allowanceText(self) -> str:
+        """How the total is made up — "17 base + 1 manual arrangement".
+
+        Worth surfacing: it is the only place the app can explain why the total
+        is 18 rather than the 17 everyone expects.
+        """
+        if len(self._summary.allowance) < 2:
+            return ""
+        return " + ".join(
+            f"{line.count} {line.reason.lower()}" for line in self._summary.allowance
+        )
+
+    @Property(bool, notify=changed)
+    def inGoodStanding(self) -> bool:
+        return self._summary.is_in_good_standing
+
+    @Property(bool, notify=changed)
+    def requiredToAttend(self) -> bool:
+        return self._summary.is_required_to_attend
 
     # ------------------------------------------------------------------
     # Actions
@@ -253,17 +268,17 @@ class ChapelViewModel(QObject):
     def _on_loaded(self, summary: object) -> None:
         assert isinstance(summary, ChapelSummary)
         self._summary = summary
-        self._model.replace(summary.records)
+        self._model.replace(summary.entries)
         self._busy = False
         self._loaded = True
         self._error = ""
 
-        self._state.last_term = summary.term or self._state.last_term
+        self._state.last_term = summary.label or self._state.last_term
         self._store.mark_success(self._state)
 
         log.info(
-            "chapel: %d records, used=%s allowed=%s",
-            len(summary.records), summary.used, summary.allowed,
+            "chapel: %d ledger entries, used=%s of %s, remaining=%s",
+            len(summary.entries), summary.used, summary.total, summary.remaining,
         )
         self.changed.emit()
 

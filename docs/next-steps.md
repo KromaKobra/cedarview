@@ -8,7 +8,7 @@ What is done, what is not, and exactly what only you can do.
 
 Verified by running it, not by reading it:
 
-- **188 tests pass** (`pytest`) — parsing, transport protocol, expiry detection,
+- **190 tests pass** (`pytest`) — parsing, transport protocol, expiry detection,
   session persistence, the login state machine, viewmodels, the QML contract.
   No test can open a socket; `conftest.py` blocks it.
 - **The app runs.** `python -m mycu --demo` loads the QML, populates the list

@@ -20,128 +20,91 @@ from datetime import date, datetime
 from enum import Enum
 
 
-class AttendanceStatus(str, Enum):
-    """How a single chapel session was recorded.
+@dataclass(frozen=True, slots=True)
+class AllowanceLine:
+    """One component of the skip allowance.
 
-    ``str`` mixin so QML sees a plain string and ``json.dumps`` works without a
-    custom encoder.
-
-    The set of values Cedarville actually uses is unconfirmed; :meth:`parse`
-    maps anything unrecognised to :attr:`UNKNOWN` rather than raising, so an
-    unexpected status shows up in the UI as "unknown" instead of taking the
-    whole screen down.
+    Real example: a base allowance of 17 plus a "Manual Arrangement" of 1,
+    summing to the reported total of 18.
     """
 
-    PRESENT = "present"
-    ABSENT = "absent"
-    EXCUSED = "excused"
-    EXEMPT = "exempt"
-    UNKNOWN = "unknown"
-
-    @classmethod
-    def parse(cls, raw: str | None) -> "AttendanceStatus":
-        """Best-effort map from an upstream string to a status.
-
-        Case- and whitespace-insensitive, and tolerant of the common phrasings
-        ("Excused Absence", "A", "Unexcused"). Extend the table once M0 shows
-        what is really sent.
-        """
-        if raw is None:
-            return cls.UNKNOWN
-
-        text = raw.strip().lower()
-        if not text:
-            return cls.UNKNOWN
-
-        # M0: replace this table with the exact vocabulary from the real page.
-        table = {
-            "p": cls.PRESENT,
-            "present": cls.PRESENT,
-            "attended": cls.PRESENT,
-            "a": cls.ABSENT,
-            "absent": cls.ABSENT,
-            "unexcused": cls.ABSENT,
-            "unexcused absence": cls.ABSENT,
-            "skip": cls.ABSENT,
-            "e": cls.EXCUSED,
-            "excused": cls.EXCUSED,
-            "excused absence": cls.EXCUSED,
-            "x": cls.EXEMPT,
-            "exempt": cls.EXEMPT,
-        }
-        return table.get(text, cls.UNKNOWN)
+    reason: str
+    count: int
+    description: str = ""
 
 
 @dataclass(frozen=True, slots=True)
-class ChapelRecord:
-    """One chapel session as it appears on a student's record.
+class ChapelLedgerEntry:
+    """One line of the chapel-skip ledger.
 
-    ``on`` is optional because a server-rendered table may carry a date string
-    we cannot confidently parse; in that case :attr:`raw_date` keeps the
-    original text so the UI can still show something truthful.
+    This is a **ledger, not an attendance register** — a distinction that
+    matters. Entries are not "you were absent on this date"; they are movements
+    against the skip balance:
+
+    * ``EntryType: "Chapel Skip"``, ``Count: 1`` — an absence was recorded.
+    * ``EntryType: "Manual Adjustment"``, ``Count: -1`` — a skip was given back
+      (in the captured data: "Had ID replaced").
+
+    So ``on`` is genuinely ``None`` for adjustments: they are not tied to a
+    chapel. :attr:`when` exists so the UI always has something true to show.
     """
 
-    on: date | None
-    status: AttendanceStatus
-    raw_date: str = ""
-    title: str = ""
-    note: str = ""
+    on: datetime | None
+    count: int
+    entry_type: str = ""
+    reason: str = ""
+    created_at: datetime | None = None
+    can_remove: bool = False
 
     @property
-    def counts_as_skip(self) -> bool:
-        """Whether this session counts against the allowance.
+    def is_skip(self) -> bool:
+        return self.count > 0
 
-        Only unexcused absences do. Excused and exempt sessions do not, and
-        ``UNKNOWN`` deliberately does not — guessing high would make the app lie
-        in the scary direction.
-        """
-        return self.status is AttendanceStatus.ABSENT
+    @property
+    def when(self) -> str:
+        """A date to show, falling back to the reason for undated adjustments."""
+        if self.on is not None:
+            return f"{self.on.strftime('%a %b')} {self.on.day}, {self.on.year}"
+        return self.reason or self.entry_type or "—"
 
 
 @dataclass(frozen=True, slots=True)
 class ChapelSummary:
-    """Everything the chapel screen needs, in one object.
+    """Everything the chapel screen needs.
 
-    ``allowed`` and ``used`` are reported by Cedarville when available rather
-    than computed, because the official number is the one that matters — the
-    school's arithmetic wins over ours. :meth:`derived` builds a summary from
-    records alone for the case where the page does not state the totals.
+    .. important::
+       ``used``, ``total`` and ``remaining`` are **reported by Cedarville and
+       never computed here.** That is not a stylistic preference — deriving them
+       gives the wrong answer. In the captured data the server reports
+       ``SkipsUsed: 2`` while the ledger's counts sum to ``1``, because the
+       ``-1`` manual adjustment is *also* represented as a ``+1`` line in the
+       allowance breakdown (17 base + 1 arrangement = 18 total; 18 - 2 = 16
+       remaining). Both halves are consistent on the server's terms and
+       inconsistent on ours. The school's arithmetic is the one that counts.
     """
 
-    records: tuple[ChapelRecord, ...] = ()
-    allowed: int | None = None
     used: int | None = None
+    total: int | None = None
+    remaining: int | None = None
+
     term: str = ""
+    term_name: str = ""
     student_name: str = ""
+    student_id: str = ""
+
+    allowance: tuple[AllowanceLine, ...] = ()
+    requirement_reasons: tuple[str, ...] = ()
+    is_required_to_attend: bool = True
+    is_in_good_standing: bool = True
+    status: str = ""
+
+    entries: tuple[ChapelLedgerEntry, ...] = ()
+    fines: tuple[dict, ...] = ()
 
     @property
-    def remaining(self) -> int | None:
-        """Skips left, or ``None`` if we do not have both halves of the sum."""
-        if self.allowed is None or self.used is None:
-            return None
-        return self.allowed - self.used
-
-    @classmethod
-    def derived(
-        cls,
-        records: "list[ChapelRecord] | tuple[ChapelRecord, ...]",
-        *,
-        allowed: int | None = None,
-        term: str = "",
-        student_name: str = "",
-    ) -> "ChapelSummary":
-        """Build a summary counting skips ourselves.
-
-        Used when the page lists sessions but does not print a total.
-        """
-        records = tuple(records)
-        return cls(
-            records=records,
-            allowed=allowed,
-            used=sum(1 for r in records if r.counts_as_skip),
-            term=term,
-            student_name=student_name,
-        )
+    def label(self) -> str:
+        """The nicer of the two term spellings — "Fall Semester 2026" over "2026FA"."""
+        return self.term_name or self.term
 
 
 @dataclass(slots=True)

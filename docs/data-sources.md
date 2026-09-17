@@ -11,10 +11,10 @@ important fact for planning, and it is why the transport now routes by origin.
 |---|---|---|---|---|
 | 2 | Home Cooking, every meal | `diningdata.cedarville.edu` | **none** | ✅ **done, live** |
 | 4 | Next chapel speaker | `mediaserve.cedarville.edu` | **none** | ✅ **done, live** |
-| 3 | Chapel skips remaining | `selfservice.cedarville.edu` | SAML / Entra | ⚠️ written, parser unverified |
-| 1 | Flex dollar balance | `cedarville.campuscardcenter.com` (Transact) | separate username+password | ❌ blocked — needs you |
-| 6 | Meals left this week | same as #1, probably | same | ❌ blocked — needs you |
-| 5 | Print quota balance | `printing.cedarville.edu` (PaperCut) | separate username+password | ❌ blocked — needs you |
+| 3 | Chapel skips remaining | `selfservice.cedarville.edu` | SAML / Entra | ✅ **done, real API** |
+| 1 | Flex dollar balance | `selfservice.cedarville.edu/Cedarinfo/Meals` | same Cedarville sign-in | ⏳ one more capture |
+| 6 | Meals left this week | same page as #1 | same | ⏳ one more capture |
+| 5 | Print quota balance | `printing.cedarville.edu` (PaperCut) | **separate** login | ⏸️ deferred by choice |
 
 ---
 
@@ -57,63 +57,104 @@ The provider never sends `refresh=1` — the site uses it hourly to force an
 upstream refetch from Pioneer College Caterers (`my.pcconline.com`), and a
 personal app has no business making someone else's server work harder.
 
-## ⚠️ 3. Chapel skips remaining — written, unverified
+## ✅ 3. Chapel skips — DONE, against the real API
 
-Unchanged from before: the redirect chain is verified, the parser is not.
-`/cedarinfo/chapelskip` may serve JSON or Razor HTML and the app handles both.
-See `docs/discovery.md` — this is still the blocking task for chapel.
+`/cedarinfo/chapelskip` 302s to `/CedarInfo/chapelskip/StudentDashboard`, which
+is a **Vue 3 app**. The data is in three JSON endpoints that appear nowhere in
+the served HTML:
+
+```
+GET /CedarInfo/ChapelSkip/GetStudentSummaryJson?studentId=<id>
+GET /CedarInfo/ChapelSkip/GetStudentLedgerJson?studentId=<id>
+GET /CedarInfo/ChapelSkip/GetStudentFinesJson?studentId=<id>
+```
+
+The `<id>` comes from an inline `const studentId = '…'` the page uses to
+bootstrap itself, so the provider fetches the dashboard once per session and
+reads it out. Plain GETs — the page's `__RequestVerificationToken` is for
+*removing* entries, not reading them.
+
+```json
+{"Term": "2026FA", "TermName": "Fall Semester 2026",
+ "SkipsUsed": 2, "SkipsTotal": 18, "SkipsRemaining": 16,
+ "AllowanceBreakdown": [{"Reason": "Skips Allowed", "Count": 17, "Description": "Base semester allowance"},
+                        {"Reason": "Manual Arrangement", "Count": 1, "Description": "For manual arrangement reasons"}],
+ "RequirementReasons": ["Not a Distance Learner", "Registered for 15.5 credits (more than 6)", "Undergraduate Student"],
+ "IsRequiredToAttend": true, "IsInGoodStanding": true, "Status": "good"}
+```
+
+### The thing that would have been got wrong
+
+The ledger is **a ledger, not an attendance register**:
+
+```json
+[{"Count": 1,  "ChapelDate": "2026-08-20T10:00:00", "EntryType": "Chapel Skip",
+  "CreatedReason": "Absent from Chapel 8/20/2026", "CanRemove": false},
+ {"Count": -1, "ChapelDate": null, "EntryType": "Manual Adjustment",
+  "CreatedReason": "Had ID replaced", "CanRemove": true}]
+```
+
+Those counts sum to **1**. The server reports `SkipsUsed: 2`. Both are correct
+on the server's terms — the `-1` adjustment is *also* expressed as the `+1`
+"Manual Arrangement" allowance line (17 + 1 = 18 total, 18 − 2 = 16 remaining).
+**Recomputing from the ledger gives the wrong number.** The provider passes the
+reported figures straight through, and a test asserts it.
+
+Also: `ChapelDate` is `null` for adjustments — they are not tied to a chapel —
+so the UI shows the reason instead of a date for those rows.
+
+The earlier guess-driven module (tolerant key matching, an HTML table branch,
+an `AttendanceStatus` vocabulary) is deleted. There is no per-session status
+anywhere in the real data.
 
 ---
 
-## ❌ 1 & 6. Flex dollars and meals left — Transact
+## ⏳ 1 & 6. Flex dollars and meals left — on Self-Service after all
 
-Found: `https://cedarville.campuscardcenter.com/ch/login.html` →
-`<title>Transact Cardholder Website</title>` (formerly Blackboard Transact).
-This is where a campus card's flex/declining balance and meal-plan swipes live.
+**Transact is not needed.** These live at
 
-**The problem:** the login page is a plain `username` + `password` form with an
-`__ncforminfo` anti-CSRF token. The four "Single Sign On Display" markers in the
-page are **empty template placeholders** — SSO is not enabled on Cedarville's
-instance. So unlike Self-Service, there is no federated login we can hand off to
-Microsoft.
+```
+https://selfservice.cedarville.edu/Cedarinfo/Meals
+```
 
-That matters because it breaks the property the app has had so far: *your
-password is never seen or stored*. To read Transact, something would have to
-collect a credential.
+— the same origin and the same Microsoft sign-in as chapel. That is much better
+news than the Transact route: no second credential, no second cookie jar, and
+the existing WebView transport reaches it unchanged.
 
-**Options, in the order I'd pick them:**
+**Still needed: one more capture.** The first run traced no XHR for that page,
+which means it is server-rendered — and `scripts/discover` had a bug that
+skipped probing the current page whenever the trace found *anything* (here, a
+tracking pixel). So the page's own HTML was never saved. That bug is fixed: the
+current page is now always probed first.
 
-1. **Type it into the embedded WebView yourself, per session.** The app never
-   stores it; the WebView keeps a cookie like any browser. Same transport as
-   Self-Service, just aimed at a second origin. Keeps the no-stored-password
-   property. Costs you a login when the session lapses.
-2. **Check for a mobile-app API first.** Transact's *eAccounts* / GET Mobile
-   apps use a documented-ish JSON API. If Cedarville is on it, that is a much
-   nicer integration than scraping a 2009-era ASP page. **I cannot check this
-   without logging in.**
-3. Store the credential in the OS keychain. Possible; I would rather not.
+```bash
+python scripts/discover meals
+```
 
-**What I need from you:** see the checklist at the bottom.
-
-## ❌ 5. Print quota — PaperCut
+## ⏸️ 5. Print quota — PaperCut, deferred
 
 Found: `https://printing.cedarville.edu/user` →
 `<title>PaperCut Login for Cedarville University</title>`. Note it resolves to
 **the same IP as `selfservice.cedarville.edu`** (163.11.75.167), but that is
 shared hosting, not shared auth.
 
-Same problem as Transact: the login is a plain `inputUsername` / `inputPassword`
-form posting to `/app`, with a `jsessionid`. No SAML redirect at the entry
-point.
+The login is a plain `inputUsername` / `inputPassword` form posting to `/app`,
+with a `jsessionid`. No SAML — it is a genuinely separate credential.
 
-PaperCut's user portal shows the balance on its summary page, and PaperCut
-installs commonly expose `/rpc/api/xmlrpc` — but that is admin-authenticated and
-not something a student account can or should use. The realistic route is the
-same WebView-login-then-in-page-fetch approach as everything else.
+**Does it interfere with the Cedarville sign-in? No.** Different origin,
+different cookie, no shared state; the Entra session is untouched either way.
+The real cost is different: it is the only part of the app that would ask you to
+type a password *into the app's own window* rather than onto Microsoft's page.
 
-**Worth checking before building anything:** Cedarville may have PaperCut
-configured to accept your normal AD credentials *and* may have an SSO option
-behind a link I can't see unauthenticated.
+Deferred by choice — you called it the least important, and it needs another
+capture anyway (the balance is in the `/app?service=page/UserSummary` HTML; the
+first run only traced the balance-history PNG). If you want it later:
+
+```bash
+python scripts/discover papercut
+```
+
+Nothing else in the app changes to accommodate it.
 
 ## ✅ 4. Next chapel speaker — DONE
 

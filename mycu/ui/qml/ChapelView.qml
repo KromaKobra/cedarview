@@ -42,12 +42,13 @@ Item {
                 }
 
                 Label {
-                    // `allowed` is -1 when Cedarville did not state a total.
-                    // In that case show the count alone rather than inventing a
-                    // denominator.
-                    text: chapel.allowed >= 0
+                    // -1 means Cedarville didn't report the figure. Show what we
+                    // have rather than inventing a denominator or a zero.
+                    text: chapel.allowed >= 0 && chapel.used >= 0
                           ? chapel.used + " of " + chapel.allowed + " skips used"
-                          : chapel.used + (chapel.used === 1 ? " skip" : " skips")
+                          : (chapel.used >= 0
+                             ? chapel.used + (chapel.used === 1 ? " skip used" : " skips used")
+                             : "—")
                     font.pixelSize: 26
                     font.bold: true
                     Layout.alignment: Qt.AlignHCenter
@@ -59,6 +60,25 @@ Item {
                     font.pixelSize: 14
                     opacity: 0.75
                     color: chapel.remaining <= 1 ? "#b3261e" : palette.text
+                    Layout.alignment: Qt.AlignHCenter
+                }
+
+                // The only place the app can explain why the total is 18 rather
+                // than the 17 everyone expects.
+                Label {
+                    visible: text.length > 0
+                    text: chapel.allowanceText
+                    font.pixelSize: 11
+                    opacity: 0.5
+                    Layout.alignment: Qt.AlignHCenter
+                }
+
+                Label {
+                    visible: !chapel.inGoodStanding
+                    text: "Not in good standing"
+                    color: "#b3261e"
+                    font.pixelSize: 13
+                    font.bold: true
                     Layout.alignment: Qt.AlignHCenter
                 }
             }
@@ -147,7 +167,7 @@ Item {
             delegate: ItemDelegate {
                 width: list.width
                 height: 64
-                enabled: false                   // read-only for now
+                enabled: false                   // read-only
 
                 RowLayout {
                     anchors.fill: parent
@@ -155,21 +175,14 @@ Item {
                     anchors.rightMargin: 16
                     spacing: 12
 
-                    // Status dot: colour is the fastest read on a phone.
+                    // Red for a skip spent, green for one given back. A manual
+                    // adjustment must not read as another absence.
                     Rectangle {
                         width: 10
                         height: 10
                         radius: 5
                         Layout.alignment: Qt.AlignVCenter
-                        color: {
-                            switch (model.status) {
-                            case "present": return "#137333"
-                            case "absent":  return "#b3261e"
-                            case "excused": return "#e37400"
-                            case "exempt":  return "#5f6368"
-                            default:        return "#9aa0a6"   // unknown
-                            }
-                        }
+                        color: model.isSkip ? "#b3261e" : "#137333"
                     }
 
                     ColumnLayout {
@@ -177,7 +190,7 @@ Item {
                         spacing: 2
 
                         Label {
-                            text: model.dateText
+                            text: model.whenText
                             font.pixelSize: 15
                             elide: Text.ElideRight
                             Layout.fillWidth: true
@@ -185,7 +198,7 @@ Item {
 
                         Label {
                             visible: text.length > 0
-                            text: model.title.length > 0 ? model.title : model.note
+                            text: model.reason.length > 0 ? model.reason : model.entryType
                             font.pixelSize: 12
                             opacity: 0.65
                             elide: Text.ElideRight
@@ -194,10 +207,11 @@ Item {
                     }
 
                     Label {
-                        text: model.status
-                        font.pixelSize: 12
-                        font.capitalization: Font.Capitalize
+                        text: (model.count > 0 ? "+" : "") + model.count
+                        font.pixelSize: 15
+                        font.bold: true
                         opacity: 0.8
+                        color: model.isSkip ? "#b3261e" : "#137333"
                     }
                 }
 
@@ -218,7 +232,7 @@ Item {
                 opacity: 0.6
                 visible: list.count === 0 && !chapel.busy
                 text: chapel.loaded
-                      ? "No chapel sessions recorded for this term yet."
+                      ? "No skips recorded this term."
                       : (chapel.error.length > 0
                          ? ""
                          : "Pull to refresh, or tap ↻ above.")

@@ -1,0 +1,29 @@
+{
+ "StudentId": "1234567",
+ "StudentName": "Sample Student",
+ "Term": "2026FA",
+ "TermName": "Fall Semester 2026",
+ "SkipsUsed": 2,
+ "SkipsTotal": 18,
+ "SkipsRemaining": 16,
+ "AllowanceBreakdown": [
+  {
+   "Reason": "Skips Allowed",
+   "Count": 17,
+   "Description": "Base semester allowance"
+  },
+  {
+   "Reason": "Manual Arrangement",
+   "Count": 1,
+   "Description": "For manual arrangement reasons"
+  }
+ ],
+ "RequirementReasons": [
+  "Not a Distance Learner",
+  "Registered for 15.5 credits (more than 6)",
+  "Undergraduate Student"
+ ],
+ "IsRequiredToAttend": true,
+ "IsInGoodStanding": true,
+ "Status": "good"
+}

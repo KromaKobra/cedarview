@@ -1,0 +1,41 @@
+[
+ {
+  "Id": "00000000-0000-0000-0000-000000000004",
+  "StudentId": "1234567",
+  "Count": 1,
+  "Term": "2026FA",
+  "ChapelDate": "2026-08-20T10:00:00",
+  "CreatedAt": "2026-08-20T11:11:29.623",
+  "CreatedReason": "Absent from Chapel 8/20/2026",
+  "CreatedBy": "1234567",
+  "ArrangementId": null,
+  "CanRemove": false,
+  "EntryType": "Chapel Skip"
+ },
+ {
+  "Id": "00000000-0000-0000-0000-000000000009",
+  "StudentId": "1234567",
+  "Count": -1,
+  "Term": "2026FA",
+  "ChapelDate": null,
+  "CreatedAt": "2026-08-18T14:28:11.663",
+  "CreatedReason": "Had ID replaced ",
+  "CreatedBy": "1234567",
+  "ArrangementId": null,
+  "CanRemove": true,
+  "EntryType": "Manual Adjustment"
+ },
+ {
+  "Id": "00000000-0000-0000-0000-000000000006",
+  "StudentId": "1234567",
+  "Count": 1,
+  "Term": "2026FA",
+  "ChapelDate": "2026-08-17T10:00:00",
+  "CreatedAt": "2026-08-17T17:17:03.973",
+  "CreatedReason": "Absent from Chapel 8/17/2026",
+  "CreatedBy": "1234567",
+  "ArrangementId": null,
+  "CanRemove": false,
+  "EntryType": "Chapel Skip"
+ }
+]
