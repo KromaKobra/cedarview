@@ -34,11 +34,13 @@ ApplicationWindow {
     readonly property var pageTitles: ["Chapel", "Dining"]
     readonly property string pageTitle: pageTitles[currentPage]
 
+    // refreshAll(), not refresh(): each screen shows more than one source, and
+    // the viewmodel is what knows which ones belong to it.
     function refreshCurrent() {
         if (currentPage === 0) {
-            chapel.refresh()
+            chapel.refreshAll()
         } else {
-            dining.refresh()
+            dining.refreshAll()
         }
     }
 

@@ -40,7 +40,7 @@ qml_files = .buildozer/android/app/mycu/ui/qml/ChapelView.qml,.buildozer/android
 excluded_qml_plugins = QtCharts,QtQuick3D,QtSensors,QtTest,QtWebEngine
 
 # qt modules used. comma separated
-modules = Core,Gui,Network,WebView,OpenGL,QuickControls2,Qml,Quick
+modules = Qml,Network,Gui,Quick,WebView,QuickControls2,Core,OpenGL
 
 # qt plugins used by the application. only relevant for desktop deployment
 # for qt plugins used in android application see [android][plugins]
@@ -55,7 +55,7 @@ wheel_pyside = /home/kroma/Development/cedarview/.android-wheels/pyside6-6.11.0-
 wheel_shiboken = /home/kroma/Development/cedarview/.android-wheels/shiboken6-6.11.0-6.11.0-cp311-cp311-android_aarch64.whl
 
 # plugins to be copied to libs folder of the packaged application. comma separated
-plugins = webview_qtwebview_android,platforms_qtforandroid
+plugins = platforms_qtforandroid,webview_qtwebview_android
 
 [nuitka]
 

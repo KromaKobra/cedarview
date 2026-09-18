@@ -9,7 +9,7 @@
 // the transport needs, and the reason the Android port is wiring rather than
 // research.
 //
-// NOT YET RUN ON A DEVICE. See docs/next-steps.md.
+// RUN ON A DEVICE (moto g power 5G, Android 15). See docs/android-status.md.
 
 import QtQuick
 import QtWebView
@@ -17,7 +17,15 @@ import QtWebView
 Item {
     id: root
 
-    property string currentUrl: view.url.toString()
+    // Plain property, deliberately not bound to `view.url`.
+    //
+    // It used to be `property string currentUrl: view.url.toString()`, which
+    // reads as the obvious thing and is wrong twice over: the handlers below
+    // assign to it, which silently destroys the binding anyway, and — the part
+    // that actually broke sign-in — `view.url` is NOT the address bar. On
+    // QtWebView it reports the URL that was *requested*, and a server-side
+    // redirect never updates it. See onLoadingChanged.
+    property string currentUrl: ""
     signal evalResult(string token, var result)
 
     function evalAsync(token, script) {
@@ -37,19 +45,32 @@ Item {
 
         onUrlChanged: root.currentUrl = view.url.toString()
 
-        // VERIFIED against the Qt 6.11 Android build, by reading
-        // PySide6/Qt/qml/QtWebView/plugins.qmltypes out of the
-        // android_aarch64 wheel rather than by guessing:
+        // THE load signal, not a diagnostic one: this is where the real URL
+        // arrives, and the whole login state machine is driven by "which URL
+        // did we end up on".
+        //
+        // Observed on the device, 2026-09-17: requesting /cedarinfo/chapelskip
+        // redirected to login.microsoftonline.com — the Chromium console
+        // proved it, by refusing a fetch from that origin — while the view's
+        // own url property still read the Self-Service address we had asked
+        // for. So urlChanged never fired for Microsoft's page,
+        // looks_like_login never saw it, the sign-in surface never opened, and
+        // the app sat on a CORS error with no way to authenticate. Taking the
+        // URL from the load request is what makes interactive sign-in possible
+        // on Android at all.
+        //
+        // The members used here are VERIFIED against the Qt 6.11 Android
+        // build, by reading PySide6/Qt/qml/QtWebView/plugins.qmltypes out of
+        // the android_aarch64 wheel rather than by guessing:
         //
         //   Enum LoadStatus = LoadStartedStatus, LoadStoppedStatus,
         //                     LoadSucceededStatus, LoadFailedStatus
         //   Signal loadingChanged(QQuickWebViewLoadRequest loadRequest)
         //   QQuickWebViewLoadRequest: url, status, errorString  (all readonly)
-        //
-        // So the spelling below is right and this is no longer the likeliest
-        // source of a QML runtime error. If it ever does break,
-        // `adb logcat | grep -i qml` shows it immediately.
         onLoadingChanged: function (request) {
+            if (request.url) {
+                root.currentUrl = request.url.toString()
+            }
             if (request.status === WebView.LoadFailedStatus) {
                 console.warn("load failed:", request.url, request.errorString)
             }

@@ -223,10 +223,8 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.demo:
         # Nothing will trigger the first load, since there is no login flow.
-        chapel.refresh()
-        chapel.refreshSchedule()
-        dining.refresh()
-        dining.refreshPlan()
+        chapel.refreshAll()
+        dining.refreshAll()
 
     return app.exec()
 

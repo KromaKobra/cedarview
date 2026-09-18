@@ -12,7 +12,7 @@ Python + PySide6 + QML, packaged with Nix.
 
 | | |
 |---|---|
-| Core, transport, login, viewmodels, QML | **written, 225 tests passing** |
+| Core, transport, login, viewmodels, QML | **written, 244 tests passing** |
 | WebView transport, desktop | **verified end to end** — `scripts/smoke-transport`, 7/7 |
 | **Dining menus (Home Cooking)** | ✅ **working against the live API**, real fixture committed |
 | **Next chapel speaker** | ✅ **working against the live API**, real fixture committed |
@@ -38,7 +38,7 @@ That runs the whole app — QML, viewmodels, list model, the lot — against
 `tests/fixtures/`. It is how you develop the UI without a session.
 
 ```bash
-pytest                              # 225 tests, no network, no display needed
+pytest                              # 244 tests, no network, no display needed
 python scripts/smoke-transport      # proves the WebView transport works
 ```
 
@@ -50,8 +50,13 @@ python -m mycu
 ```
 
 Opens a window, sends you to Microsoft's sign-in page if needed, and shows your
-chapel attendance. **This has not been run successfully yet** — the parser is
-written against a guess at the page format. See `docs/discovery.md`.
+chapel skips, meal balances and this week's menus.
+
+The parser is **no longer a guess** — `scripts/discover` signed in and captured
+every endpoint, and each provider is written and tested against a real scrubbed
+capture. What has not been done is driving the *assembled app* through a live
+sign-in, on either platform. That is step 1 and 2 of `docs/next-steps.md`, and
+it needs you.
 
 ## How it works, briefly
 

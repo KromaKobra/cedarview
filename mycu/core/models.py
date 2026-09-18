@@ -269,12 +269,19 @@ class UpcomingChapel:
 
     @property
     def is_same_as_title(self) -> bool:
-        """Whether the title adds nothing beyond the speaker list.
+        """Whether the title adds nothing beyond what :attr:`who` already says.
 
         The API commonly sets ``Title`` to the speaker's name verbatim, and
         showing "Garrett Kell — Garrett Kell" looks like a bug.
+
+        Compared against :attr:`who`, not against the speaker list, because
+        ``who`` is what the UI actually renders. With the list it read as
+        "does the title repeat the speakers?", which is False whenever there
+        are no speakers — and in exactly that case ``who`` has already fallen
+        back to the title. Seen on the phone: an unnamed "Worship Chapel"
+        rendered as "Worship Chapel" above "Worship Chapel".
         """
-        return self.title.strip().casefold() == ", ".join(self.speakers).strip().casefold()
+        return self.title.strip().casefold() == self.who.strip().casefold()
 
     @property
     def on(self) -> date | None:

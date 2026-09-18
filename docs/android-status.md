@@ -263,10 +263,23 @@ are the failure modes to expect.
 
 ### State of the artifacts, right now
 
-- `mycu.apk` (148 MB, 18:17) — **the newest build**, includes the two QML
-  fixes. **Not yet installed.**
-- The phone has the 18:11 build: identical except the refresh button renders as
-  a tofu box and the Dialog logs a binding-loop warning.
+**Corrected 2026-09-17 19:5x — the claim below turned out to be false.**
+
+The 18:17 `mycu.apk` was described here as "the newest build, includes the two
+QML fixes". It did not. Unzipping it and reading
+`assets/private.tar → mycu/ui/qml/Main.qml` shows `text: "↻"` and the
+un-fixed Dialog: **that APK was built from source predating both fixes.** The
+fixes existed only in the working tree and had never been in an APK, which is
+why the tofu box survived a clean install onto the phone.
+
+Two lessons, both cheap:
+
+- **A timestamp is not evidence of contents.** `unzip -p mycu.apk` and read the
+  file; the QML ships as plain text inside `private.tar`.
+- **`adb install -r` is not enough to prove what is running.** p4a reuses the
+  extracted `_python_bundle`, so the first install showed *neither* the old nor
+  the new behaviour reliably. `adb uninstall && adb install` re-extracts, and
+  logcat prints `extracting _python_bundle/...` when it really happens.
 
 To pick up the newer build:
 
@@ -277,10 +290,58 @@ nix shell nixpkgs#android-tools --command adb install -r mycu.apk
 If the UI looks unchanged, uninstall first — p4a reuses the already-extracted
 app data (see the caveat in §6).
 
+### Found on the device, 2026-09-17: sign-in was *impossible* on Android
+
+Worth reading in full, because "nobody has typed credentials yet" turned out to
+be hiding a real bug rather than waiting on a human.
+
+Driving the app on the phone showed it sitting on the Chapel tab with a red
+`Couldn't reach Self-Service: TypeError: Failed to fetch` banner, the footer
+stuck on "Connecting to Cedarville…", and **no sign-in surface**. Logcat had
+the answer:
+
+```
+I chromium: [INFO:CONSOLE:0] "Access to fetch at
+'https://selfservice.cedarville.edu/cedarinfo/chapelskip' from origin
+'https://login.microsoftonline.com' has been blocked by CORS policy"
+source: https://login.microsoftonline.com/81c32413-…/saml2?SAMLRequest=…
+```
+
+So the WebView **had** reached Microsoft's sign-in page — the CORS refusal
+proves which origin it was on — but Python never learned it. `LoginController`
+logs every status change, and logcat stops at "Connecting to Cedarville…".
+
+The cause: **`WebView.url` on QtWebView is the URL that was *requested*, not
+the one the browser ended up on.** A server-side redirect — exactly how the
+SAML flow begins — never updates it. `currentUrl` was bound to that property,
+so `looks_like_login()` never saw `login.microsoftonline.com` and the surface
+was never shown. The app could display public data forever and never
+authenticate.
+
+This is the same class of difference as the missing cookie API: QtWebView is
+thinner than WebEngineView, and the places it is thinner are not documented
+together anywhere. `loadRequest.url`, from `onLoadingChanged`, is the only
+carrier of the post-redirect URL.
+
+Fixed in two independent places, because one of them is a QML signal and QML
+signals are exactly what cannot be tested headlessly:
+
+1. `WebSurfaceAndroid.qml` sets `currentUrl` from `loadRequest.url`.
+   `tests/test_platform_selection.py` asserts the handler does so and that
+   `currentUrl` is never re-bound to `view.url`.
+2. `WebViewTransport.get()` treats a *refused* request (`TypeError: Failed to
+   fetch` and friends — no status, no body) as a probable expired session: it
+   asks the page for `window.location.href`, which is always the truth, and
+   raises `SessionExpired` if that is a sign-in page. So the login surface
+   opens even if the URL signal is missed again.
+
+The second one also turns a confusing error into the correct remedy: the user
+now gets a sign-in page instead of "Couldn't reach Self-Service".
+
 ### Not yet proven
 
-- **A completed sign-in on the phone.** Everything up to Microsoft's page
-  works; nobody has typed credentials and come back.
+- **A completed sign-in on the phone.** The surface now opens (fix above), but
+  nobody has typed credentials and come back.
 - The authenticated chapel-skip fetch on Android.
 - Whether federated logout drops the Self-Service cookie (`# VERIFY:` in
   `platform/android.py`).
@@ -293,15 +354,26 @@ app data (see the caveat in §6).
 
 ### 1. Install the current build and sign in (10 minutes, only you can do it)
 
+**Use a clean install, not `-r`** — see the artifacts note in §5. The cookie jar
+is empty anyway until a sign-in succeeds, so nothing is lost:
+
 ```bash
-nix shell nixpkgs#android-tools --command adb install -r mycu.apk
+nix shell nixpkgs#android-tools --command adb uninstall org.mycu.mycu
+nix shell nixpkgs#android-tools --command adb install mycu.apk
 nix shell nixpkgs#android-tools --command adb logcat -c
 # launch it, sign in on the phone, then:
 nix shell nixpkgs#android-tools --command adb logcat -d | grep -E 'python  :'
 ```
 
-This settles the largest remaining unknown. Expect either chapel skips to
-appear, or a parse error naming exactly what differs.
+This settles the largest remaining unknown. Expect either chapel skips and meal
+balances to appear, or a parse error naming exactly what differs.
+
+What "working" looks like in logcat, now that the redirect fix is in: a
+`login: Sign in with your Cedarville account` line, Microsoft's page on screen,
+and after you authenticate, `login: ` (blank) followed by `chapel: N ledger
+entries` and `meal plan: N meals`. If you get the CORS `TypeError: Failed to
+fetch` **with no sign-in page**, the redirect fix has regressed — that exact
+symptom is the bug documented in §5.
 
 **Caveat worth knowing:** p4a extracts `_python_bundle` into app-private
 storage on first run and **reuses it**. After changing the bundled CPython this

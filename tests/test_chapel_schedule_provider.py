@@ -96,8 +96,21 @@ def test_title_duplicating_the_speaker_is_detectable(upcoming) -> None:
     assert higbee.title == "Garrett Higbee"
     assert higbee.is_same_as_title is True
 
+
+def test_an_unnamed_chapel_does_not_print_its_own_name_twice(upcoming) -> None:
+    """Regression, seen on the phone: "Worship Chapel" above "Worship Chapel".
+
+    This assertion used to read ``is_same_as_title is False`` and was wrong —
+    it encoded the property's old question, "does the title repeat the
+    *speakers*?", which is trivially False when there are no speakers. But a
+    chapel with no named speaker is precisely when ``who`` falls back to the
+    title, so the screen rendered it twice. The question that matters is "does
+    the title repeat what we are already showing?".
+    """
     worship = next(c for c in upcoming if c.title == "Worship Chapel")
-    assert worship.is_same_as_title is False
+    assert worship.speakers == ()
+    assert worship.who == "Worship Chapel"
+    assert worship.is_same_as_title is True
 
 
 # ---------------------------------------------------------------------------

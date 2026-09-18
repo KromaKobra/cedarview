@@ -248,6 +248,20 @@ class ChapelViewModel(QObject):
         run_in_background(provider.fetch, done, failed)
 
     @Slot()
+    def refreshAll(self) -> None:
+        """Everything on this screen.
+
+        What the Refresh button and pull-to-refresh call. The screen draws on
+        two unrelated sources — the authenticated skip ledger and the public
+        upcoming-chapel feed — and a reader pulling down means "update what I
+        am looking at", not "update the half of it that needs a session".
+        Keeping the composition here means a third source is wired in one
+        place rather than in every gesture handler.
+        """
+        self.refresh()
+        self.refreshSchedule()
+
+    @Slot()
     def refresh(self) -> None:
         """Fetch and parse chapel attendance on a worker thread.
 

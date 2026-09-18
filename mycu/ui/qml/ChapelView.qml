@@ -248,7 +248,7 @@ Item {
 
             onDragEnded: {
                 if (contentY < -80 && !chapel.busy) {
-                    chapel.refresh()
+                    chapel.refreshAll()
                 }
             }
         }

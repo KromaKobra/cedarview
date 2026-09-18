@@ -62,6 +62,23 @@ POLL_INTERVAL_MS = 60
 #: first request after a cold start can involve a full SAML round trip.
 DEFAULT_TIMEOUT_S = 30.0
 
+#: How a browser reports a request it refused to make, as opposed to one that
+#: came back with an error status. Chromium says "TypeError: Failed to fetch"
+#: for a CORS refusal; other engines word it differently, hence the set. A
+#: request that was *refused* is the signature of the page having been
+#: redirected off our origin — i.e. of a sign-in — so it gets a second look.
+CORS_FAILURE_MARKERS = (
+    "failed to fetch",          # Chromium / the Android system WebView
+    "networkerror",             # Gecko
+    "load failed",              # WebKit
+    "cors",
+)
+
+
+def _looks_like_cors_failure(error: str) -> bool:
+    lowered = (error or "").lower()
+    return any(marker in lowered for marker in CORS_FAILURE_MARKERS)
+
 #: The fetch, in the page's own origin.
 #:
 #: ``credentials: 'same-origin'`` is what makes the browser attach the session
@@ -249,6 +266,26 @@ class WebViewTransport(QObject):
             self._pending.pop(token, None)
 
         if pending.error:
+            # A fetch that fails outright — no status, no body — is very often
+            # not a network fault but a sign-in in disguise: the page has been
+            # redirected to the identity provider, and the browser refuses a
+            # cross-origin request back to Self-Service. Chromium reports that
+            # as a bare `TypeError: Failed to fetch`, which this used to pass
+            # straight through as a transport error. The user got "Couldn't
+            # reach Self-Service" and no way to sign in.
+            #
+            # `current_url` is not trustworthy enough to settle it — on
+            # QtWebView it can still hold the pre-redirect URL (see
+            # WebSurfaceAndroid.qml) — so ask the page where it actually is.
+            # This costs one round trip and only on the failure path.
+            if _looks_like_cors_failure(pending.error):
+                where = self._page_location()
+                if where and looks_like_login(where):
+                    self.sessionExpired.emit()
+                    raise SessionExpired(
+                        f"{url} could not be fetched because the browser is on "
+                        f"a sign-in page ({where}); the session has ended"
+                    )
             raise TransportError(f"fetch failed for {url}: {pending.error}")
 
         payload = pending.payload or {}
@@ -271,6 +308,21 @@ class WebViewTransport(QObject):
 
         log.debug("fetched %s -> %d (%d bytes)", url, response.status, len(response.body))
         return response
+
+    def _page_location(self) -> str:
+        """Where the browser actually is, asked of the page itself.
+
+        ``window.location.href`` is always the truth, where the surface's
+        ``currentUrl`` property is only as good as the signals the backend
+        emits. Used on the failure path to tell "the session ended" apart from
+        "the network is down", so it must never raise: if we cannot ask, we
+        simply do not know, and the caller reports the original error.
+        """
+        try:
+            return str(self.evaluate("window.location.href", timeout_s=5.0) or "")
+        except Exception as exc:  # noqa: BLE001
+            log.debug("could not read the page location: %r", exc)
+            return ""
 
     def evaluate(self, script: str, timeout_s: float = 15.0) -> object:
         """Run JavaScript in the current page and return its value.

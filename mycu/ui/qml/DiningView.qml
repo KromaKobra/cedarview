@@ -268,7 +268,7 @@ Item {
 
             onDragEnded: {
                 if (contentY < -80 && !dining.busy) {
-                    dining.refresh()
+                    dining.refreshAll()
                 }
             }
         }

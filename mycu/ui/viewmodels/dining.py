@@ -205,6 +205,19 @@ class DiningViewModel(QObject):
         run_in_background(provider.fetch, done, failed)
 
     @Slot()
+    def refreshAll(self) -> None:
+        """Everything on this screen: the menu *and* the meal-plan balances.
+
+        These come from two different services with different auth, and before
+        this existed only the menu was reachable from the UI — the balances
+        loaded once at sign-in and then stayed on screen unchanged for the rest
+        of the run, which is a bad way to show a number that goes down every
+        time you eat.
+        """
+        self.refresh()
+        self.refreshPlan()
+
+    @Slot()
     def refresh(self) -> None:
         if self._busy:
             return

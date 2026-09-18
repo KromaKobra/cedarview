@@ -301,3 +301,42 @@ def test_android_ca_fallback_survives_a_junk_directory(tmp_path, monkeypatch) ->
     empty = _ssl.SSLContext(_ssl.PROTOCOL_TLS_CLIENT)
     transport._load_android_cas(empty)          # must not raise
     assert empty.cert_store_stats()["x509_ca"] == 0
+
+
+# ---------------------------------------------------------------------------
+# Telling "the session ended" apart from "the network is down"
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "TypeError: Failed to fetch",
+        "TypeError: failed to fetch",
+        "NetworkError when attempting to fetch resource.",
+        "TypeError: Load failed",
+        "blocked by CORS policy",
+    ],
+)
+def test_a_refused_request_is_recognised(error: str) -> None:
+    """A browser refusing to *make* a request is the signature of a sign-in.
+
+    Chromium reports a CORS refusal as a bare ``TypeError: Failed to fetch``,
+    with no status and no body. Observed on the device: the WebView had been
+    redirected to Microsoft, every fetch back to Self-Service was refused, and
+    the app reported "Couldn't reach Self-Service" — offering no way to sign
+    in, which was the actual remedy.
+    """
+    from mycu.ui.transport_webview import _looks_like_cors_failure
+
+    assert _looks_like_cors_failure(error)
+
+
+@pytest.mark.parametrize(
+    "error",
+    ["", "timed out after 30s", "HTTP 500", "the WebView was destroyed"],
+)
+def test_an_ordinary_failure_is_not_mistaken_for_a_sign_in(error: str) -> None:
+    """The cost of a false positive is bouncing the user to a pointless login."""
+    from mycu.ui.transport_webview import _looks_like_cors_failure
+
+    assert not _looks_like_cors_failure(error)

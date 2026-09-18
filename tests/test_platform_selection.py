@@ -101,6 +101,47 @@ def test_every_surface_honours_the_same_contract(name: str) -> None:
         assert member in source, f"{name} is missing '{member}'"
 
 
+def test_the_android_surface_takes_its_url_from_the_load_request() -> None:
+    """Regression, found on the device: sign-in was impossible on Android.
+
+    QtWebView's ``url`` property is the URL that was *requested*, not the one
+    the browser ended up on, so a server-side redirect — which is exactly how
+    the SAML sign-in begins — never updates it. ``currentUrl`` was bound to it,
+    the login state machine never saw ``login.microsoftonline.com``, the
+    sign-in surface never opened, and the app showed a CORS error with no way
+    to authenticate.
+
+    ``loadRequest.url`` is the only place the post-redirect URL appears, so
+    assert the handler reads it. Asserted against the source because the bug
+    is in QML wiring, which no headless test can execute.
+    """
+    # Comments stripped first: the file explains the old binding by quoting it,
+    # and a prose mention of `view.url` is not a live binding to it.
+    source = re.sub(
+        r"//[^\n]*", "", (QML_DIR / "WebSurfaceAndroid.qml").read_text(encoding="utf-8")
+    )
+
+    handler = re.search(
+        r"onLoadingChanged\s*:\s*function\s*\((\w+)\)\s*\{(.*?)\n        \}",
+        source,
+        re.DOTALL,
+    )
+    assert handler, "WebSurfaceAndroid.qml has no onLoadingChanged handler"
+
+    param, body = handler.group(1), handler.group(2)
+    assert f"{param}.url" in body, (
+        "onLoadingChanged must set currentUrl from the load request's url; "
+        "without it a redirect to the identity provider is invisible to Python "
+        "and interactive sign-in cannot start."
+    )
+    assert "currentUrl" in body, "the load request's url must reach currentUrl"
+
+    assert not re.search(r"property\s+string\s+currentUrl\s*:\s*view\.url", source), (
+        "currentUrl must not be bound to view.url — on QtWebView that property "
+        "does not follow redirects. Assign it from onLoadingChanged instead."
+    )
+
+
 @pytest.mark.parametrize("name", SURFACES)
 def test_surfaces_deliver_results_through_the_tagged_signal(name: str) -> None:
     """The transport tags each request; results must come back tagged.
