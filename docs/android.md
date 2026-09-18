@@ -341,6 +341,63 @@ uninstall/reinstall, which wipes the session.
 
 ---
 
+## `adb install -r` does not update your Python or QML
+
+**Read this before debugging a UI change that "did not take".** It is the most
+misleading failure mode in the whole loop, because everything reports success.
+
+The APK does not run `mycu/` out of the APK. python-for-android ships the app
+as `assets/private.tar` and the Java bootstrap untars it into
+
+```
+/data/data/org.mycu.mycu/files/app/
+```
+
+on **first** launch, then writes a stamp at `files/app/private.version` and
+skips the unpack on every launch after that. `adb install -r` keeps the data
+directory. So a reinstall gives you new native libraries and the *old* `.py`
+and `.qml` files, and the app runs happily against them.
+
+Seen 2026-09-17, after the UI overhaul: the build was correct — `tar tf` on
+`assets/private.tar` listed all twelve new QML files — the install said
+`Success`, and the phone went on rendering the previous screen. The only clue
+was a QML warning naming a line number that no longer had that code on it.
+
+Check what the device actually has, rather than what you built:
+
+```bash
+adb shell run-as org.mycu.mycu ls files/app/mycu/ui/qml/
+tar tf <(unzip -p mycu.apk assets/private.tar)   # what you shipped
+```
+
+Force the unpack:
+
+```bash
+adb shell pm clear org.mycu.mycu
+```
+
+That wipes the app's data directory, which is also where the session lives —
+so it signs you out. There is no way to re-extract without doing so; the stamp
+is the only mechanism, and bumping `version` in `buildozer.spec` would make a
+new stamp but is not worth doing per UI tweak.
+
+**`./scripts/build-apk --install` only works if the flag reaches the script.**
+Inside the FHS shell, `-c` takes a single command *string* — anything after it
+becomes `$0`, not an argument:
+
+```bash
+# wrong: --install lands in $0 and is silently ignored
+nix develop --command mycu-android-build -c ./scripts/build-apk --install
+
+# right
+nix develop --command mycu-android-build -c './scripts/build-apk --install'
+```
+
+The script does not fail when this happens. It prints the manual `adb install`
+line at the end instead, which reads like normal output.
+
+---
+
 ## Debugging on-device
 
 ```bash

@@ -5,12 +5,18 @@
 // mycu.platform.<backend>.surface_qml. Both surfaces expose the same members,
 // so nothing else in the QML tree knows or cares.
 //
-// Layout: a StackLayout with two pages.
-//   0 — the data UI (chapel, plus whatever providers come later)
-//   1 — the web surface, shown ONLY while an interactive sign-in is happening
+// Layout, outermost first:
+//
+//   ribbon header      logo, wordmark, refresh, overflow — always visible
+//   StackLayout
+//     0 — the app: three tabs behind a bottom bar
+//     1 — the web surface, shown ONLY during an interactive sign-in
 //
 // During normal operation the browser is invisible: it is an implementation
 // detail of the transport, not a thing the user should have to look at.
+//
+// Colours come from Theme.qml and nothing here hard-codes one. There is no
+// light mode; see Theme.qml for why.
 
 import QtQuick
 import QtQuick.Controls
@@ -19,83 +25,161 @@ import QtQuick.Layouts
 ApplicationWindow {
     id: window
     visible: true
-    width: 420
-    height: 760
-    title: "myCU"
+    width: 400
+    height: 800
+    title: "CedarView"
+    color: theme.background
 
     // Phone-sized by default so the desktop build previews the Android layout.
     // On Android the window is fullscreen regardless.
 
+    Theme { id: theme }
+
     property bool showingLogin: login.surfaceVisible
 
-    // Which data page is on screen. Kept here rather than in each view so the
-    // toolbar's title and ↻ button know what they are acting on.
+    //: Which tab is on screen. Kept here rather than in each view so the
+    //: bottom bar and the SwipeView stay in step with one another.
     property int currentPage: 0
-    readonly property var pageTitles: ["Chapel", "Dining"]
-    readonly property string pageTitle: pageTitles[currentPage]
 
-    // refreshAll(), not refresh(): each screen shows more than one source, and
-    // the viewmodel is what knows which ones belong to it.
-    function refreshCurrent() {
-        if (currentPage === 0) {
-            chapel.refreshAll()
-        } else {
-            dining.refreshAll()
-        }
+    property bool busy: chapel.busy || dining.busy
+
+    // Every tab, not just the one on screen. The summary screen draws on both
+    // viewmodels and on four separate services, so "refresh what I am looking
+    // at" and "refresh everything" are the same gesture now — and a refresh
+    // that reloaded only half of the screen in front of you would be the more
+    // surprising of the two behaviours.
+    function refreshEverything() {
+        chapel.refreshAll()
+        dining.refreshAll()
     }
 
-    header: ToolBar {
+    // ---- Ribbon ------------------------------------------------------------
+    header: Rectangle {
+        implicitHeight: 54
+        color: theme.ribbon
+
         RowLayout {
             anchors.fill: parent
-            anchors.leftMargin: 12
-            anchors.rightMargin: 12
+            anchors.leftMargin: 14
+            anchors.rightMargin: 6
+            spacing: 9
+
+            Glyph {
+                Layout.alignment: Qt.AlignVCenter
+                width: 24
+                height: 24
+                kind: "tree"
+                color: theme.accent
+            }
 
             Label {
-                text: window.showingLogin ? "Sign in" : window.pageTitle
-                font.pixelSize: 20
+                text: "CedarView"
+                color: theme.text
+                font.pixelSize: 19
                 font.bold: true
-                Layout.fillWidth: true
             }
+
+            Item { Layout.fillWidth: true }
 
             BusyIndicator {
-                running: chapel.busy || dining.busy
+                Layout.alignment: Qt.AlignVCenter
+                running: window.busy
                 visible: running
-                implicitWidth: 24
-                implicitHeight: 24
+                implicitWidth: 22
+                implicitHeight: 22
             }
 
-            ToolButton {
-                // Plain word, not a glyph. This was "↻" (U+21BB), which the
-                // desktop font has and the phone's Roboto does not — on the
-                // moto g power it rendered as a tofu box. "⋮" below survives
-                // because U+22EE *is* in Roboto, so the two are not
-                // interchangeable risks. Anything outside basic Latin needs
-                // checking on-device before it goes in the toolbar.
-                text: qsTr("Refresh")
-                enabled: !window.showingLogin
-                onClicked: window.refreshCurrent()
-                ToolTip.visible: hovered
-                ToolTip.text: qsTr("Refresh")
+            AbstractButton {
+                id: refreshButton
+                Layout.alignment: Qt.AlignVCenter
+                implicitWidth: 40
+                implicitHeight: 40
+                enabled: !window.showingLogin && !window.busy
+                onClicked: window.refreshEverything()
+
+                background: Rectangle {
+                    radius: width / 2
+                    color: refreshButton.down ? Qt.rgba(1, 1, 1, 0.08) : "transparent"
+                }
+
+                contentItem: Glyph {
+                    kind: "refresh"
+                    color: refreshButton.enabled ? theme.muted : theme.faint
+                    width: 19
+                    height: 19
+                }
             }
 
-            ToolButton {
-                text: "⋮"                       // ⋮
-                font.pixelSize: 20
+            AbstractButton {
+                id: overflowButton
+                Layout.alignment: Qt.AlignVCenter
+                implicitWidth: 40
+                implicitHeight: 40
                 onClicked: overflow.open()
+
+                background: Rectangle {
+                    radius: width / 2
+                    color: overflowButton.down ? Qt.rgba(1, 1, 1, 0.08) : "transparent"
+                }
+
+                // Three drawn dots rather than "⋮". U+22EE happens to be in
+                // Roboto, so the character would survive — but the refresh
+                // glyph beside it would not, and a toolbar where one icon is a
+                // character and the other is a drawing is a toolbar where the
+                // two never quite line up.
+                contentItem: Column {
+                    spacing: 3
+
+                    Repeater {
+                        model: 3
+
+                        Rectangle {
+                            anchors.horizontalCenter: parent.horizontalCenter
+                            width: 3.5
+                            height: 3.5
+                            radius: 1.75
+                            color: theme.muted
+                        }
+                    }
+                }
 
                 Menu {
                     id: overflow
-                    y: parent.height
-                    MenuItem {
+                    y: overflowButton.height + 4
+                    x: overflowButton.width - width
+                    implicitWidth: 184
+                    padding: 6
+
+                    background: Rectangle {
+                        color: "#1A1A1F"
+                        radius: 14
+                        border.width: 1
+                        border.color: theme.cardBorder
+                    }
+
+                    DarkMenuItem {
+                        text: "Settings"
+                        onTriggered: settingsSheet.open()
+                    }
+
+                    DarkMenuItem {
+                        text: "About"
+                        onTriggered: aboutSheet.open()
+                    }
+
+                    DarkMenuItem {
                         text: "Sign out"
                         onTriggered: login.signOut()
                     }
-                    MenuItem {
-                        text: "About"
-                        onTriggered: aboutDialog.open()
-                    }
                 }
             }
+        }
+
+        Rectangle {
+            anchors.bottom: parent.bottom
+            width: parent.width
+            height: 1
+            color: theme.divider
         }
     }
 
@@ -103,7 +187,7 @@ ApplicationWindow {
         anchors.fill: parent
         currentIndex: window.showingLogin ? 1 : 0
 
-        // Page 0 of the login/data stack: the data pages, behind a tab bar.
+        // Page 0 of the login/data stack: the tabs, above the bottom bar.
         ColumnLayout {
             spacing: 0
 
@@ -114,17 +198,53 @@ ApplicationWindow {
                 currentIndex: window.currentPage
                 onCurrentIndexChanged: window.currentPage = currentIndex
 
+                SummaryView {}
                 ChapelView {}
                 DiningView {}
             }
 
-            TabBar {
+            // ---- Bottom bar --------------------------------------------
+            Rectangle {
                 Layout.fillWidth: true
-                currentIndex: window.currentPage
-                onCurrentIndexChanged: window.currentPage = currentIndex
+                implicitHeight: 60
+                color: theme.ribbon
 
-                TabButton { text: "Chapel" }
-                TabButton { text: "Dining" }
+                Rectangle {
+                    anchors.top: parent.top
+                    width: parent.width
+                    height: 1
+                    color: theme.divider
+                }
+
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.topMargin: 1
+                    spacing: 0
+
+                    NavButton {
+                        Layout.fillWidth: true
+                        text: "Summary"
+                        kind: "summary"
+                        selected: window.currentPage === 0
+                        onClicked: window.currentPage = 0
+                    }
+
+                    NavButton {
+                        Layout.fillWidth: true
+                        text: "Chapel"
+                        kind: "chapel"
+                        selected: window.currentPage === 1
+                        onClicked: window.currentPage = 1
+                    }
+
+                    NavButton {
+                        Layout.fillWidth: true
+                        text: "Dining"
+                        kind: "dining"
+                        selected: window.currentPage === 2
+                        onClicked: window.currentPage = 2
+                    }
+                }
             }
         }
 
@@ -164,6 +284,7 @@ ApplicationWindow {
                 visible: surfaceLoader.status === Loader.Error
                 wrapMode: Text.Wrap
                 width: parent.width - 48
+                color: theme.muted
                 horizontalAlignment: Text.AlignHCenter
                 text: "The embedded browser failed to load (" + platformSurface + ").\n\n"
                       + "On desktop this usually means QtWebEngine is not on QML2_IMPORT_PATH "
@@ -173,35 +294,39 @@ ApplicationWindow {
         }
     }
 
-    footer: Label {
-        visible: text.length > 0
-        text: login.status
-        padding: 10
-        wrapMode: Text.Wrap
-        font.pixelSize: 13
-        opacity: 0.75
-    }
-
-    Dialog {
-        id: aboutDialog
-        anchors.centerIn: parent
-        width: Math.min(parent.width - 48, 360)
-        title: "myCU"
-        standardButtons: Dialog.Ok
+    footer: Rectangle {
+        visible: login.status.length > 0
+        implicitHeight: visible ? statusLabel.implicitHeight + 18 : 0
+        color: theme.ribbon
 
         Label {
-            // availableWidth, not parent.width. The Dialog derives its
-            // implicitHeight from this Label, so binding the Label's width to
-            // the Dialog's own width closes the loop and Qt logs
-            // "Binding loop detected for property implicitHeight" on every
-            // launch. availableWidth is the content box and does not depend
-            // on the content.
-            width: aboutDialog.availableWidth
+            id: statusLabel
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.leftMargin: 14
+            anchors.rightMargin: 14
+            text: login.status
+            color: theme.muted
+            font.pixelSize: 12
             wrapMode: Text.Wrap
-            text: "A personal client for your own Cedarville records.\n\n"
-                  + "Backend: " + bridge.platformName + "\n"
-                  + "Your password is never seen or stored by this app — sign-in "
-                  + "happens on Microsoft's own page."
         }
+    }
+
+    InfoSheet {
+        id: aboutSheet
+        heading: "CedarView"
+        body: "A personal client for your own Cedarville records.\n\n"
+              + "Backend: " + bridge.platformName + "\n\n"
+              + "Your password is never seen or stored by this app — sign-in "
+              + "happens on Microsoft's own page."
+    }
+
+    InfoSheet {
+        id: settingsSheet
+        heading: "Settings"
+        body: "Coming soon!\n\nThere is nothing to configure yet: the app reads "
+              + "your own records on demand and keeps its session in app-private "
+              + "storage. Sign out from the same menu to clear it."
     }
 }

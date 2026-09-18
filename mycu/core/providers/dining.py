@@ -50,7 +50,7 @@ is no reason for a personal app to make someone else's server work harder.
 from __future__ import annotations
 
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, time
 from typing import Any
 
 from ..errors import ParseError
@@ -206,3 +206,57 @@ def home_cooking_for(days: "tuple[DayMenu, ...]", on: date | None = None) -> tup
         if day.on == target:
             return day.for_venue(HOME_COOKING)
     return ()
+
+
+#: When each sitting stops being "next".
+#:
+#: **These are ours, not the API's.** The menu feed carries no serving times at
+#: all — only a ``slot`` label — so something has to decide when breakfast stops
+#: being the meal you are about to eat. These are the posted Chuck's windows
+#: rounded outward, so the answer changes a little late rather than a little
+#: early: being told "up next: lunch" while you are still eating breakfast is
+#: the more annoying of the two failures.
+#:
+#: They affect *which menu is shown first* and nothing else. The full day is on
+#: the Dining tab either way, so a wrong guess here costs a tap, not a meal.
+SERVING_ENDS = {
+    "breakfast": time(10, 30),
+    "lunch": time(16, 0),
+    "dinner": time(20, 0),
+}
+
+
+def next_meal_block(
+    days: "tuple[DayMenu, ...]",
+    now: datetime | None = None,
+    venue: str = HOME_COOKING,
+) -> "tuple[date, MenuBlock] | None":
+    """The sitting a reader is most likely about to eat, with its date.
+
+    Walks forward from ``now``: the first sitting today that has not finished
+    serving, and failing that the first sitting on the next day in the payload.
+    After dinner this means tomorrow's breakfast, which is the honest answer —
+    the alternative is showing a menu for a meal that is already over.
+
+    Returns ``None`` when nothing is left in the payload at all. Empty blocks
+    are skipped rather than returned: a heading with no dishes under it reads
+    as a bug, and the next real sitting is the useful answer.
+
+    ``now`` is injectable because the whole behaviour is a function of the
+    clock, and a test that could only be run before 10:30am would be no test.
+    """
+    moment = now or datetime.now()
+    today = moment.date()
+
+    for day in sorted(days, key=lambda d: d.on):
+        if day.on < today:
+            continue
+        for block in day.for_venue(venue):
+            # `for_venue` includes all-day stations (slot "anytime"), which are
+            # never "next" — they are always on.
+            ends = SERVING_ENDS.get(block.slot.casefold())
+            if ends is None or not block.items:
+                continue
+            if day.on > today or moment.time() < ends:
+                return day.on, block
+    return None

@@ -14,7 +14,7 @@ against a real capture. Read this version, not that one.
 
 Verified by running it, not by reading it:
 
-- **244 tests pass** (`pytest`) — parsing, transport protocol, expiry detection,
+- **279 tests pass** (`pytest`) — parsing, transport protocol, expiry detection,
   session persistence, the login state machine, viewmodels, the QML contract.
   No test can open a socket; `conftest.py` blocks it.
 - **The app runs.** `python -m mycu --demo` loads the QML and populates all four

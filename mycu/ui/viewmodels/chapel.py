@@ -186,6 +186,22 @@ class ChapelViewModel(QObject):
     def requiredToAttend(self) -> bool:
         return self._summary.is_required_to_attend
 
+    @Property(float, notify=changed)
+    def remainingFraction(self) -> float:
+        """How much of the allowance is left, 0.0–1.0, for the progress bar.
+
+        ``0.0`` when either figure is unknown, which the QML reads together
+        with ``remaining >= 0`` to hide the bar rather than draw an empty one.
+        Clamped because the server's ``used`` and ``total`` come from different
+        halves of its own arithmetic (see :class:`ChapelSummary`) and are not
+        guaranteed to agree — a bar overflowing its track would look broken
+        where a full bar just looks full.
+        """
+        total, remaining = self._summary.total, self._summary.remaining
+        if not total or total <= 0 or remaining is None:
+            return 0.0
+        return max(0.0, min(1.0, remaining / total))
+
     # ------------------------------------------------------------------
     # Actions
     # ------------------------------------------------------------------
@@ -218,6 +234,44 @@ class ChapelViewModel(QObject):
         # %-I is a glibc extension; bionic (Android) does not have it.
         hour = when.hour % 12 or 12
         return f"{day} {hour}:{when.minute:02d} {when.strftime('%p')}"
+
+    @Property(str, notify=changed)
+    def nextChapelDay(self) -> str:
+        """"Today" / "Tomorrow" / "Friday" — the summary screen's badge.
+
+        Split out from :attr:`nextChapelWhen` rather than parsed back out of
+        it: the badge and the date line are two separate pieces of text on the
+        summary card, and slicing a formatted string to get one of them back is
+        how a UI ends up displaying "Tomorrow 10:00" in a pill.
+        """
+        if self._next is None or self._next.starts_at is None:
+            return ""
+
+        when = self._next.starts_at.date()
+        today = date.today()
+        if when == today:
+            return "Today"
+        if when == today + timedelta(days=1):
+            return "Tomorrow"
+        return self._next.starts_at.strftime("%A")
+
+    @Property(str, notify=changed)
+    def nextChapelDateText(self) -> str:
+        """"Fri, Sep 18 · 10:00 AM" — the exact when, under the headline.
+
+        The badge says "Tomorrow"; this says which day that actually is, which
+        is the thing you need when deciding whether to set an alarm.
+        """
+        if self._next is None or self._next.starts_at is None:
+            return ""
+
+        when = self._next.starts_at
+        # %-d and %-I are glibc extensions; bionic (Android) has neither.
+        hour = when.hour % 12 or 12
+        return (
+            f"{when.strftime('%a')}, {when.strftime('%b')} {when.day}"
+            f" · {hour}:{when.minute:02d} {when.strftime('%p')}"
+        )
 
     @Property(str, notify=changed)
     def nextChapelTitle(self) -> str:

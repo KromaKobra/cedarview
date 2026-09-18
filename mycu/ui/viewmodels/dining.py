@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from PySide6.QtCore import (
     QAbstractListModel,
@@ -18,7 +18,7 @@ from PySide6.QtCore import (
 
 from ...core.errors import ParseError, TransportError
 from ...core.models import HOME_COOKING, DayMenu, MealPlan
-from ...core.providers.dining import DEFAULT_DAYS, DiningProvider
+from ...core.providers.dining import DEFAULT_DAYS, DiningProvider, next_meal_block
 from ...core.providers.meals import MealsProvider
 from ..tasks import run_in_background
 
@@ -75,6 +75,16 @@ class MenuListModel(QAbstractListModel):
                 self._rows.append((item.name, item.allergen_text, False))
         self.endResetModel()
 
+    def replace_items(self, items) -> None:
+        """Dishes only, no heading row.
+
+        The summary screen's card already carries the meal name in its own
+        header, so a "BREAKFAST" row inside the list would say it twice.
+        """
+        self.beginResetModel()
+        self._rows = [(item.name, item.allergen_text, False) for item in items]
+        self.endResetModel()
+
 
 class DiningViewModel(QObject):
     """State and actions for the dining screen.
@@ -93,6 +103,19 @@ class DiningViewModel(QObject):
         self._model = MenuListModel(self)
         self._menus: tuple[DayMenu, ...] = ()
         self._offset = 0
+
+        # The one sitting the summary screen shows, picked off the clock. A
+        # second model rather than a filtered view of the first: the Dining tab
+        # pages through days independently, and the summary must keep showing
+        # the next meal while it does.
+        self._next_meal = MenuListModel(self)
+        self._next_meal_on: date | None = None
+        self._next_meal_block = None
+
+        # Which sitting is next is entirely a function of the clock, so the
+        # clock is a seam. Without it the test for "after dinner, show
+        # tomorrow's breakfast" could only be run after dinner.
+        self._now = datetime.now
         self._busy = False
         self._error = ""
         self._loaded = False
@@ -182,6 +205,64 @@ class DiningViewModel(QObject):
     def hasPlan(self) -> bool:
         return self._plan.has_any
 
+    @Property(str, notify=changed)
+    def mealsPeriodText(self) -> str:
+        """"left this week" / "left this term", or just "left".
+
+        The qualifier is only there when the page actually said which cycle the
+        count runs on — see :attr:`MealPlan.period`.
+        """
+        period = self._plan.period_text
+        return f"left {period}" if period else "left"
+
+    @Property(str, notify=changed)
+    def planDescription(self) -> str:
+        """"Weekly meal plan" / "Semester meal plan" / "".
+
+        Not the plan's *name*: Self-Service's meal-plan page never states it.
+        This is what the page does support — which cycle the meals run on.
+        """
+        return self._plan.plan_description
+
+    # ---- The next sitting ---------------------------------------------
+    # Public data, so this fills in before sign-in and stays filled in after
+    # a sign-out — unlike everything above it.
+
+    @Property(QObject, constant=True)
+    def nextMealItems(self) -> MenuListModel:
+        return self._next_meal
+
+    @Property(bool, notify=changed)
+    def hasNextMeal(self) -> bool:
+        return self._next_meal_block is not None
+
+    @Property(str, notify=changed)
+    def nextMealLabel(self) -> str:
+        """"Breakfast" / "Lunch" / "Dinner" — the sitting's own heading."""
+        return self._next_meal_block.heading if self._next_meal_block else ""
+
+    @Property(str, notify=changed)
+    def nextMealWhen(self) -> str:
+        """"Up next" when it is today, otherwise which day it is.
+
+        After the last sitting of the day the next meal is tomorrow's
+        breakfast, and calling that "up next" without saying so would have
+        people turning up to a closed dining hall.
+        """
+        if self._next_meal_on is None:
+            return ""
+
+        today = date.today()
+        if self._next_meal_on == today:
+            return "Up next"
+        if self._next_meal_on == today + timedelta(days=1):
+            return "Tomorrow"
+        return self._next_meal_on.strftime("%A")
+
+    @Property(str, notify=changed)
+    def nextMealVenue(self) -> str:
+        return self._next_meal_block.venue if self._next_meal_block else HOME_COOKING
+
     @Slot()
     def refreshPlan(self) -> None:
         """Load the meal-plan balances. Needs the Cedarville session."""
@@ -254,7 +335,30 @@ class DiningViewModel(QObject):
                 blocks = day.for_venue(HOME_COOKING)
                 break
         self._model.replace_from_blocks(blocks)
+        self._rebuild_next_meal()
         self.changed.emit()
+
+    def _rebuild_next_meal(self) -> None:
+        """Re-pick the sitting the summary screen shows.
+
+        Driven off the clock, so it is recomputed on every load and every
+        refresh rather than cached: an app left open over lunch should be
+        showing dinner by the time you look at it again.
+        """
+        found = next_meal_block(self._menus, self._now())
+        if found is None:
+            self._next_meal_on, self._next_meal_block = None, None
+            self._next_meal.replace_items(())
+            return
+
+        self._next_meal_on, self._next_meal_block = found
+        self._next_meal.replace_items(self._next_meal_block.items)
+        log.info(
+            "next meal: %s on %s (%d items)",
+            self._next_meal_block.heading,
+            self._next_meal_on,
+            len(self._next_meal_block.items),
+        )
 
     @Slot(object)
     def _on_loaded(self, menus: object) -> None:

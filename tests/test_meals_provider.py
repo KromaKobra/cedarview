@@ -207,3 +207,46 @@ def test_provider_end_to_end_over_the_fixture(fixtures_dir: Path) -> None:
     assert plan.meals_remaining == 19
     assert plan.dining_dollars == 112.08
     assert plan.flex_dollars == 0.00
+
+
+# ---------------------------------------------------------------------------
+# Which cycle the meal count runs on
+#
+# Read off the page rather than assumed. Weekly plans and per-term block plans
+# both exist, and telling a block-plan holder their meals reset on Sunday would
+# be a wrong statement about their own account.
+# ---------------------------------------------------------------------------
+
+def test_the_real_page_reports_a_weekly_cycle(fixtures_dir: Path) -> None:
+    plan = parse_meals((fixtures_dir / "cedarinfo_meals.html").read_text())
+    assert plan.period == "week"
+    assert plan.period_text == "this week"
+    assert plan.plan_description == "Weekly meal plan"
+
+
+def test_a_term_plan_is_recognised_as_one() -> None:
+    html = "<p>You have <strong>50</strong> meal(s) remaining in your meal plan for the current semester.</p>"
+    assert parse_meals(html).period == "term"
+
+
+def test_the_dollar_paragraphs_do_not_decide_the_cycle() -> None:
+    """Every page says "end of the current term" — about the money, not the meals.
+
+    Reading the period off the page as a whole would therefore call every plan
+    a term plan, including the weekly one in the committed capture.
+    """
+    html = """
+    <p>You have <strong>19</strong> meal(s) remaining in your meal plan for the current week.</p>
+    <p>You have <strong>$112.08</strong> remaining in Meal Plan Dining Dollars.
+       These dollars expire at the end of the current term, so use them!</p>
+    """
+    assert parse_meals(html).period == "week"
+
+
+def test_an_unrecognised_wording_says_nothing_rather_than_guessing() -> None:
+    html = "<p>You have <strong>7</strong> meals remaining in your meal plan.</p>"
+    plan = parse_meals(html)
+    assert plan.period == ""
+    assert plan.period_text == ""
+    assert plan.plan_description == ""
+    assert plan.meals_remaining == 7        # still parsed; only the cycle is unknown

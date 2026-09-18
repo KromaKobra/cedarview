@@ -323,6 +323,28 @@ class MealPlan:
     student_name: str = ""
     prox_card_id: str = ""
 
+    #: Which cycle :attr:`meals_remaining` counts down — ``"week"`` or
+    #: ``"term"``, and ``""`` when the page did not say. Read off the sentence
+    #: ("…for the current week"), never assumed: block plans are per-term and
+    #: telling a term-plan holder their meals reset on Sunday would be wrong.
+    period: str = ""
+
+    #: How long :attr:`meals_remaining` lasts, in words — "this week" /
+    #: "this term" / "" when unknown. Here rather than in the QML because
+    #: whether the figure is weekly at all is a fact about the data.
+    @property
+    def period_text(self) -> str:
+        return f"this {self.period}" if self.period else ""
+
+    #: "Weekly meal plan" / "Semester meal plan" / "" — the closest thing to a
+    #: plan *name* the page supports. The actual plan name ("14 Meals per week")
+    #: is not on the meal-plan page; see docs/data-sources.md.
+    @property
+    def plan_description(self) -> str:
+        return {"week": "Weekly meal plan", "term": "Semester meal plan"}.get(
+            self.period, ""
+        )
+
     @property
     def has_any(self) -> bool:
         return any(

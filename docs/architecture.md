@@ -31,6 +31,10 @@ cedarview/
       tasks.py              run blocking work off the GUI thread
       viewmodels/           Qt <-> QML bridge
       qml/                  shared verbatim, desktop and Android
+        Main.qml            ribbon header, tab stack, bottom bar
+        SummaryView.qml     the screen the app opens on
+        Theme.qml           the palette; nothing else hard-codes a colour
+        Glyph.qml           every icon, drawn on a Canvas — see below
     platform/               ← the only Android-specific code
       desktop.py            QtWebEngine
       android.py            QtWebView
@@ -146,6 +150,42 @@ concept at all:
 Success is one condition, checked one way: the surface's URL is on the
 Self-Service origin and does not look like a sign-in page. Testable with no
 browser at all, which is what `tests/test_login_flow.py` does.
+
+---
+
+## The screens
+
+Three tabs, behind a bottom bar. **Summary** is the one that is built; Chapel
+and Dining are named in the bar and say "Coming soon!", because a map that
+shows where the roads are going tells you more than one that only shows the
+roads already laid.
+
+Summary is deliberately *not* owned by one viewmodel. It reads from both
+`chapel` and `dining`, and through them from four separate services — the skip
+ledger and the meal-plan page (behind the Cedarville sign-in), the chapel
+schedule and the dining menu API (public). The two things a student checks in
+the morning used to be one tab apart; putting them on one card stack is the
+whole point of the screen.
+
+A consequence worth knowing: the public half fills in before you sign in and
+stays filled in after you sign out, so the screen is never entirely blank.
+
+Two rules the screen is built on, both of which have bitten this codebase:
+
+* **No confident zeros.** Every figure the app has not actually received
+  renders as an em dash. `$0.00` and `0 skips left` are the two most alarming
+  things this app could say and it must never say either by accident — which is
+  why the viewmodels use `-1` and `""` as "not reported" sentinels rather than
+  falsy defaults.
+* **No glyphs from fonts.** Every icon is drawn on a `Canvas` in `Glyph.qml`.
+  The toolbar once used "↻" (U+21BB), which the desktop font has and the
+  phone's Roboto does not, so it rendered as a tofu box on the moto g power. An
+  icon that fails to render in a tab bar leaves the user with no idea what the
+  tab is. Canvas is part of QtQuick proper — no font, no QtSvg (which is not in
+  the APK's module list), no image assets.
+
+New QML files must be added to `qml_files` in `pysidedeploy.spec`; the Android
+build lists them by hand.
 
 ---
 

@@ -34,13 +34,13 @@ android_packages = buildozer==1.5.0,cython==0.29.33
 # paths to required qml files. comma separated
 # normally all the qml files required by the project are added automatically
 # design studio projects include the qml files using qt resources
-qml_files = .buildozer/android/app/mycu/ui/qml/ChapelView.qml,.buildozer/android/app/mycu/ui/qml/DiningView.qml,.buildozer/android/app/mycu/ui/qml/Main.qml,.buildozer/android/app/mycu/ui/qml/WebSurfaceAndroid.qml,.buildozer/android/app/mycu/ui/qml/WebSurfaceStub.qml,mycu/ui/qml/ChapelView.qml,mycu/ui/qml/DiningView.qml,mycu/ui/qml/Main.qml,mycu/ui/qml/WebSurfaceAndroid.qml,mycu/ui/qml/WebSurfaceStub.qml
+qml_files = .buildozer/android/app/mycu/ui/qml/ChapelView.qml,.buildozer/android/app/mycu/ui/qml/DiningView.qml,.buildozer/android/app/mycu/ui/qml/Main.qml,.buildozer/android/app/mycu/ui/qml/WebSurfaceAndroid.qml,.buildozer/android/app/mycu/ui/qml/WebSurfaceStub.qml,mycu/ui/qml/BalanceTile.qml,mycu/ui/qml/Card.qml,mycu/ui/qml/ChapelView.qml,mycu/ui/qml/ComingSoon.qml,mycu/ui/qml/DarkMenuItem.qml,mycu/ui/qml/DiningView.qml,mycu/ui/qml/Glyph.qml,mycu/ui/qml/InfoSheet.qml,mycu/ui/qml/Main.qml,mycu/ui/qml/NavButton.qml,mycu/ui/qml/SummaryView.qml,mycu/ui/qml/Theme.qml,mycu/ui/qml/WebSurfaceAndroid.qml,mycu/ui/qml/WebSurfaceStub.qml
 
 # excluded qml plugin binaries
 excluded_qml_plugins = QtCharts,QtQuick3D,QtSensors,QtTest,QtWebEngine
 
 # qt modules used. comma separated
-modules = Qml,Network,Gui,Quick,WebView,QuickControls2,Core,OpenGL
+modules = Qml,Core,OpenGL,QuickControls2,Network,Gui,WebView,Quick
 
 # qt plugins used by the application. only relevant for desktop deployment
 # for qt plugins used in android application see [android][plugins]
@@ -90,7 +90,7 @@ ndk_path = /home/kroma/.pyside6_android_deploy/android-ndk/android-ndk-r27c
 sdk_path = 
 
 # other libraries to be loaded at app startup. comma separated.
-local_libs = plugins_webview_qtwebview_android,plugins_platforms_qtforandroid
+local_libs = plugins_platforms_qtforandroid,plugins_webview_qtwebview_android
 
 # architecture of deployed platform
 arch = aarch64

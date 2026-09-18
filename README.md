@@ -12,7 +12,7 @@ Python + PySide6 + QML, packaged with Nix.
 
 | | |
 |---|---|
-| Core, transport, login, viewmodels, QML | **written, 244 tests passing** |
+| Core, transport, login, viewmodels, QML | **written, 279 tests passing** |
 | WebView transport, desktop | **verified end to end** — `scripts/smoke-transport`, 7/7 |
 | **Dining menus (Home Cooking)** | ✅ **working against the live API**, real fixture committed |
 | **Next chapel speaker** | ✅ **working against the live API**, real fixture committed |
@@ -38,7 +38,7 @@ That runs the whole app — QML, viewmodels, list model, the lot — against
 `tests/fixtures/`. It is how you develop the UI without a session.
 
 ```bash
-pytest                              # 244 tests, no network, no display needed
+pytest                              # 279 tests, no network, no display needed
 python scripts/smoke-transport      # proves the WebView transport works
 ```
 
@@ -51,6 +51,21 @@ python -m mycu
 
 Opens a window, sends you to Microsoft's sign-in page if needed, and shows your
 chapel skips, meal balances and this week's menus.
+
+## The screen
+
+One summary screen, behind a three-tab bar. It answers the questions you have
+before you leave the room: what the next chapel is and how many skips are left,
+the two flex balances, how many meals are on the plan, and what Home Cooking is
+serving at the next sitting. The Chapel and Dining tabs are named and say
+"Coming soon!" — their viewmodels already load, so both are QML work with no
+Python behind them.
+
+The public half of that (the menu, the next chapel) fills in before you sign in
+and stays after you sign out, so the screen is never entirely blank. Nothing on
+it renders a confident zero: a figure the app has not received is an em dash,
+never `$0.00`. See `docs/architecture.md` for the two rules the screen is built
+on and why every icon is drawn rather than typed.
 
 The parser is **no longer a guess** — `scripts/discover` signed in and captured
 every endpoint, and each provider is written and tested against a real scrubbed

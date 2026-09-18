@@ -8,7 +8,7 @@ one line in ``mycu/ui/tasks.py`` and is exercised by running the app.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 
 import pytest
@@ -16,10 +16,21 @@ import pytest
 pytest.importorskip("PySide6.QtCore", reason="PySide6 not available")
 
 from mycu.core.errors import ParseError, SessionExpired, TransportError  # noqa: E402
-from mycu.core.models import AllowanceLine, ChapelLedgerEntry, ChapelSummary  # noqa: E402
+from mycu.core.models import (  # noqa: E402
+    HOME_COOKING,
+    AllowanceLine,
+    ChapelLedgerEntry,
+    ChapelSummary,
+    DayMenu,
+    MealPlan,
+    MenuBlock,
+    MenuItem,
+    UpcomingChapel,
+)
 from mycu.core.session import SessionStore  # noqa: E402
 from mycu.core.transport import FixtureTransport  # noqa: E402
 from mycu.ui.viewmodels.chapel import ChapelListModel, ChapelViewModel  # noqa: E402
+from mycu.ui.viewmodels.dining import DiningViewModel, MenuListModel  # noqa: E402
 
 
 @pytest.fixture
@@ -203,3 +214,156 @@ def test_the_term_is_remembered_across_launches(tmp_path: Path, fixtures_dir: Pa
 
     second = ChapelViewModel(FixtureTransport(fixtures_dir), SessionStore(tmp_path))
     assert second.term == "Fall Semester 2026"
+
+
+# ---------------------------------------------------------------------------
+# What the summary screen reads
+# ---------------------------------------------------------------------------
+
+def test_the_skip_bar_is_a_fraction_of_the_allowance(vm: ChapelViewModel) -> None:
+    vm._on_loaded(ChapelSummary(used=2, total=18, remaining=16))
+    assert vm.remainingFraction == pytest.approx(16 / 18)
+
+
+def test_the_bar_is_empty_rather_than_wrong_when_the_figures_are_missing(
+    vm: ChapelViewModel,
+) -> None:
+    vm._on_loaded(ChapelSummary())
+    assert vm.remainingFraction == 0.0
+
+
+def test_the_bar_never_overflows_its_track(vm: ChapelViewModel) -> None:
+    """The server's two halves of arithmetic are not guaranteed to agree.
+
+    See ChapelSummary: `used` and `remaining` come from different parts of
+    Cedarville's own sums. A bar past the end of its track looks broken in a
+    way a full bar does not.
+    """
+    vm._on_loaded(ChapelSummary(used=0, total=4, remaining=9))
+    assert vm.remainingFraction == 1.0
+
+
+def test_the_day_badge_and_the_date_line_are_separate(vm: ChapelViewModel) -> None:
+    """Two pieces of text on the card, so two properties.
+
+    Slicing the badge back out of a formatted "Tomorrow 10:00 AM" is how a UI
+    ends up rendering a time inside a pill.
+    """
+    when = datetime.combine(date.today() + timedelta(days=1), time(10, 0))
+    vm._next = UpcomingChapel(starts_at=when, title="Worship Chapel")
+
+    assert vm.nextChapelDay == "Tomorrow"
+    assert vm.nextChapelDateText.endswith("10:00 AM")
+    assert "Tomorrow" not in vm.nextChapelDateText
+
+
+def test_today_and_a_weekday_are_both_spelled_out(vm: ChapelViewModel) -> None:
+    vm._next = UpcomingChapel(starts_at=datetime.combine(date.today(), time(10, 0)))
+    assert vm.nextChapelDay == "Today"
+
+    later = date.today() + timedelta(days=4)
+    vm._next = UpcomingChapel(starts_at=datetime.combine(later, time(10, 0)))
+    assert vm.nextChapelDay == later.strftime("%A")
+
+
+def test_no_upcoming_chapel_renders_as_nothing_at_all(vm: ChapelViewModel) -> None:
+    """Over the summer there genuinely is no next chapel, and "TBA" is a claim."""
+    assert vm.nextChapelDay == ""
+    assert vm.nextChapelDateText == ""
+
+
+def test_midnight_and_noon_are_not_rendered_as_zero_and_twelve(vm: ChapelViewModel) -> None:
+    """`%-I` is a glibc extension bionic does not have, so the hour is done by hand."""
+    vm._next = UpcomingChapel(starts_at=datetime.combine(date.today(), time(0, 5)))
+    assert "12:05 AM" in vm.nextChapelDateText
+
+    vm._next = UpcomingChapel(starts_at=datetime.combine(date.today(), time(12, 0)))
+    assert "12:00 PM" in vm.nextChapelDateText
+
+
+# ---------------------------------------------------------------------------
+# Dining viewmodel
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def dvm(fixtures_dir: Path) -> DiningViewModel:
+    vm = DiningViewModel(FixtureTransport(fixtures_dir))
+    # Pin the clock to breakfast time. Which sitting is "next" is a function of
+    # the hour, and a test that only passes before 10:30am is not a test.
+    vm._now = lambda: datetime.combine(date.today(), time(7, 0))
+    return vm
+
+
+def test_the_meals_qualifier_follows_the_page(dvm: DiningViewModel) -> None:
+    dvm._plan = MealPlan(meals_remaining=19, period="week")
+    assert dvm.mealsPeriodText == "left this week"
+    assert dvm.planDescription == "Weekly meal plan"
+
+
+def test_an_unknown_cycle_drops_the_qualifier_rather_than_inventing_one(
+    dvm: DiningViewModel,
+) -> None:
+    dvm._plan = MealPlan(meals_remaining=19)
+    assert dvm.mealsPeriodText == "left"
+    assert dvm.planDescription == ""
+
+
+def test_the_next_sitting_is_exposed_without_a_heading_row(dvm: DiningViewModel) -> None:
+    """The card's own header already names the meal; the list must not repeat it."""
+    dvm._on_loaded((
+        DayMenu(on=date.today(), blocks=(
+            MenuBlock(venue=HOME_COOKING, meal="Breakfast", slot="breakfast", items=(
+                MenuItem(name="Bacon"),
+                MenuItem(name="Biscuits & Country Gravy", allergens=("gluten", "dairy")),
+            )),
+        )),
+    ))
+
+    model = dvm.nextMealItems
+    assert model.rowCount() == 2
+    assert all(
+        model.data(model.index(row, 0), MenuListModel.HeaderRole) is False
+        for row in range(model.rowCount())
+    )
+    assert model.data(model.index(1, 0), MenuListModel.AllergenRole) == "gluten, dairy"
+
+
+def test_paging_the_dining_tab_does_not_move_the_summary_card(dvm: DiningViewModel) -> None:
+    """The two are different questions and must not share a model."""
+    dvm._on_loaded((
+        DayMenu(on=date.today(), blocks=(
+            MenuBlock(venue=HOME_COOKING, meal="Dinner", slot="dinner",
+                      items=(MenuItem(name="Bratwurst"),)),
+        )),
+        DayMenu(on=date.today() + timedelta(days=1), blocks=(
+            MenuBlock(venue=HOME_COOKING, meal="Breakfast", slot="breakfast",
+                      items=(MenuItem(name="Bacon"),)),
+        )),
+    ))
+    before = dvm.nextMealLabel
+
+    dvm.nextDay()
+
+    assert dvm.dayOffset == 1
+    assert dvm.nextMealLabel == before
+
+
+def test_no_menu_at_all_is_reported_as_no_menu(dvm: DiningViewModel) -> None:
+    dvm._on_loaded(())
+    assert dvm.hasNextMeal is False
+    assert dvm.nextMealLabel == ""
+    assert dvm.nextMealItems.rowCount() == 0
+    # Still names the station, so the card has a title while it is empty.
+    assert dvm.nextMealVenue == HOME_COOKING
+
+
+def test_tomorrows_breakfast_says_so(dvm: DiningViewModel) -> None:
+    """Calling it "up next" would have people turning up to a closed hall."""
+    dvm._on_loaded((
+        DayMenu(on=date.today() + timedelta(days=1), blocks=(
+            MenuBlock(venue=HOME_COOKING, meal="Breakfast", slot="breakfast",
+                      items=(MenuItem(name="Bacon"),)),
+        )),
+    ))
+    assert dvm.nextMealWhen == "Tomorrow"
+    assert dvm.nextMealLabel == "Breakfast"

@@ -66,6 +66,17 @@ DINING_MARKERS = ("meal plan dining dollars", "dining dollars")
 FLEX_MARKERS = ("voluntary flex dollars", "flex dollars")
 PROX_MARKERS = ("prox card id",)
 
+#: Which cycle the meal count runs on, read off the same sentence as the count:
+#: "…remaining in your meal plan for the current **week**". Ordered
+#: most-specific-first, and matched rather than assumed — weekly plans and
+#: per-term block plans both exist, and saying "this week" to a block-plan
+#: holder would misstate when the number resets. An unrecognised wording gives
+#: ``""``, which the UI renders as no qualifier at all.
+PERIOD_MARKERS = (
+    ("week", ("current week", "this week", "per week", "week")),
+    ("term", ("current term", "current semester", "this term", "semester", "term")),
+)
+
 
 class MealsProvider(Provider[MealPlan]):
     """Meal plan balances for the signed-in student."""
@@ -105,6 +116,7 @@ def parse_meals(body: str) -> MealPlan:
         flex_dollars=flex,
         student_name=_student_name(tree),
         prox_card_id=_find_text(paragraphs, PROX_MARKERS),
+        period=_find_period(paragraphs),
     )
 
     if not plan.has_any:
@@ -168,6 +180,21 @@ def _find_money(paragraphs, markers, exclude=()) -> float | None:
         if value is not None:
             return value
     return None
+
+
+def _find_period(paragraphs) -> str:
+    """``"week"`` / ``"term"`` / ``""`` — which cycle the meal count runs on.
+
+    Only the meals sentence is examined. The dollar paragraphs also say "the
+    end of the current term", and reading the period off the page as a whole
+    would therefore call every plan a term plan.
+    """
+    for text, _node in _matching(paragraphs, MEALS_MARKERS):
+        lowered = text.lower()
+        for period, markers in PERIOD_MARKERS:
+            if any(m in lowered for m in markers):
+                return period
+    return ""
 
 
 def _find_text(paragraphs, markers) -> str:

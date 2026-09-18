@@ -153,6 +153,25 @@ Paragraphs are matched by phrase, never by position, so a reordering upstream
 cannot silently shift the values. Every figure is independently optional: a
 missing one renders as blank, never as a confident `0` or `$0.00`.
 
+### What this page does *not* say: the plan's name
+
+There is no "14 Meals per week" anywhere on it. The only thing the page states
+about the plan itself is the **cycle** the count runs on — "…remaining in your
+meal plan for the current *week*" — so that is what is parsed
+(`MealPlan.period`) and that is what the summary screen shows: "Weekly meal
+plan", with the count beside it as "19 left this week".
+
+The cycle is read rather than assumed because per-term block plans exist, and
+telling a block-plan holder their meals reset on Sunday would be a wrong
+statement about their own account. An unrecognised wording gives `""` and the
+UI simply drops the qualifier.
+
+**If you want the plan's real name on the card**, it has to come from
+somewhere: either another Self-Service page that states it (recapture with
+`scripts/discover` and say which page), or you tell the app once and it stores
+it. It is not on this page, and inventing "14 Meals per week" from a count of
+19 is not something the app will do.
+
 ## ✂️ 5. Print quota — dropped
 
 Removed from scope at your request, and removed from the code: there is no

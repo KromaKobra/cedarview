@@ -13,17 +13,18 @@ dining site's own script fetches it with `credentials: "omit"`.
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
 
 import pytest
 
 from mycu.core.errors import ParseError
-from mycu.core.models import HOME_COOKING, SLOT_ORDER, DayMenu, MenuBlock
+from mycu.core.models import HOME_COOKING, SLOT_ORDER, DayMenu, MenuBlock, MenuItem
 from mycu.core.providers.dining import (
     DINING_PATH,
     DiningProvider,
     home_cooking_for,
+    next_meal_block,
     parse_menus,
 )
 from mycu.core.transport import DINING_BASE, FixtureTransport
@@ -280,3 +281,78 @@ def test_fixture_slug_includes_the_host_for_non_default_origins() -> None:
         FixtureTransport.slug(f"{DINING_BASE}/api/menus?days=2")
         == "diningdata_cedarville_edu_api_menus"
     )
+
+
+# ---------------------------------------------------------------------------
+# The next sitting
+#
+# What the summary screen puts on the front page. The menu feed carries no
+# serving times, so the cutoffs in `SERVING_ENDS` are the app's own — which is
+# exactly why they need tests: a rule nobody can look up is a rule that drifts.
+# ---------------------------------------------------------------------------
+
+def test_before_half_ten_the_next_meal_is_breakfast(menus: tuple[DayMenu, ...]) -> None:
+    on, block = next_meal_block(menus, datetime(2026, 9, 16, 7, 30))
+    assert on == FIXTURE_DATE
+    assert block.slot == "breakfast"
+
+
+def test_late_morning_has_moved_on_to_lunch(menus: tuple[DayMenu, ...]) -> None:
+    _on, block = next_meal_block(menus, datetime(2026, 9, 16, 10, 45))
+    assert block.slot == "lunch"
+
+
+def test_the_afternoon_is_looking_at_dinner(menus: tuple[DayMenu, ...]) -> None:
+    _on, block = next_meal_block(menus, datetime(2026, 9, 16, 16, 30))
+    assert block.slot == "dinner"
+
+
+def test_after_dinner_it_rolls_over_to_tomorrow(menus: tuple[DayMenu, ...]) -> None:
+    """The alternative is showing a menu for a meal that is already over."""
+    on, block = next_meal_block(menus, datetime(2026, 9, 16, 21, 0))
+    assert on == date(2026, 9, 17)
+    assert block.slot == "breakfast"
+
+
+def test_the_boundary_belongs_to_the_meal_that_is_ending(menus: tuple[DayMenu, ...]) -> None:
+    assert next_meal_block(menus, datetime(2026, 9, 16, 10, 29))[1].slot == "breakfast"
+    assert next_meal_block(menus, datetime(2026, 9, 16, 10, 30))[1].slot == "lunch"
+
+
+def test_nothing_left_in_the_payload_is_not_an_error(menus: tuple[DayMenu, ...]) -> None:
+    """The API serves forward from today, so this happens with a stale cache."""
+    assert next_meal_block(menus, datetime(2026, 9, 20, 7, 0)) is None
+
+
+def test_all_day_stations_are_never_up_next() -> None:
+    """"Breakfast All Day" is always on; it is not a sitting you can be before."""
+    day = DayMenu(
+        on=date(2026, 9, 16),
+        blocks=(
+            MenuBlock(venue=HOME_COOKING, meal="yogurt bar", slot="anytime",
+                      items=(MenuItem(name="Granola"),)),
+            MenuBlock(venue=HOME_COOKING, meal="Lunch", slot="lunch",
+                      items=(MenuItem(name="Pork Loin"),)),
+        ),
+    )
+    _on, block = next_meal_block((day,), datetime(2026, 9, 16, 7, 0))
+    assert block.slot == "lunch"
+
+
+def test_an_empty_sitting_is_skipped_for_the_next_real_one() -> None:
+    """A heading with no dishes under it reads as a bug, not as a menu."""
+    day = DayMenu(
+        on=date(2026, 9, 16),
+        blocks=(
+            MenuBlock(venue=HOME_COOKING, meal="Breakfast", slot="breakfast", items=()),
+            MenuBlock(venue=HOME_COOKING, meal="Lunch", slot="lunch",
+                      items=(MenuItem(name="Pork Loin"),)),
+        ),
+    )
+    _on, block = next_meal_block((day,), datetime(2026, 9, 16, 7, 0))
+    assert block.slot == "lunch"
+
+
+def test_only_the_asked_for_station_is_considered(menus: tuple[DayMenu, ...]) -> None:
+    _on, block = next_meal_block(menus, datetime(2026, 9, 16, 7, 30))
+    assert block.venue == HOME_COOKING
