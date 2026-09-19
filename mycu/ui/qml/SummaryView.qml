@@ -1,14 +1,15 @@
-// The summary screen: the four things worth knowing before you leave the room.
+// The summary screen: the things worth knowing before you leave the room.
 //
 //   1. what the next chapel is, and how many skips you still have
 //   2. the two flex balances, which are NOT interchangeable
 //   3. how many meals are left on the plan
 //   4. what Home Cooking is serving at the next sitting
+//   5. how much of the semester is left
 //
-// Binds to the `chapel` and `dining` context properties. Both screens'
-// viewmodels feed this one, which is the point of it: the two things a student
-// checks in the morning live on two different services and used to live on two
-// different tabs.
+// Binds to the `chapel`, `dining` and `semester` context properties. Both
+// screens' viewmodels feed this one, which is the point of it: the two things a
+// student checks in the morning live on two different services and used to live
+// on two different tabs.
 //
 // Nothing here renders a confident zero. Every figure the app has not actually
 // received is an em dash, because "$0.00" and "0 skips left" are the two most
@@ -36,6 +37,7 @@ Item {
             if (contentY < -80 && !chapel.busy && !dining.busy) {
                 chapel.refreshAll()
                 dining.refreshAll()
+                semester.refreshAll()
             }
         }
 
@@ -164,31 +166,13 @@ Item {
                         }
                     }
 
-                    // The bar is deliberately unlabelled: the numbers above it
-                    // already say how many, and what a bar adds is the sense of
-                    // how far through you are without reading anything.
-                    Rectangle {
-                        Layout.fillWidth: true
+                    // Hidden rather than empty until a fetch lands — see
+                    // MeterBar.qml for why it is unlabelled and why `fraction`
+                    // is always the remaining share.
+                    MeterBar {
                         Layout.topMargin: 14
                         visible: chapel.remaining >= 0 && chapel.allowed > 0
-                        height: 8
-                        radius: 4
-                        color: theme.track
-
-                        Rectangle {
-                            width: Math.max(parent.height, parent.width * chapel.remainingFraction)
-                            height: parent.height
-                            radius: parent.radius
-                            gradient: Gradient {
-                                orientation: Gradient.Horizontal
-                                GradientStop { position: 0.0; color: theme.accentDeep }
-                                GradientStop { position: 1.0; color: theme.accent }
-                            }
-
-                            Behavior on width {
-                                NumberAnimation { duration: 320; easing.type: Easing.OutCubic }
-                            }
-                        }
+                        fraction: chapel.remainingFraction
                     }
                 }
             }
@@ -339,28 +323,100 @@ Item {
                                 color: theme.faint
                             }
 
-                            ColumnLayout {
+                            // Dish names only. The allergen list is still on the
+                            // model (`allergens`, for the Dining tab when it is
+                            // built) but it is not what this card is for: this
+                            // is the glance that tells you whether to walk over
+                            // to The Commons, and a grey second line under every
+                            // item turned four dishes into eight lines of text.
+                            Label {
                                 Layout.fillWidth: true
-                                spacing: 2
-
-                                Label {
-                                    Layout.fillWidth: true
-                                    text: model.text
-                                    color: theme.text
-                                    font.pixelSize: 14
-                                    wrapMode: Text.Wrap
-                                }
-
-                                Label {
-                                    Layout.fillWidth: true
-                                    visible: model.allergens.length > 0
-                                    text: model.allergens
-                                    color: theme.faint
-                                    font.pixelSize: 11
-                                    elide: Text.ElideRight
-                                }
+                                text: model.text
+                                color: theme.text
+                                font.pixelSize: 14
+                                wrapMode: Text.Wrap
                             }
                         }
+                    }
+                }
+            }
+
+            // ---- The term itself ----------------------------------------
+            // The only card on this screen with no service behind it — the
+            // term's dates are hand-entered, for the reason core/calendar.py
+            // explains. Last of the real cards because it is the slowest-moving
+            // number on the screen: it is here to be seen, not checked.
+            Card {
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 0
+
+                    RowLayout {
+                        Layout.fillWidth: true
+
+                        Label {
+                            text: "SEMESTER"
+                            color: theme.muted
+                            font.pixelSize: 11
+                            font.bold: true
+                            font.letterSpacing: 1.2
+                        }
+
+                        Item { Layout.fillWidth: true }
+
+                        Label {
+                            Layout.alignment: Qt.AlignVCenter
+                            text: semester.inTerm
+                                  ? semester.termName + " · " + semester.endDateText
+                                  : "Between terms"
+                            color: theme.faint
+                            font.pixelSize: 11
+                        }
+                    }
+
+                    // In term: the countdown. Out of term: when the next one
+                    // starts. Never "0 days left" over the summer — the same
+                    // rule the rest of this screen follows.
+                    RowLayout {
+                        Layout.fillWidth: true
+                        Layout.topMargin: 10
+                        visible: semester.inTerm
+                        spacing: 8
+
+                        Label {
+                            text: semester.daysLeft >= 0 ? semester.daysLeft : "—"
+                            color: theme.text
+                            font.pixelSize: 32
+                            font.bold: true
+                        }
+
+                        Label {
+                            Layout.alignment: Qt.AlignBottom
+                            Layout.bottomMargin: 5
+                            text: semester.daysLeft === 1 ? "day left" : "days left"
+                            color: theme.muted
+                            font.pixelSize: 12
+                        }
+
+                        Item { Layout.fillWidth: true }
+                    }
+
+                    Label {
+                        Layout.fillWidth: true
+                        Layout.topMargin: 10
+                        visible: !semester.inTerm
+                        text: semester.nextTermText.length > 0
+                              ? semester.nextTermText
+                              : "No term in session."
+                        color: theme.muted
+                        font.pixelSize: 16
+                        wrapMode: Text.Wrap
+                    }
+
+                    MeterBar {
+                        Layout.topMargin: 14
+                        visible: semester.inTerm
+                        fraction: semester.remainingFraction
                     }
                 }
             }
@@ -381,7 +437,7 @@ Item {
                     radius: 12
                     color: theme.dangerSoft
                     border.width: 1
-                    border.color: Qt.rgba(1, 1, 1, 0.06)
+                    border.color: theme.hairline
 
                     Label {
                         id: errorText

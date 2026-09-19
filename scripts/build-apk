@@ -78,6 +78,32 @@ STAGE="$ROOT/android-build"
 
 PYSIDE_VERSION="6.11.0"          # must match the desktop Qt in flake.nix
 ARCH="aarch64"                   # the phone is arm64-v8a
+
+# The launcher icon, pinned in phase 1a. Absolute on purpose: buildozer
+# resolves icon.filename relative to its own root ($STAGE), not the project
+# root, so a relative path silently resolves to the wrong place.
+#
+# Note this is NOT the header logo in the app — that is mycu/ui/qml/icon.png,
+# loaded by Main.qml. They are separate files with separate delivery paths: the
+# logo rides in private.tar and can be pushed onto a device, the launcher icon
+# is a compiled Android resource and cannot. Changing one does not change the
+# other; keep them visually related by hand.
+#
+# p4a copies this file verbatim into res/mipmap/icon.png — no resize, no format
+# conversion, no density variants — so it wants to be a large square PNG with
+# alpha. See docs/iterating-and-shipping.md §2.
+ICON="$ROOT/assets/appicon.png"
+
+# The adaptive (Oreo and later) pair. ICON above stays as the legacy fallback
+# for API < 26, and is what p4a copies to res/mipmap/icon.png.
+#
+# Both must be set or p4a prints "Received an --icon_fg or an --icon_bg
+# argument, but not both. Ignoring." and silently falls back to the legacy
+# path, which is the thing these exist to escape.
+#
+# Regenerate with scripts/make-icon-layers.
+ICON_FG="$ROOT/assets/appicon_foreground.png"
+ICON_BG="$ROOT/assets/appicon_background.png"
 QT_DL="https://download.qt.io/official_releases/QtForPython"
 WHEEL_PYSIDE="$WHEELS/pyside6-${PYSIDE_VERSION}-${PYSIDE_VERSION}-cp311-cp311-android_${ARCH}.whl"
 WHEEL_SHIBOKEN="$WHEELS/shiboken6-${PYSIDE_VERSION}-${PYSIDE_VERSION}-cp311-cp311-android_${ARCH}.whl"
@@ -114,6 +140,18 @@ PYVER="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
    to start on newer ('Android deployment requires Python version 3.11 or
    lower'), and Qt only ships cp311 Android wheels. Fix the androidFhs
    targetPkgs in flake.nix."
+
+[[ -f "$ICON" ]] || die \
+  "launcher icon not found at $ICON. Phase 1a pins it into buildozer.spec and
+   the build would otherwise ship PySide's stock icon without saying so."
+
+for f in "$ICON_FG" "$ICON_BG"; do
+  [[ -f "$f" ]] || die \
+    "adaptive icon layer missing: $f
+   Both layers are required — p4a ignores a lone one and falls back to the
+   legacy icon. Regenerate with:
+       QT_QPA_PLATFORM=offscreen python scripts/make-icon-layers assets"
+done
 
 if command -v adb >/dev/null; then
   if ! adb devices | tail -n +2 | grep -q '\sdevice$'; then
@@ -302,10 +340,10 @@ pyside6-android-deploy --init --keep-deployment-files \
 # Android wheels for a newer CPython.
 P4A_COMMIT="3762c88c56e3443efb8eba2a02a2604b680240fd"   # 2025-10-26, python3 3.11.13
 
-step "Pinning permissions to INTERNET and p4a to a CPython 3.11 revision"
-python3 - buildozer.spec "$P4A_COMMIT" <<'PY'
+step "Pinning permissions, the p4a revision, and the launcher icon"
+python3 - buildozer.spec "$P4A_COMMIT" "$ICON" "$ICON_FG" "$ICON_BG" <<'PY'
 import re, sys
-path, p4a_commit = sys.argv[1], sys.argv[2]
+path, p4a_commit, icon, icon_fg, icon_bg = sys.argv[1:6]
 text = open(path).read()
 
 before = re.search(r'^android\.permissions\s*=.*$', text, re.M)
@@ -323,8 +361,113 @@ elif re.search(r'^p4a\.branch\s*=.*$', text, re.M):
     text = re.sub(r'^(p4a\.branch\s*=.*)$', rf'\1\np4a.commit = {p4a_commit}', text, flags=re.M)
 else:
     sys.exit("error: no p4a.branch line to anchor p4a.commit to")
+
+# --- The Qt library load order -------------------------------------------
+#
+# THIS ONE DECIDES WHETHER THE APK BOOTS AT ALL, and it is not a matter of
+# taste. p4a renders `--qt-libs` verbatim into res/values/libs.xml, and
+# QtLoader dlopens the entries in that order at startup. libQt6Core's
+# JNI_OnLoad is what stores the JavaVM pointer that every other Qt library's
+# JNI_OnLoad reads back via QJniEnvironment::getJniEnv(). Put Core anywhere
+# but first and the first library that touches JNI dereferences a null env:
+#
+#     F libc: Fatal signal 11 (SIGSEGV), code 1 (SEGV_MAPERR), fault addr 0x0
+#             in tid NNNNN (qtMainLoopThrea)
+#     #00 QJniEnvironment::getJniEnv()+48   libQt6Core_arm64-v8a.so
+#     #02 JNI_OnLoad+68                     libQt6Quick_arm64-v8a.so
+#
+# It dies on the Qt loader thread before the interpreter starts, so there is
+# no Python traceback and nothing in the app's own logs — the only evidence
+# is the native tombstone in logcat.
+#
+# The order is not ours to start with. pyside6-android-deploy builds it as
+#
+#     self.modules = list(set(modls))     # android_config.py:125
+#
+# and a set of str iterates in an order that depends on the interpreter's PEP
+# 456 hash seed, which is randomised per process. So the load order — and
+# therefore whether the build boots — is redrawn on every single build. It
+# came up with Core early for months and then, on 2026-09-18, came up
+# `QuickControls2,Network,Gui,Core,...` and produced an APK that crashed on
+# launch with no source change behind it.
+#
+# Pinning `modules` in pysidedeploy.spec cannot fix this (see the header:
+# Config.__init__ blanks it before AndroidConfig reads it). Rewriting the
+# rendered argument here can.
+#
+# We keep WHAT the scan found and pin only the ORDER, dependencies before
+# dependents. Anything unrecognised sorts to the end rather than being
+# dropped, so a module added by a future scan still ships — just not first.
+QT_LIB_ORDER = ["Core", "Gui", "Network", "OpenGL", "Qml", "Quick",
+                "QuickControls2", "WebView"]
+
+found = re.search(r'--qt-libs=(\S+)', text)
+if not found:
+    sys.exit("error: no --qt-libs in p4a.extra_args; did the bootstrap change?")
+
+libs = found.group(1).split(',')
+if "Core" not in libs:
+    sys.exit(f"error: Qt Core missing from --qt-libs ({libs}); refusing to build")
+
+ranked = sorted(libs, key=lambda m: (QT_LIB_ORDER.index(m) if m in QT_LIB_ORDER
+                                     else len(QT_LIB_ORDER), m))
+if ranked[0] != "Core":
+    sys.exit(f"error: Core did not sort first ({ranked}); the pin is broken")
+
+unknown = [m for m in libs if m not in QT_LIB_ORDER]
+if unknown:
+    print(f"note: unranked Qt modules placed last: {unknown}")
+
+print("was: --qt-libs=" + found.group(1))
+print("now: --qt-libs=" + ",".join(ranked))
+text = text.replace(found.group(0), "--qt-libs=" + ",".join(ranked))
+
+# The launcher icon, for the same reason as the permissions: phase 1 wrote this
+# file from scratch, and what it wrote is PySide's stock pyside_icon.jpg — the
+# tool has no --icon flag, and it takes the value from the pysidedeploy.spec it
+# has just generated itself, so there is no route in except from out here.
+before = re.search(r'^icon\.filename\s*=.*$', text, re.M)
+text, n = re.subn(r'^icon\.filename\s*=.*$', f'icon.filename = {icon}', text, flags=re.M)
+if n != 1:
+    sys.exit(f"error: expected exactly one icon.filename line, found {n}")
+print("was:", before.group(0) if before else "(absent)")
+print(f"now: icon.filename = {icon}")
+
+# The adaptive pair. Unlike icon.filename these keys are not in the generated
+# spec at all — pysidedeploy.spec has a single `icon` field and no route for
+# them — so they are inserted rather than substituted, anchored after
+# icon.filename so they land in the [app] section and not wherever the file
+# happens to end.
+adaptive = (f'icon.adaptive_foreground.filename = {icon_fg}\n'
+            f'icon.adaptive_background.filename = {icon_bg}')
+text = re.sub(r'^icon\.adaptive_(foreground|background)\.filename\s*=.*$\n?',
+              '', text, flags=re.M)                      # idempotent
+anchored, n = re.subn(r'^(icon\.filename\s*=.*)$', lambda m: m.group(1) + '\n' + adaptive,
+                      text, count=1, flags=re.M)
+if n != 1:
+    sys.exit("error: could not anchor the adaptive icon keys to icon.filename")
+text = anchored
+print(f"now: icon.adaptive_foreground.filename = {icon_fg}")
+print(f"now: icon.adaptive_background.filename = {icon_bg}")
+
 open(path, 'w').write(text)
 print(f"now: p4a.commit = {p4a_commit}  (CPython 3.11.13)")
+
+# Keep the generated pysidedeploy.spec honest too. It is copied back over the
+# project's own copy at the end of the build as "the record of what went into
+# the APK", and a record still naming the stock icon would be a lie.
+side = 'pysidedeploy.spec'
+try:
+    spec = open(side).read()
+except FileNotFoundError:
+    print(f"note: no {side} to update")
+else:
+    spec, n = re.subn(r'^icon\s*=.*$', f'icon = {icon}', spec, flags=re.M)
+    if n == 1:
+        open(side, 'w').write(spec)
+        print(f"now: {side} icon = {icon}")
+    else:
+        print(f"note: {n} icon lines in {side}; left alone")
 PY
 
 # Phase 1b — put ACLOCAL_PATH back for python-for-android's subprocesses.
@@ -361,6 +504,47 @@ done
 export PATH="$SHIM:$PATH"
 echo "shimmed: $(command -v aclocal)"
 
+# Phase 1c — create the directory python-for-android forgets to.
+#
+# p4a's adaptive-icon branch writes the descriptor without creating its parent:
+#
+#     with open(join(res_dir, 'mipmap-anydpi-v26/icon.xml'), "w") as fd:
+#
+# and the qt bootstrap template ships only `drawable/` and `mipmap/`. Every
+# other res write in that file goes through `ensure_dir()` — lines 246, 294,
+# 310, 351, 384, 412, 527, 533 — so this one is simply a missed call, and it
+# fires the moment both --icon-fg and --icon-bg are passed.
+#
+# The failure is nasty out of proportion to the cause. p4a copies the two layer
+# PNGs, then dies on FileNotFoundError *before* rendering values/libs.xml and
+# values/strings.xml, so the dist is left half-written: new icons present, no
+# libs.xml at all, no APK. Anything else fixed in the same build — the Qt load
+# order, for one — silently never ships.
+#
+# Patched in the bootstrap template rather than the dist, because p4a recreates
+# the dist from the template on every build. The template lives in the p4a
+# checkout, which buildozer clones on the first build and reuses thereafter.
+P4A_QT_RES="$STAGE/.buildozer/android/platform/python-for-android/pythonforandroid/bootstraps/qt/build/src/main/res"
+
+ensure_anydpi_dir() {
+  [[ -d "$P4A_QT_RES" ]] || return 1
+  mkdir -p "$P4A_QT_RES/mipmap-anydpi-v26"
+  # p4a copies the template with a plain tree copy, and an empty directory does
+  # not always survive it; the keep-file guarantees it does.
+  : > "$P4A_QT_RES/mipmap-anydpi-v26/.gitkeep"
+  return 0
+}
+
+if ensure_anydpi_dir; then
+  step "Patched p4a's qt bootstrap: res/mipmap-anydpi-v26 exists"
+  ANYDPI_PATCHED=1
+else
+  # Cold build: buildozer has not cloned python-for-android yet, so there is
+  # nothing to patch. Phase 2 retries once after the clone appears.
+  printf '\033[33mnote:\033[0m python-for-android not cloned yet; will patch after the clone.\n'
+  ANYDPI_PATCHED=0
+fi
+
 # Phase 2 — the actual build. This is what pyside6-android-deploy would have
 # run itself; invoking it directly is what lets the edits above take effect.
 step "Running buildozer"
@@ -370,19 +554,84 @@ step "Running buildozer"
 # Inappropriate ioctl for device"). Trusting its exit code alone throws away a
 # perfectly good APK. The presence of the APK is the real success test, and it
 # is checked immediately below, so a genuine failure is still caught.
+# A marker to date the APK against. Anything older than this is left over from
+# an earlier build and must not be shipped — see the staleness check below.
+STAMP="$STAGE/.build-started"
+: > "$STAMP"
+
+# --- Why SOURCE_DATE_EPOCH is unset for this command ------------------------
+#
+# It is what makes `adb install -r` actually replace the app's code.
+#
+# The bootstrap does not re-extract assets/private.tar on every launch. It
+# compares a stamp baked into the APK against files/app/private.version and
+# extracts only when they differ (PythonUtil.unpackAsset). The stamp is
+#
+#     sha1("{version} {numeric_version} {timestamp}")        build.py:595
+#
+# and all three parts are constants here:
+#
+#     version         0.1        from the generated buildozer.spec
+#     numeric_version 10211      "10" + min_sdk(21) + version_code(1)
+#     timestamp       315532800  SOURCE_DATE_EPOCH — 1980-01-01
+#
+# That last one is the problem. Nix's stdenv exports SOURCE_DATE_EPOCH for
+# reproducible builds, `nix develop` inherits it, and build.py prefers it over
+# the wall clock. So the stamp is the same hash on every build forever:
+#
+#     sha1("0.1 10211 315532800") = 463cf0e3c4f3e09a34aa591298bf7001fae14d04
+#
+# — which is exactly what was found in files/app/private.version on the device.
+# Install a new APK and the bootstrap compares equal, skips extraction, and
+# runs the OLD code out of files/app. New Python, new QML, new everything:
+# ignored, silently, with the new APK sitting right there.
+#
+# Unsetting it restores the wall clock, so every build gets a distinct stamp
+# and every install refreshes the code by itself.
+#
+# This does NOT sign you out. unpackAsset deletes files/app only; the session
+# lives in files/mycu/session.json, which is untouched. That makes this
+# strictly better than the `pm clear` this project used to recommend, which
+# wipes everything including the login.
+#
+# The cost is that the APK is no longer bit-reproducible. It is a debug build
+# signed with a throwaway key; nothing here depends on that.
 BUILDOZER_RC=0
-python3 -m buildozer android debug || BUILDOZER_RC=$?
+env -u SOURCE_DATE_EPOCH python3 -m buildozer android debug || BUILDOZER_RC=$?
+
+# Cold build: the clone now exists, so the bootstrap can be patched. Retry once
+# rather than making the user run the whole thing again.
+if (( BUILDOZER_RC != 0 && ANYDPI_PATCHED == 0 )) && ensure_anydpi_dir; then
+  step "Patched p4a's qt bootstrap and retrying the build once"
+  ANYDPI_PATCHED=1
+  : > "$STAMP"
+  BUILDOZER_RC=0
+  env -u SOURCE_DATE_EPOCH python3 -m buildozer android debug || BUILDOZER_RC=$?
+fi
 
 cd "$ROOT"
 
 # buildozer reports "available in the bin directory" but actually leaves the
 # file in its working directory, so look in both.
-APK="$(find "$STAGE" -maxdepth 2 -name '*.apk' -print 2>/dev/null | sort | tail -1)"
+#
+# `-newer $STAMP` is the important part and it is load-bearing. The exit code
+# cannot be trusted (see the note above), so the presence of an APK is used as
+# the success test — but "an APK exists" is true even when this build produced
+# nothing, because the previous build's APK is still sitting there. On
+# 2026-09-18 that shipped a known-crashing APK from a build forty minutes
+# earlier, reinstalled it, and reported success: two real fixes appeared to
+# have done nothing, and the evidence that the build had failed was forty
+# thousand lines up the scrollback.
+APK="$(find "$STAGE" -maxdepth 2 -name '*.apk' -newer "$STAMP" -print 2>/dev/null | sort | tail -1)"
 if [[ -z "$APK" ]]; then
-  die "buildozer exited $BUILDOZER_RC and produced no .apk; read the log above"
+  STALE="$(find "$STAGE" -maxdepth 2 -name '*.apk' -print 2>/dev/null | sort | tail -1)"
+  die "buildozer exited $BUILDOZER_RC and produced no APK in this run.
+   ${STALE:+An older APK is present at $STALE — it is NOT this build and has
+   not been installed. }Scroll up for the real error; a Python traceback from
+   python-for-android is the usual cause."
 fi
 if (( BUILDOZER_RC != 0 )); then
-  printf '\033[33mnote:\033[0m buildozer exited %d but produced an APK; continuing.\n' "$BUILDOZER_RC"
+  printf '\033[33mnote:\033[0m buildozer exited %d but produced a fresh APK; continuing.\n' "$BUILDOZER_RC"
 fi
 
 cp "$APK" "$ROOT/mycu.apk"
@@ -443,13 +692,38 @@ fi
 # --- Install ----------------------------------------------------------------
 
 if (( DO_INSTALL )); then
+  # The stamp currently on the device, read before installing. If the new APK
+  # carries the same one the bootstrap will skip extraction and keep running
+  # the old code — the failure this whole dance exists to prevent — so it is
+  # worth the half second to be able to say so afterwards.
+  OLD_STAMP="$(adb shell run-as org.mycu.mycu cat files/app/private.version 2>/dev/null | tr -d '\r' || true)"
+
   step "Installing"
   adb install -r "$ROOT/mycu.apk"
+  # The stamp is only rewritten once the app has launched and extracted, so
+  # this reports what to expect rather than what happened.
+  # private_version is the only 40-hex string in the resource table — checked
+  # with `strings | sort -u`, one value, equal to the device's. Cheaper and
+  # more portable than shelling out to aapt, which is not always on PATH here.
+  NEW_STAMP="$(unzip -p "$ROOT/mycu.apk" resources.arsc 2>/dev/null \
+               | strings 2>/dev/null | grep -oE '\b[0-9a-f]{40}\b' | head -1 || true)"
+  if [[ -n "$OLD_STAMP" && -n "$NEW_STAMP" && "$OLD_STAMP" == "$NEW_STAMP" ]]; then
+    printf '\033[31mwarning:\033[0m the APK carries the same data stamp as the\n'
+    printf '         copy already on the device (%s).\n' "$OLD_STAMP"
+    printf '         files/app will NOT be re-extracted and the app will keep\n'
+    printf '         running its old code. Force it with:\n\n'
+    printf '             adb shell pm clear org.mycu.mycu   # also signs you out\n\n'
+  else
+    printf 'data stamp %s -> %s; files/app will be re-extracted on first launch.\n' \
+      "${OLD_STAMP:-(none)}" "${NEW_STAMP:-(unreadable)}"
+  fi
+
   cat <<'EOF'
 
-Now watch it start:
+Now watch it start. "Extracting private assets." is the line that confirms the
+new code actually landed:
 
-    adb logcat -c && adb logcat | grep -iE 'python|qml|mycu'
+    adb logcat -c && adb logcat | grep -iE 'python|qml|mycu|Extracting'
 
 Things flagged for on-device verification are marked '# VERIFY:' in the source
 and listed in docs/android.md.

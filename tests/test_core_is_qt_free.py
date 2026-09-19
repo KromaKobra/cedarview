@@ -71,6 +71,7 @@ import mycu.core.models
 import mycu.core.session
 import mycu.core.transport
 import mycu.core.errors
+import mycu.core.calendar
 import mycu.core.providers.chapel
 print('ok')
 """

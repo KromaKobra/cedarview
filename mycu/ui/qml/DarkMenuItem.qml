@@ -1,8 +1,14 @@
 // A menu row in the app's own colours.
 //
-// Qt Quick Controls' default Menu is light, and `Menu.delegate` only applies to
-// items built from a model — MenuItems written out by hand, which is what an
-// overflow menu is, keep the stock style. So each row brings its own.
+// Qt Quick Controls' default Menu carries the Basic style's palette, and
+// `Menu.delegate` only applies to items built from a model — MenuItems written
+// out by hand, which is what an overflow menu is, keep the stock style. So each
+// row brings its own.
+//
+// The name is now half a lie: since Theme.qml grew a light palette this draws
+// whichever one is on. Left as-is because renaming a QML file means editing the
+// hand-written `qml_files` list in pysidedeploy.spec, which is a real chance of
+// a missing-component crash on the phone in exchange for a better filename.
 
 import QtQuick
 import QtQuick.Controls
@@ -24,8 +30,6 @@ MenuItem {
 
     background: Rectangle {
         radius: 9
-        color: item.highlighted || item.down
-               ? Qt.rgba(1, 1, 1, 0.07)
-               : "transparent"
+        color: item.highlighted || item.down ? theme.pressed : "transparent"
     }
 }

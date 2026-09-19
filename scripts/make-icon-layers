@@ -1,0 +1,144 @@
+#!/usr/bin/env python3
+"""Regenerate assets/appicon_{foreground,background}.png from the existing art.
+
+    QT_QPA_PLATFORM=offscreen python scripts/make-icon-layers assets
+
+Run this when the tree artwork changes, or when you want the mark bigger or
+smaller on the launcher — TREE_FRACTION below is the only knob. It also writes
+a `_preview.png` showing the result under a circular and a squircle mask, which
+is the fast way to check the mark is not being clipped. Delete that file; it is
+a check, not an asset.
+
+Why adaptive layers exist at all: p4a ships a single legacy `mipmap/icon.png`
+unless both adaptive keys are set, and Android's legacy treatment shrinks the
+whole image into the 66% safe zone and draws its own backdrop behind it. With
+art that is already a rounded tile, that yields a tile inside a tile. See
+docs/iterating-and-shipping.md §2.5.
+
+
+Geometry, which is the whole game here:
+
+  * Both layers are 108x108dp. Only the central 72dp survives the mask, so the
+    visible icon is 66.7% of the canvas.
+  * Key content should sit inside the central ~66dp, because a circular mask
+    clips the corners of that 72dp square.
+
+So the background must be full-bleed (its outer ring is parallax margin, never
+seen), and the foreground tree is centred and sized as a fraction of the canvas.
+"""
+
+import sys
+from pathlib import Path
+
+from PySide6.QtCore import QPointF, QRectF, Qt
+from PySide6.QtGui import (QBrush, QGuiApplication, QImage, QLinearGradient,
+                           QPainter, QPainterPath, QColor)
+
+QGuiApplication(["x"])
+
+ROOT = Path("/home/kroma/Development/cedarview")
+OUT = Path(sys.argv[1]) if len(sys.argv) > 1 else ROOT / "assets"
+SIZE = 512
+
+# Fraction of the canvas the tree's longest side occupies. 0.50 puts it at
+# ~75% of the visible (72dp) area: a comfortable margin inside the mask, and
+# roughly where a launcher screen full of other icons sits.
+TREE_FRACTION = 0.50
+
+# White, with a hint of blue at the far corner. Very nearly flat on purpose —
+# the gradient is there to stop a large white field looking like a rendering
+# error, not to be seen as a gradient.
+#
+# Unlike the foreground, this is NOT sampled from assets/appicon.png; that tile
+# is properly blue and reading it back gave an icon that was blue first and a
+# tree second. The tree carries the colour now and the backdrop gets out of
+# its way.
+PAPER = QColor("#FFFFFF")
+PAPER_TINT = QColor("#E8F1F8")
+
+
+def background() -> QImage:
+    img = QImage(SIZE, SIZE, QImage.Format_ARGB32)
+    p = QPainter(img)
+    grad = QLinearGradient(QPointF(0, 0), QPointF(SIZE, SIZE))
+    grad.setColorAt(0.0, PAPER)
+    grad.setColorAt(1.0, PAPER_TINT)
+    p.fillRect(0, 0, SIZE, SIZE, QBrush(grad))
+    p.end()
+    return img
+
+
+def foreground() -> QImage:
+    tree = QImage(str(ROOT / "mycu/ui/qml/icon.png")).convertToFormat(QImage.Format_ARGB32)
+
+    # Trim the tree's own transparent margin first, so TREE_FRACTION means the
+    # tree and not the tree plus whatever padding the file happened to carry.
+    w, h = tree.width(), tree.height()
+    left, top, right, bottom = w, h, -1, -1
+    for y in range(h):
+        for x in range(w):
+            if (tree.pixel(x, y) >> 24) & 0xFF > 8:
+                left, right = min(left, x), max(right, x)
+                top, bottom = min(top, y), max(bottom, y)
+    tree = tree.copy(left, top, right - left + 1, bottom - top + 1)
+
+    target = SIZE * TREE_FRACTION
+    scale = target / max(tree.width(), tree.height())
+    tw, th = round(tree.width() * scale), round(tree.height() * scale)
+    tree = tree.scaled(tw, th, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+
+    img = QImage(SIZE, SIZE, QImage.Format_ARGB32)
+    img.fill(Qt.transparent)
+    p = QPainter(img)
+    p.drawImage((SIZE - tw) // 2, (SIZE - th) // 2, tree)
+    p.end()
+    return img
+
+
+def preview(bg: QImage, fg: QImage) -> QImage:
+    """Composite and mask, the way a launcher will."""
+    # Visible region: central 72/108 of the canvas.
+    visible = SIZE * 72 / 108
+    inset = (SIZE - visible) / 2
+
+    shapes = {}
+    circle = QPainterPath()
+    circle.addEllipse(QRectF(inset, inset, visible, visible))
+    shapes["circle"] = circle
+    squircle = QPainterPath()
+    squircle.addRoundedRect(QRectF(inset, inset, visible, visible),
+                            visible * 0.28, visible * 0.28)
+    shapes["squircle"] = squircle
+
+    # Two backdrops, because the icon is nearly white and the failure mode that
+    # matters is it vanishing into a pale wallpaper. Dark on top, light below.
+    backdrops = [QColor("#303038"), QColor("#E7E7EA")]
+
+    pad = 24
+    cols, rows = len(shapes), len(backdrops)
+    out = QImage(cols * (SIZE + pad) + pad,
+                 rows * (SIZE + pad) + pad, QImage.Format_ARGB32)
+    p = QPainter(out)
+    for r, backdrop in enumerate(backdrops):
+        y = r * (SIZE + pad)
+        p.fillRect(0, y, out.width(), SIZE + pad + (pad if r == rows - 1 else 0),
+                   backdrop)
+    for r in range(rows):
+        for c, path in enumerate(shapes.values()):
+            p.save()
+            p.translate(pad + c * (SIZE + pad), pad + r * (SIZE + pad))
+            p.setClipPath(path)
+            p.drawImage(0, 0, bg)
+            p.drawImage(0, 0, fg)
+            p.restore()
+    p.end()
+    return out
+
+
+bg, fg = background(), foreground()
+bg.save(str(OUT / "appicon_background.png"))
+fg.save(str(OUT / "appicon_foreground.png"))
+preview(bg, fg).save(str(OUT / "_preview.png"))
+print(f"wrote {OUT}/appicon_background.png")
+print(f"wrote {OUT}/appicon_foreground.png")
+print(f"wrote {OUT}/_preview.png   (circle and squircle masks)")

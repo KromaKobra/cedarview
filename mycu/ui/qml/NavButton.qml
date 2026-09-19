@@ -27,7 +27,7 @@ AbstractButton {
             width: 42
             height: 26
             radius: 13
-            color: nav.selected ? Qt.rgba(0.94, 0.64, 0.29, 0.14) : "transparent"
+            color: nav.selected ? theme.accentSoft : "transparent"
 
             Glyph {
                 anchors.centerIn: parent

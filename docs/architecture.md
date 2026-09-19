@@ -21,6 +21,7 @@ cedarview/
       session.py            persistence of non-secret metadata
       models.py             dataclasses the QML binds to
       errors.py             SessionExpired / TransportError / ParseError
+      calendar.py           term start/end dates — the one hand-entered fact
       providers/
         base.py             fetch() + parse() split
         chapel.py           /cedarinfo/chapelskip -> ChapelSummary
@@ -28,13 +29,15 @@ cedarview/
       app.py                assembly + startup ordering
       transport_webview.py  Transport impl: in-page fetch via runJavaScript
       login.py              the auth state machine
+      settings.py           UI preferences (QSettings); owns the theme flag
       tasks.py              run blocking work off the GUI thread
       viewmodels/           Qt <-> QML bridge
       qml/                  shared verbatim, desktop and Android
         Main.qml            ribbon header, tab stack, bottom bar
         SummaryView.qml     the screen the app opens on
-        Theme.qml           the palette; nothing else hard-codes a colour
+        Theme.qml           both palettes; nothing else hard-codes a colour
         Glyph.qml           every icon, drawn on a Canvas — see below
+        icon.png            the header logo, and the only raster asset
     platform/               ← the only Android-specific code
       desktop.py            QtWebEngine
       android.py            QtWebView
@@ -182,7 +185,14 @@ Two rules the screen is built on, both of which have bitten this codebase:
   phone's Roboto does not, so it rendered as a tofu box on the moto g power. An
   icon that fails to render in a tab bar leaves the user with no idea what the
   tab is. Canvas is part of QtQuick proper — no font, no QtSvg (which is not in
-  the APK's module list), no image assets.
+  the APK's module list).
+
+  The header logo is the one exception: it is `mycu/ui/qml/icon.png`, a raster
+  PNG, which satisfies the same rule for the same reason — nothing about it
+  depends on what the device has installed. Note *where* it lives.
+  `scripts/build-apk` stages only `main.py`, `pyproject.toml` and `mycu/` into
+  `android-build/`, so an image under `assets/` reaches the desktop and nothing
+  else. Anything the running app loads has to be inside the package.
 
 New QML files must be added to `qml_files` in `pysidedeploy.spec`; the Android
 build lists them by hand.

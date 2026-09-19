@@ -31,7 +31,11 @@ build-backend = "setuptools.build_meta"
 include = ["mycu*"]
 
 [tool.setuptools.package-data]
-"mycu.ui" = ["qml/*.qml"]
+# The PNG is the header logo. It lives in the QML directory rather than in
+# assets/ because the Android build stages only the package — see
+# docs/architecture.md — and it has to be listed here for the same reason the
+# .qml files do: neither is a module, so nothing installs them by default.
+"mycu.ui" = ["qml/*.qml", "qml/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

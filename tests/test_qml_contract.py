@@ -22,13 +22,25 @@ import pytest
 
 pytest.importorskip("PySide6.QtCore", reason="PySide6 not available")
 
+from mycu.ui.settings import SettingsController  # noqa: E402
 from mycu.ui.viewmodels.chapel import ChapelViewModel  # noqa: E402
 from mycu.ui.viewmodels.dining import DiningViewModel  # noqa: E402
+from mycu.ui.viewmodels.semester import SemesterViewModel  # noqa: E402
 
 QML_DIR = Path(__file__).resolve().parents[1] / "mycu" / "ui" / "qml"
 
 #: The context-property name each viewmodel is published under in ``app.py``.
-VIEWMODELS = {"chapel": ChapelViewModel, "dining": DiningViewModel}
+VIEWMODELS = {
+    "chapel": ChapelViewModel,
+    "dining": DiningViewModel,
+    "semester": SemesterViewModel,
+}
+
+#: Everything QML binds to by context-property name. ``settings`` is not a
+#: viewmodel — it has no provider, no busy flag and no ``refreshAll`` — but it
+#: is bound the same loose way, and by *every* Theme.qml instance, so a typo
+#: there is the whole app stuck on one palette rather than one broken screen.
+BOUND_OBJECTS = {**VIEWMODELS, "settings": SettingsController}
 
 COMMENT_RE = re.compile(r"//[^\n]*")
 
@@ -44,23 +56,23 @@ def exposed_names(cls: type) -> set[str]:
 
 
 def references(source: str) -> set[tuple[str, str]]:
-    """``(viewmodel, member)`` pairs used in a QML file, comments removed.
+    """``(object, member)`` pairs used in a QML file, comments removed.
 
     Comments are stripped because both view files name their viewmodel's Python
     class in a header comment (``…viewmodels.dining.DiningViewModel``), which
     would otherwise read as a reference to a member called ``DiningViewModel``.
     """
     stripped = COMMENT_RE.sub("", source)
-    pattern = re.compile(rf"\b({'|'.join(VIEWMODELS)})\.(\w+)")
+    pattern = re.compile(rf"\b({'|'.join(BOUND_OBJECTS)})\.(\w+)")
     return set(pattern.findall(stripped))
 
 
 @pytest.mark.parametrize("qml_file", sorted(QML_DIR.glob("*.qml")), ids=lambda p: p.name)
 def test_every_viewmodel_member_used_in_qml_exists(qml_file: Path) -> None:
     for vm_name, member in sorted(references(qml_file.read_text(encoding="utf-8"))):
-        assert member in exposed_names(VIEWMODELS[vm_name]), (
+        assert member in exposed_names(BOUND_OBJECTS[vm_name]), (
             f"{qml_file.name} uses `{vm_name}.{member}`, which is not a Property "
-            f"or Slot on {VIEWMODELS[vm_name].__name__}. QML would fail at "
+            f"or Slot on {BOUND_OBJECTS[vm_name].__name__}. QML would fail at "
             f"runtime, not here."
         )
 
@@ -74,7 +86,7 @@ def test_the_refresh_gesture_reaches_every_source_on_the_screen() -> None:
     the meals-left and dollar figures loaded once at sign-in and never moved
     again, no matter how hard you pulled.
     """
-    for name in ("Main.qml", "ChapelView.qml", "DiningView.qml"):
+    for name in ("Main.qml", "ChapelView.qml", "DiningView.qml", "SummaryView.qml"):
         source = COMMENT_RE.sub("", (QML_DIR / name).read_text(encoding="utf-8"))
         for vm_name in VIEWMODELS:
             assert not re.search(rf"\b{vm_name}\.refresh\(\)", source), (

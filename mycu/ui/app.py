@@ -41,9 +41,11 @@ from ..core.transport import (
     TransportRouter,
 )
 from .login import LoginController
+from .settings import SettingsController
 from .transport_webview import WebViewTransport
 from .viewmodels.chapel import ChapelViewModel
 from .viewmodels.dining import DiningViewModel
+from .viewmodels.semester import SemesterViewModel
 
 log = logging.getLogger("mycu")
 
@@ -178,6 +180,13 @@ def main(argv: list[str] | None = None) -> int:
     login = LoginController(store, backend, offline=args.demo)
     chapel = ChapelViewModel(transport, store)
     dining = DiningViewModel(transport)
+    # No transport: the term's dates are in mycu.core.calendar, because no
+    # Cedarville service publishes them. See that module for the apology.
+    semester = SemesterViewModel()
+    # QSettings with no arguments, so it must be built after setApplicationName
+    # and setOrganizationName above — otherwise it writes to a file named after
+    # the executable.
+    settings = SettingsController()
     bridge = Bridge(session_transport, CHAPEL_PATH, backend.name, surface_qml)
 
     # The expiry loop, in two connections:
@@ -209,6 +218,10 @@ def main(argv: list[str] | None = None) -> int:
     ctx.setContextProperty("login", login)
     ctx.setContextProperty("chapel", chapel)
     ctx.setContextProperty("dining", dining)
+    ctx.setContextProperty("semester", semester)
+    # Read by every Theme.qml instance, which is how eight separate copies of
+    # the palette agree on which one is showing.
+    ctx.setContextProperty("settings", settings)
     ctx.setContextProperty("platformSurface", surface_qml)
 
     engine.addImportPath(str(QML_DIR))

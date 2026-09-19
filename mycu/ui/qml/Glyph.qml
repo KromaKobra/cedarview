@@ -1,4 +1,6 @@
-// Every icon in the app, drawn rather than typed.
+// Every icon in the app, drawn rather than typed. (The header logo is the one
+// exception — since it became icon.png it is a raster image, which has the same
+// property that matters here: it does not depend on the device's fonts.)
 //
 // This is not a stylistic choice. The toolbar used to say "↻" (U+21BB); the
 // desktop font has it, and the phone's Roboto does not, so on a moto g power it
@@ -18,6 +20,8 @@ Canvas {
     id: glyph
 
     //: "tree" | "refresh" | "summary" | "chapel" | "dining"
+    //: "tree" is no longer drawn anywhere — the header uses icon.png now — but
+    //: it stays as the fallback mark for anywhere an image would be wrong.
     property string kind: "tree"
     property color color: "#FFFFFF"
 

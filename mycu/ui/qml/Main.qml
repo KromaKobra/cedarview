@@ -15,8 +15,8 @@
 // During normal operation the browser is invisible: it is an implementation
 // detail of the transport, not a thing the user should have to look at.
 //
-// Colours come from Theme.qml and nothing here hard-codes one. There is no
-// light mode; see Theme.qml for why.
+// Colours come from Theme.qml and nothing here hard-codes one. Dark and light
+// are both live; the switch is in the overflow menu under Settings.
 
 import QtQuick
 import QtQuick.Controls
@@ -51,6 +51,7 @@ ApplicationWindow {
     function refreshEverything() {
         chapel.refreshAll()
         dining.refreshAll()
+        semester.refreshAll()
     }
 
     // ---- Ribbon ------------------------------------------------------------
@@ -64,12 +65,26 @@ ApplicationWindow {
             anchors.rightMargin: 6
             spacing: 9
 
-            Glyph {
+            // The one raster image in the app. It lives beside the QML rather
+            // than in assets/ for a build reason worth knowing: scripts/build-apk
+            // stages only main.py, pyproject.toml and mycu/ into android-build/,
+            // so anything under assets/ is on the desktop and nowhere else. A
+            // relative source resolves against this file's own directory, which
+            // is the same path on both platforms.
+            Image {
                 Layout.alignment: Qt.AlignVCenter
-                width: 24
-                height: 24
-                kind: "tree"
-                color: theme.accent
+                // Layout.preferred*, not width/height: a RowLayout sizes its
+                // children from their implicit size, and `sourceSize` below
+                // *is* an Image's implicit size — so a plain `width: 26` here
+                // is overruled and the logo comes out 52px tall.
+                Layout.preferredWidth: 26
+                Layout.preferredHeight: 26
+                source: "icon.png"
+                // Decoded at 2x and mipmapped: the source is 512px square, and
+                // scaling that down without either of these is a smear.
+                sourceSize: Qt.size(52, 52)
+                fillMode: Image.PreserveAspectFit
+                mipmap: true
             }
 
             Label {
@@ -99,14 +114,24 @@ ApplicationWindow {
 
                 background: Rectangle {
                     radius: width / 2
-                    color: refreshButton.down ? Qt.rgba(1, 1, 1, 0.08) : "transparent"
+                    color: refreshButton.down ? theme.pressed : "transparent"
                 }
 
-                contentItem: Glyph {
-                    kind: "refresh"
-                    color: refreshButton.enabled ? theme.muted : theme.faint
-                    width: 19
-                    height: 19
+                // Wrapped in an Item so the glyph can be anchored. Control sets
+                // its contentItem's *position* to (leftPadding, topPadding) and
+                // its size to the available space; giving an item an explicit
+                // width and height overrides the size but not the position, so
+                // a bare `Glyph { width: 10 }` here would sit in the top-left
+                // corner of the 40px button. That is the bug this shape fixes,
+                // and the overflow button below has the same one.
+                contentItem: Item {
+                    Glyph {
+                        anchors.centerIn: parent
+                        kind: "refresh"
+                        color: refreshButton.enabled ? theme.muted : theme.faint
+                        width: 15
+                        height: 15
+                    }
                 }
             }
 
@@ -119,7 +144,7 @@ ApplicationWindow {
 
                 background: Rectangle {
                     radius: width / 2
-                    color: overflowButton.down ? Qt.rgba(1, 1, 1, 0.08) : "transparent"
+                    color: overflowButton.down ? theme.pressed : "transparent"
                 }
 
                 // Three drawn dots rather than "⋮". U+22EE happens to be in
@@ -127,18 +152,26 @@ ApplicationWindow {
                 // glyph beside it would not, and a toolbar where one icon is a
                 // character and the other is a drawing is a toolbar where the
                 // two never quite line up.
-                contentItem: Column {
-                    spacing: 3
+                //
+                // The Item wrapper is load-bearing: a Column is a positioner,
+                // so it accepts the 40px height Control gives it and then lays
+                // its children out from y: 0 regardless. The dots sat against
+                // the top of the button until this was anchored.
+                contentItem: Item {
+                    Column {
+                        anchors.centerIn: parent
+                        spacing: 3
 
-                    Repeater {
-                        model: 3
+                        Repeater {
+                            model: 3
 
-                        Rectangle {
-                            anchors.horizontalCenter: parent.horizontalCenter
-                            width: 3.5
-                            height: 3.5
-                            radius: 1.75
-                            color: theme.muted
+                            Rectangle {
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                width: 3.5
+                                height: 3.5
+                                radius: 1.75
+                                color: theme.muted
+                            }
                         }
                     }
                 }
@@ -151,7 +184,7 @@ ApplicationWindow {
                     padding: 6
 
                     background: Rectangle {
-                        color: "#1A1A1F"
+                        color: theme.sheet
                         radius: 14
                         border.width: 1
                         border.color: theme.cardBorder
@@ -325,8 +358,39 @@ ApplicationWindow {
     InfoSheet {
         id: settingsSheet
         heading: "Settings"
-        body: "Coming soon!\n\nThere is nothing to configure yet: the app reads "
-              + "your own records on demand and keeps its session in app-private "
-              + "storage. Sign out from the same menu to clear it."
+        body: "The app reads your own records on demand and keeps its session "
+              + "in app-private storage. Sign out from the same menu to clear it."
+
+        RowLayout {
+            Layout.fillWidth: true
+            spacing: 12
+
+            ColumnLayout {
+                Layout.fillWidth: true
+                spacing: 2
+
+                Label {
+                    text: "Light theme"
+                    color: theme.text
+                    font.pixelSize: 14
+                }
+
+                Label {
+                    Layout.fillWidth: true
+                    text: "Dark is easier at 7am; light is easier outdoors."
+                    color: theme.faint
+                    font.pixelSize: 11
+                    wrapMode: Text.Wrap
+                }
+            }
+
+            // Driven from `settings`, not from the switch's own state: the
+            // preference lives in QSettings and this is a view of it.
+            ToggleSwitch {
+                Layout.alignment: Qt.AlignVCenter
+                on: settings.lightMode
+                onClicked: settings.toggleLightMode()
+            }
+        }
     }
 }
