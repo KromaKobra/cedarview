@@ -34,13 +34,13 @@ android_packages = buildozer==1.5.0,cython==0.29.33
 # paths to required qml files. comma separated
 # normally all the qml files required by the project are added automatically
 # design studio projects include the qml files using qt resources
-qml_files = .buildozer/android/app/mycu/ui/qml/BalanceTile.qml,.buildozer/android/app/mycu/ui/qml/Card.qml,.buildozer/android/app/mycu/ui/qml/ChapelView.qml,.buildozer/android/app/mycu/ui/qml/ComingSoon.qml,.buildozer/android/app/mycu/ui/qml/DarkMenuItem.qml,.buildozer/android/app/mycu/ui/qml/DiningView.qml,.buildozer/android/app/mycu/ui/qml/Glyph.qml,.buildozer/android/app/mycu/ui/qml/InfoSheet.qml,.buildozer/android/app/mycu/ui/qml/Main.qml,.buildozer/android/app/mycu/ui/qml/MeterBar.qml,.buildozer/android/app/mycu/ui/qml/NavButton.qml,.buildozer/android/app/mycu/ui/qml/SummaryView.qml,.buildozer/android/app/mycu/ui/qml/Theme.qml,.buildozer/android/app/mycu/ui/qml/ToggleSwitch.qml,.buildozer/android/app/mycu/ui/qml/WebSurfaceAndroid.qml,.buildozer/android/app/mycu/ui/qml/WebSurfaceStub.qml,mycu/ui/qml/BalanceTile.qml,mycu/ui/qml/Card.qml,mycu/ui/qml/ChapelView.qml,mycu/ui/qml/ComingSoon.qml,mycu/ui/qml/DarkMenuItem.qml,mycu/ui/qml/DiningView.qml,mycu/ui/qml/Glyph.qml,mycu/ui/qml/InfoSheet.qml,mycu/ui/qml/Main.qml,mycu/ui/qml/MeterBar.qml,mycu/ui/qml/NavButton.qml,mycu/ui/qml/SummaryView.qml,mycu/ui/qml/Theme.qml,mycu/ui/qml/ToggleSwitch.qml,mycu/ui/qml/WebSurfaceAndroid.qml,mycu/ui/qml/WebSurfaceStub.qml
+qml_files = mycu/ui/qml/BalanceTile.qml,mycu/ui/qml/Card.qml,mycu/ui/qml/ChapelView.qml,mycu/ui/qml/ComingSoon.qml,mycu/ui/qml/DarkMenuItem.qml,mycu/ui/qml/DiningView.qml,mycu/ui/qml/Glyph.qml,mycu/ui/qml/InfoSheet.qml,mycu/ui/qml/Main.qml,mycu/ui/qml/MeterBar.qml,mycu/ui/qml/NavButton.qml,mycu/ui/qml/SummaryView.qml,mycu/ui/qml/Theme.qml,mycu/ui/qml/ToggleSwitch.qml,mycu/ui/qml/WebSurfaceAndroid.qml,mycu/ui/qml/WebSurfaceStub.qml
 
 # excluded qml plugin binaries
 excluded_qml_plugins = QtCharts,QtQuick3D,QtSensors,QtTest,QtWebEngine
 
 # qt modules used. comma separated
-modules = OpenGL,Quick,Network,Gui,WebView,Qml,Core,QuickControls2
+modules = OpenGL,Network,QuickControls2,WebView,Gui,Qml,Core,Quick
 
 # qt plugins used by the application. only relevant for desktop deployment
 # for qt plugins used in android application see [android][plugins]
@@ -55,7 +55,7 @@ wheel_pyside = /home/kroma/Development/cedarview/.android-wheels/pyside6-6.11.0-
 wheel_shiboken = /home/kroma/Development/cedarview/.android-wheels/shiboken6-6.11.0-6.11.0-cp311-cp311-android_aarch64.whl
 
 # plugins to be copied to libs folder of the packaged application. comma separated
-plugins = platforms_qtforandroid,webview_qtwebview_android
+plugins = webview_qtwebview_android,platforms_qtforandroid
 
 [nuitka]
 
