@@ -1,4 +1,10 @@
-"""myCU — a personal client for one student's own Cedarville records.
+"""CedarView — a personal client for one student's own Cedarville records.
+
+The app is CedarView; the Python package is still ``mycu``. That is deliberate
+rather than unfinished: the package name is also the p4a dist name and half of
+the Android applicationId (``org.mycu.mycu``), and to Android a new
+applicationId is a different app — it installs beside the old one with an empty
+data directory instead of over it. The import path is not worth that.
 
 Layout (see docs/architecture.md for the reasoning):
 

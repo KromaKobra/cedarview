@@ -110,10 +110,12 @@ WHEEL_SHIBOKEN="$WHEELS/shiboken6-${PYSIDE_VERSION}-${PYSIDE_VERSION}-cp311-cp31
 
 DO_INSTALL=0
 DO_CLEAN=0
+DO_RELEASE=0
 for arg in "$@"; do
   case "$arg" in
     --install) DO_INSTALL=1 ;;
     --clean)   DO_CLEAN=1 ;;
+    --release) DO_RELEASE=1 ;;
     *) printf 'unknown flag: %s\n' "$arg" >&2; exit 2 ;;
   esac
 done
@@ -144,6 +146,54 @@ PYVER="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
 [[ -f "$ICON" ]] || die \
   "launcher icon not found at $ICON. Phase 1a pins it into buildozer.spec and
    the build would otherwise ship PySide's stock icon without saying so."
+
+# The launcher label — the name under the icon on the home screen.
+#
+# Pinned here rather than passed as `--name` to the deploy tool, and that is
+# not a style choice. deploy_lib/android/buildozer.py:18-19 writes the SAME
+# value to two keys:
+#
+#     self.set_value("app", "title",        pysidedeploy_config.title)
+#     self.set_value("app", "package.name", pysidedeploy_config.title)
+#
+# so `--name CedarView` would also change package.name, and with it the
+# applicationId (org.mycu.CedarView) and the p4a dist name. A new
+# applicationId is a *different app* to Android: it installs alongside the old
+# one instead of over it, with a fresh empty data directory. Pinning `title`
+# alone renames what the user sees and leaves the app's identity alone.
+#
+# See §3.7 in docs/iterating-and-shipping.md for changing the identity too,
+# which is a thing to decide before the first public release, not after.
+APP_TITLE="CedarView"
+
+# The app version, read from the source rather than left at buildozer's default.
+#
+# buildozer's own default.spec says `version = 0.1` and nothing connects it to
+# this project, so every build — including every release — carried versionCode
+# 10211. Android derives the upgrade ordering from that number, so two releases
+# that share it are not an upgrade pair. Phase 1a pins it from __version__.
+APP_VERSION="$(python3 -c "
+import re, pathlib
+src = pathlib.Path('$ROOT/mycu/__init__.py').read_text()
+print(re.search(r'__version__\s*=\s*[\"\']([^\"\']+)', src).group(1))
+")"
+[[ -n "$APP_VERSION" ]] || die "could not read __version__ from mycu/__init__.py"
+
+if (( DO_RELEASE )); then
+  # p4a signs the APK itself, from these four. buildozer checks all four and
+  # silently drops --sign if any is missing, which yields an UNSIGNED release
+  # APK that no phone will install — so check here, where it can be explained.
+  for v in P4A_RELEASE_KEYSTORE P4A_RELEASE_KEYSTORE_PASSWD \
+           P4A_RELEASE_KEYALIAS P4A_RELEASE_KEYALIAS_PASSWD; do
+    [[ -n "${!v:-}" ]] || die \
+      "--release needs \$$v set.
+   All four of P4A_RELEASE_{KEYSTORE,KEYSTORE_PASSWD,KEYALIAS,KEYALIAS_PASSWD}
+   are required; buildozer drops --sign without saying so if any is missing.
+   See docs/iterating-and-shipping.md §3.3 for generating the keystore."
+  done
+  [[ -f "${P4A_RELEASE_KEYSTORE}" ]] || die \
+    "keystore not found: $P4A_RELEASE_KEYSTORE"
+fi
 
 for f in "$ICON_FG" "$ICON_BG"; do
   [[ -f "$f" ]] || die \
@@ -341,10 +391,49 @@ pyside6-android-deploy --init --keep-deployment-files \
 P4A_COMMIT="3762c88c56e3443efb8eba2a02a2604b680240fd"   # 2025-10-26, python3 3.11.13
 
 step "Pinning permissions, the p4a revision, and the launcher icon"
-python3 - buildozer.spec "$P4A_COMMIT" "$ICON" "$ICON_FG" "$ICON_BG" <<'PY'
+python3 - buildozer.spec "$P4A_COMMIT" "$ICON" "$ICON_FG" "$ICON_BG" "$APP_VERSION" "$APP_TITLE" <<'PY'
 import re, sys
-path, p4a_commit, icon, icon_fg, icon_bg = sys.argv[1:6]
+path, p4a_commit, icon, icon_fg, icon_bg, app_version, app_title = sys.argv[1:8]
 text = open(path).read()
+
+# --- The launcher label ---------------------------------------------------
+#
+# `title` only. package.name is deliberately left alone — the deploy tool set
+# both from one value, and changing package.name changes the applicationId,
+# which makes this a different app that installs beside the old one rather
+# than over it.
+before = re.search(r'^title\s*=.*$', text, re.M)
+text, n = re.subn(r'^title\s*=.*$', f'title = {app_title}', text, flags=re.M)
+if n != 1:
+    sys.exit(f"error: expected exactly one title line, found {n}")
+print("was:", before.group(0) if before else "(absent)")
+print(f"now: title = {app_title}")
+
+pkg = re.search(r'^package\.name\s*=.*$', text, re.M)
+dom = re.search(r'^package\.domain\s*=.*$', text, re.M)
+print(f"     (identity unchanged: {dom.group(0) if dom else '?'} / "
+      f"{pkg.group(0) if pkg else '?'})")
+
+# --- Version, and therefore versionCode ----------------------------------
+#
+# p4a computes versionCode as "10" + min_sdk + version_code, where version_code
+# is the dotted version folded into an integer (build.py:424). Leaving this at
+# buildozer's stock 0.1 meant every build was versionCode 10211, so no two
+# releases were ever an upgrade pair. Bump __version__ to ship an update.
+text, n = re.subn(r'^version\s*=.*$', f'version = {app_version}', text, flags=re.M)
+if n != 1:
+    sys.exit(f"error: expected exactly one version line, found {n}")
+print(f"now: version = {app_version}")
+
+# A release build defaults to an .aab (buildozer/target.py:142), which is a
+# Play upload format and cannot be sideloaded. Anyone installing from a GitHub
+# release needs an .apk.
+if re.search(r'^android\.release_artifact\s*=', text, re.M):
+    text = re.sub(r'^android\.release_artifact\s*=.*$',
+                  'android.release_artifact = apk', text, flags=re.M)
+else:
+    text = text.rstrip('\n') + '\n\n# Sideloadable; the default is aab.\nandroid.release_artifact = apk\n'
+print("now: android.release_artifact = apk")
 
 before = re.search(r'^android\.permissions\s*=.*$', text, re.M)
 text, n = re.subn(r'^android\.permissions\s*=.*$',
@@ -596,8 +685,11 @@ STAMP="$STAGE/.build-started"
 #
 # The cost is that the APK is no longer bit-reproducible. It is a debug build
 # signed with a throwaway key; nothing here depends on that.
+BUILD_MODE=debug
+(( DO_RELEASE )) && BUILD_MODE=release
+
 BUILDOZER_RC=0
-env -u SOURCE_DATE_EPOCH python3 -m buildozer android debug || BUILDOZER_RC=$?
+env -u SOURCE_DATE_EPOCH python3 -m buildozer android "$BUILD_MODE" || BUILDOZER_RC=$?
 
 # Cold build: the clone now exists, so the bootstrap can be patched. Retry once
 # rather than making the user run the whole thing again.
@@ -606,7 +698,7 @@ if (( BUILDOZER_RC != 0 && ANYDPI_PATCHED == 0 )) && ensure_anydpi_dir; then
   ANYDPI_PATCHED=1
   : > "$STAMP"
   BUILDOZER_RC=0
-  env -u SOURCE_DATE_EPOCH python3 -m buildozer android debug || BUILDOZER_RC=$?
+  env -u SOURCE_DATE_EPOCH python3 -m buildozer android "$BUILD_MODE" || BUILDOZER_RC=$?
 fi
 
 cd "$ROOT"
@@ -634,8 +726,30 @@ if (( BUILDOZER_RC != 0 )); then
   printf '\033[33mnote:\033[0m buildozer exited %d but produced a fresh APK; continuing.\n' "$BUILDOZER_RC"
 fi
 
-cp "$APK" "$ROOT/mycu.apk"
-step "Built $(du -h "$ROOT/mycu.apk" | cut -f1) -> $ROOT/mycu.apk"
+# Release artifacts get their own name and keep the version in it. A release
+# APK and a debug APK are signed with different keys and will not install over
+# one another, so having both land on mycu.apk is a way to publish the wrong
+# file exactly once.
+if (( DO_RELEASE )); then
+  OUT_APK="$ROOT/cedarview-${APP_VERSION}-arm64-v8a.apk"
+else
+  OUT_APK="$ROOT/mycu.apk"
+fi
+
+cp "$APK" "$OUT_APK"
+step "Built $(du -h "$OUT_APK" | cut -f1) -> $OUT_APK"
+
+if (( DO_RELEASE )); then
+  # An unsigned release APK installs nowhere, and buildozer only warns. Check
+  # the artifact itself rather than trusting that the env vars were honoured.
+  if unzip -l "$OUT_APK" 2>/dev/null | grep -qiE 'META-INF/.*\.(RSA|DSA|EC)$'; then
+    echo "signature block present"
+  else
+    die "the release APK is UNSIGNED and no device will install it.
+   buildozer drops --sign silently when any P4A_RELEASE_* variable is missing.
+   Do not publish $OUT_APK."
+  fi
+fi
 
 # Verify that the CPython bundled in the APK is the one shiboken actually links
 # against. Getting this wrong produces an APK that builds, installs and then

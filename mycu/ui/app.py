@@ -115,7 +115,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="override where session metadata and the cookie jar live",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
-    parser.add_argument("--version", action="version", version=f"myCU {__version__}")
+    parser.add_argument("--version", action="version", version=f"CedarView {__version__}")
     return parser
 
 
@@ -131,7 +131,7 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     backend = mycu_platform.current_backend()
-    log.info("myCU %s — %s", __version__, mycu_platform.describe())
+    log.info("CedarView %s — %s", __version__, mycu_platform.describe())
 
     # --- 1. Web engine init that must precede the application object ---------
     if not args.demo:
@@ -139,8 +139,18 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- 2. The application -------------------------------------------------
     app = QGuiApplication(sys.argv[:1])
-    app.setApplicationName("myCU")
-    app.setOrganizationName("mycu")
+    # The app is called CedarView. `mycu` survives as the Python package, the
+    # p4a dist name and the Android applicationId (org.mycu.mycu) — renaming
+    # those would make this a different app to Android and orphan everyone's
+    # session, which is not worth a tidier import path.
+    #
+    # These two decide where QSettings writes (~/.config/Kroma/CedarView.conf
+    # on Linux, app-private storage on Android), so
+    # changing them resets the theme preference once, on each device. That is
+    # the whole cost; the login is not stored here — see mycu.core.session,
+    # which keys off its own APP_DIR_NAME and is untouched.
+    app.setApplicationName("CedarView")
+    app.setOrganizationName("Kroma")
     app.setApplicationVersion(__version__)
 
     # --- 3. Web engine init that must follow it -----------------------------

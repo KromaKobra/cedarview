@@ -66,7 +66,7 @@ LOGIN_BODY_MARKERS = (
 #: client reading one student's own records.
 log = logging.getLogger(__name__)
 
-USER_AGENT_SUFFIX = "myCU/0.1 (personal student-records client)"
+USER_AGENT_SUFFIX = "CedarView/0.1 (personal student-records client)"
 
 
 @dataclass(slots=True)

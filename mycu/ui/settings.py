@@ -5,7 +5,7 @@ The session store holds the cookie jar and is thrown away when you sign out; a
 theme choice surviving a sign-out is the behaviour anyone would expect, and
 coupling the two would mean the app forgot your palette every time the SAML
 session expired. ``QSettings`` also already knows where to write on each
-platform — ``~/.config/mycu/myCU.conf`` on Linux, app-private storage on
+platform — ``~/.config/Kroma/CedarView.conf`` on Linux, app-private storage on
 Android — which is one less path to resolve by hand.
 
 The default constructor works because ``app.py`` sets the organisation and

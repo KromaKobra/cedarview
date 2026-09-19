@@ -1,7 +1,7 @@
 [app]
 
 # title of your application
-title = mycu
+title = cedarview
 
 # project root directory. default = The parent directory of input_file
 project_dir = .
@@ -40,7 +40,7 @@ qml_files = .buildozer/android/app/mycu/ui/qml/BalanceTile.qml,.buildozer/androi
 excluded_qml_plugins = QtCharts,QtQuick3D,QtSensors,QtTest,QtWebEngine
 
 # qt modules used. comma separated
-modules = OpenGL,QuickControls2,Gui,Quick,Network,WebView,Core,Qml
+modules = QuickControls2,Core,Quick,Network,OpenGL,WebView,Gui,Qml
 
 # qt plugins used by the application. only relevant for desktop deployment
 # for qt plugins used in android application see [android][plugins]
