@@ -92,6 +92,11 @@ ARCH="aarch64"                   # the phone is arm64-v8a
 # p4a copies this file verbatim into res/mipmap/icon.png — no resize, no format
 # conversion, no density variants — so it wants to be a large square PNG with
 # alpha. See docs/iterating-and-shipping.md §2.
+# The python-for-android checkout. Pinned into buildozer.spec as p4a.source_dir
+# in phase 1a, which is what stops buildozer running `git reset --hard` on it —
+# see phase 1e for why that matters.
+P4A_DIR="$STAGE/.buildozer/android/platform/python-for-android"
+
 ICON="$ROOT/assets/appicon.png"
 
 # The adaptive (Oreo and later) pair. ICON above stays as the legacy fallback
@@ -391,10 +396,31 @@ pyside6-android-deploy --init --keep-deployment-files \
 P4A_COMMIT="3762c88c56e3443efb8eba2a02a2604b680240fd"   # 2025-10-26, python3 3.11.13
 
 step "Pinning permissions, the p4a revision, and the launcher icon"
-python3 - buildozer.spec "$P4A_COMMIT" "$ICON" "$ICON_FG" "$ICON_BG" "$APP_VERSION" "$APP_TITLE" <<'PY'
+python3 - buildozer.spec "$P4A_COMMIT" "$ICON" "$ICON_FG" "$ICON_BG" "$APP_VERSION" "$APP_TITLE" "$P4A_DIR" <<'PY'
 import re, sys
-path, p4a_commit, icon, icon_fg, icon_bg, app_version, app_title = sys.argv[1:8]
+path, p4a_commit, icon, icon_fg, icon_bg, app_version, app_title, p4a_dir = sys.argv[1:9]
 text = open(path).read()
+
+# --- Use the checkout in place, instead of letting buildozer manage it -----
+#
+# With p4a.source_dir set, buildozer takes the "don't install anything, just
+# check the dir exists" branch (targets/android.py:654) and skips the whole
+# clone/pull/reset block — including `git reset --hard <p4a.commit>`, which
+# otherwise runs on every build and reverts any edit to a tracked p4a file.
+#
+# Phase 1e needs two such edits, so the reset has to stop. p4a.commit below is
+# now inert; phase 1e verifies HEAD instead, so a checkout that drifts is still
+# caught rather than silently used.
+if re.search(r'^p4a\.source_dir\s*=', text, re.M):
+    text = re.sub(r'^p4a\.source_dir\s*=.*$', f'p4a.source_dir = {p4a_dir}',
+                  text, flags=re.M)
+else:
+    text, n = re.subn(r'^(title\s*=.*)$',
+                      lambda m: m.group(1) + f'\np4a.source_dir = {p4a_dir}',
+                      text, count=1, flags=re.M)
+    if n != 1:
+        sys.exit("error: could not anchor p4a.source_dir inside [app]")
+print(f"now: p4a.source_dir = {p4a_dir}")
 
 # --- The launcher label ---------------------------------------------------
 #
@@ -712,6 +738,83 @@ else
   printf '\033[33mnote:\033[0m python-for-android not cloned yet; will patch after the clone.\n'
   ANYDPI_PATCHED=0
 fi
+
+# Phase 1e — give PySide's Qt bindings a "lib" prefix, or release builds die.
+#
+# THE BUG THIS FIXES, because it is not guessable from the symptom:
+#
+#     E QtLoader: Can't find '.../lib/arm64/QtCore.abi3.so'
+#     E QtLoader: Loading Qt native libraries failed
+#     I org.mycu.mycu: System.exit called, status: -1
+#
+# A release APK installs fine and then exits instantly, with no Python
+# traceback and no native crash. The same APK content works in debug.
+#
+# Android's installer does not extract every .so from lib/<abi>/. In
+# NativeLibraryHelper the "must be named lib*.so" filter is applied *only when
+# the app is not debuggable* — debuggable apps get everything, so that gdbserver
+# and friends can be shipped. Measured on this project: the debug install has
+# 165 files in lib/arm64, the release install 157, and the eight missing ones
+# are exactly PySide's bindings — QtCore.abi3.so, QtGui.abi3.so and so on, none
+# of which starts with "lib".
+#
+# So `android:debuggable` was load-bearing by accident. Removing it — which is
+# the entire point of a release build — takes the bindings with it.
+#
+# QtLoader reads those names from res/values/libs.xml, rendered from
+# libs.tmpl.xml, which hardcodes the bare spelling. Both that template and the
+# recipe that stages the files have to agree on a new name, so both are patched
+# here. Renaming the file does not change its SONAME, which stays
+# QtCore.abi3.so, so the later `import PySide6.QtCore` still resolves.
+step "Prefixing PySide's Qt bindings with lib (release-install fix)"
+
+HEAD_NOW="$(git -C "$P4A_DIR" rev-parse HEAD 2>/dev/null || true)"
+if [[ "$HEAD_NOW" != "$P4A_COMMIT" ]]; then
+  die "the python-for-android checkout is at ${HEAD_NOW:-<none>}, not the pinned
+   $P4A_COMMIT. Since p4a.source_dir now stops buildozer managing it, nothing
+   will correct this automatically. Fix with:
+       git -C $P4A_DIR fetch --all && git -C $P4A_DIR reset --hard $P4A_COMMIT
+   then re-run — phase 1e re-applies its patches on every build."
+fi
+
+python3 - "$P4A_DIR" "$STAGE/deployment/recipes/PySide6/__init__.py" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+p4a_dir, recipe = Path(sys.argv[1]), Path(sys.argv[2])
+
+# 1. The template QtLoader's list is rendered from. Tracked in the p4a repo;
+#    only safe to edit because p4a.source_dir stopped the hard reset.
+tmpl = p4a_dir / "pythonforandroid/bootstraps/qt/build/templates/libs.tmpl.xml"
+text = tmpl.read_text()
+before = text
+# `Qt{{ qt_lib }}.abi3.so` -> `libQt{{ qt_lib }}.abi3.so`, leaving the entries
+# that are already prefixed (libshiboken6, libpyside6, libpyside6qml) alone.
+text = re.sub(r'(<item>\{\{ arch \}\};)(Qt\{\{ qt_lib \}\}\.abi3\.so)', r'\1lib\2', text)
+if text != before:
+    tmpl.write_text(text)
+    print(f"  patched {tmpl.name}")
+elif "libQt{{ qt_lib }}.abi3.so" in text:
+    print(f"  {tmpl.name} already patched")
+else:
+    sys.exit(f"error: no bare Qt binding entry found in {tmpl}; did p4a change?")
+
+# 2. The recipe that copies the files into the libs dir. Regenerated by
+#    `--init` on every build, so this is re-applied every build by design.
+src = recipe.read_text()
+patched, n = re.subn(r'(get_libs_dir\(arch\.arch\)\)\s*/\s*")(Qt[A-Za-z0-9]+\.abi3\.so")',
+                     r'\1lib\2', src)
+if n:
+    recipe.write_text(patched)
+    print(f"  patched {recipe.name}: {n} copy targets renamed")
+else:
+    already = len(re.findall(r'/ "libQt[A-Za-z0-9]+\.abi3\.so"', src))
+    if already:
+        print(f"  {recipe.name} already patched ({already} targets)")
+    else:
+        sys.exit(f"error: no bare Qt binding copy targets in {recipe}")
+PY
 
 # Phase 2 — the actual build. This is what pyside6-android-deploy would have
 # run itself; invoking it directly is what lets the edits above take effect.
