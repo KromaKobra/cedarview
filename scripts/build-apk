@@ -92,11 +92,6 @@ ARCH="aarch64"                   # the phone is arm64-v8a
 # p4a copies this file verbatim into res/mipmap/icon.png — no resize, no format
 # conversion, no density variants — so it wants to be a large square PNG with
 # alpha. See docs/iterating-and-shipping.md §2.
-# The python-for-android checkout. Pinned into buildozer.spec as p4a.source_dir
-# in phase 1a, which is what stops buildozer running `git reset --hard` on it —
-# see phase 1e for why that matters.
-P4A_DIR="$STAGE/.buildozer/android/platform/python-for-android"
-
 ICON="$ROOT/assets/appicon.png"
 
 # The adaptive (Oreo and later) pair. ICON above stays as the legacy fallback
@@ -112,6 +107,10 @@ ICON_BG="$ROOT/assets/appicon_background.png"
 QT_DL="https://download.qt.io/official_releases/QtForPython"
 WHEEL_PYSIDE="$WHEELS/pyside6-${PYSIDE_VERSION}-${PYSIDE_VERSION}-cp311-cp311-android_${ARCH}.whl"
 WHEEL_SHIBOKEN="$WHEELS/shiboken6-${PYSIDE_VERSION}-${PYSIDE_VERSION}-cp311-cp311-android_${ARCH}.whl"
+
+# The python-for-android checkout. buildozer clones it here on a cold build;
+# after that it is reused in place via p4a.source_dir — see pin_p4a_source_dir.
+P4A_DIR="$STAGE/.buildozer/android/platform/python-for-android"
 
 DO_INSTALL=0
 DO_CLEAN=0
@@ -348,11 +347,60 @@ cd "$STAGE"
 # pysidedeploy.spec and buildozer.spec, and --keep-deployment-files stops the
 # `finally:` block deleting the generated recipes and jars on the way out.
 rm -f pysidedeploy.spec buildozer.spec
+
+# --- Carry .buildozer across --init ----------------------------------------
+#
+# `--init` deletes it. All of it. Every time.
+#
+#     cleanup(config=config, is_android=True)        android_deploy.py:99
+#         shutil.rmtree(project_dir / ".buildozer")  deploy_util.py:51
+#
+# That call sits ABOVE the `if init: return`, so it runs on every invocation,
+# and `--keep-deployment-files` does not cover it — that flag only guards the
+# second cleanup() in the `finally:` block further down. Two different cleanups;
+# the flag guards the one that does not matter here.
+#
+# What gets destroyed is not a cache in any cheap sense: the python-for-android
+# checkout, the cross-compiled CPython, OpenSSL and sqlite3, and the dist. So
+# "warm" rebuilds were not warm, and — the reason this was finally noticed —
+# every patch phases 1c/1d/1e apply to the p4a checkout was being deleted a
+# moment later, which made three separate fixes look like they had silently
+# failed.
+#
+# Moving it aside is enough: the deletion is a plain rmtree of that one path,
+# with no bookkeeping elsewhere that needs to agree.
+KEEP="$STAGE/.buildozer-keep"
+
+# A previous run that died between the move and the restore left the only copy
+# at $KEEP. Recover it rather than deleting it — that tree is tens of minutes
+# of cross-compilation.
+if [[ -d "$KEEP" && ! -d "$STAGE/.buildozer" ]]; then
+  mv "$KEEP" "$STAGE/.buildozer"
+  step "Recovered .buildozer left behind by an interrupted run"
+fi
+rm -rf "$KEEP"
+
+if [[ -d "$STAGE/.buildozer" ]]; then
+  mv "$STAGE/.buildozer" "$KEEP"
+  step "Moved .buildozer aside so --init cannot delete it ($(du -sh "$KEEP" | cut -f1))"
+fi
+
+# `|| INIT_RC=$?`, not a bare call: under `set -e` a non-zero exit here would
+# terminate the script before the restore below, stranding the preserved tree.
+INIT_RC=0
 pyside6-android-deploy --init --keep-deployment-files \
   --name mycu \
   --wheel-pyside "$WHEEL_PYSIDE" \
-  --wheel-shiboken "$WHEEL_SHIBOKEN"
+  --wheel-shiboken "$WHEEL_SHIBOKEN" || INIT_RC=$?
 
+if [[ -d "$KEEP" ]]; then
+  # --init may have created a fresh empty one; the preserved tree wins.
+  rm -rf "$STAGE/.buildozer"
+  mv "$KEEP" "$STAGE/.buildozer"
+  step "Restored .buildozer"
+fi
+
+(( INIT_RC == 0 )) || die "pyside6-android-deploy --init exited $INIT_RC"
 [[ -f buildozer.spec ]] || die "--init did not produce a buildozer.spec"
 
 # Phase 1a — pin the permissions.
@@ -396,31 +444,15 @@ pyside6-android-deploy --init --keep-deployment-files \
 P4A_COMMIT="3762c88c56e3443efb8eba2a02a2604b680240fd"   # 2025-10-26, python3 3.11.13
 
 step "Pinning permissions, the p4a revision, and the launcher icon"
-python3 - buildozer.spec "$P4A_COMMIT" "$ICON" "$ICON_FG" "$ICON_BG" "$APP_VERSION" "$APP_TITLE" "$P4A_DIR" <<'PY'
+python3 - buildozer.spec "$P4A_COMMIT" "$ICON" "$ICON_FG" "$ICON_BG" "$APP_VERSION" "$APP_TITLE" <<'PY'
 import re, sys
-path, p4a_commit, icon, icon_fg, icon_bg, app_version, app_title, p4a_dir = sys.argv[1:9]
+path, p4a_commit, icon, icon_fg, icon_bg, app_version, app_title = sys.argv[1:8]
 text = open(path).read()
 
-# --- Use the checkout in place, instead of letting buildozer manage it -----
-#
-# With p4a.source_dir set, buildozer takes the "don't install anything, just
-# check the dir exists" branch (targets/android.py:654) and skips the whole
-# clone/pull/reset block — including `git reset --hard <p4a.commit>`, which
-# otherwise runs on every build and reverts any edit to a tracked p4a file.
-#
-# Phase 1e needs two such edits, so the reset has to stop. p4a.commit below is
-# now inert; phase 1e verifies HEAD instead, so a checkout that drifts is still
-# caught rather than silently used.
-if re.search(r'^p4a\.source_dir\s*=', text, re.M):
-    text = re.sub(r'^p4a\.source_dir\s*=.*$', f'p4a.source_dir = {p4a_dir}',
-                  text, flags=re.M)
-else:
-    text, n = re.subn(r'^(title\s*=.*)$',
-                      lambda m: m.group(1) + f'\np4a.source_dir = {p4a_dir}',
-                      text, count=1, flags=re.M)
-    if n != 1:
-        sys.exit("error: could not anchor p4a.source_dir inside [app]")
-print(f"now: p4a.source_dir = {p4a_dir}")
+# p4a.source_dir is NOT set here. It is set by pin_p4a_source_dir() later, and
+# only once the checkout actually exists: with it set, buildozer errors out
+# ("Path for p4a.source_dir does not exist") instead of cloning, so a cold
+# build could never bootstrap itself.
 
 # --- The launcher label ---------------------------------------------------
 #
@@ -768,29 +800,54 @@ fi
 # QtCore.abi3.so, so the later `import PySide6.QtCore` still resolves.
 step "Prefixing PySide's Qt bindings with lib (release-install fix)"
 
-HEAD_NOW="$(git -C "$P4A_DIR" rev-parse HEAD 2>/dev/null || true)"
-if [[ "$HEAD_NOW" != "$P4A_COMMIT" ]]; then
-  die "the python-for-android checkout is at ${HEAD_NOW:-<none>}, not the pinned
-   $P4A_COMMIT. Since p4a.source_dir now stops buildozer managing it, nothing
-   will correct this automatically. Fix with:
+# Once the checkout exists, tell buildozer to use it in place. That is what
+# stops `git reset --hard <p4a.commit>` (targets/android.py:701) reverting the
+# template edit below on every build. Set only when the directory is really
+# there: with it set and the path missing, buildozer errors out instead of
+# cloning, so a cold build could never bootstrap itself.
+pin_p4a_source_dir() {
+  [[ -d "$P4A_DIR" ]] || return 1
+  python3 - "$STAGE/buildozer.spec" "$P4A_DIR" <<'PY'
+import re, sys
+path, p4a_dir = sys.argv[1], sys.argv[2]
+text = open(path).read()
+if re.search(r'^p4a\.source_dir\s*=', text, re.M):
+    text = re.sub(r'^p4a\.source_dir\s*=.*$', f'p4a.source_dir = {p4a_dir}',
+                  text, flags=re.M)
+else:
+    text, n = re.subn(r'^(title\s*=.*)$',
+                      lambda m: m.group(1) + f'\np4a.source_dir = {p4a_dir}',
+                      text, count=1, flags=re.M)
+    if n != 1:
+        sys.exit("error: could not anchor p4a.source_dir inside [app]")
+open(path, 'w').write(text)
+print(f"  p4a.source_dir = {p4a_dir}")
+PY
+}
+
+# The template lives in the checkout, so it can only be patched once that
+# exists. On a cold build it does not yet — buildozer clones it in phase 2 —
+# and the retry there applies this and rebuilds.
+patch_p4a_template() {
+  [[ -d "$P4A_DIR" ]] || return 1
+
+  local head_now
+  head_now="$(git -C "$P4A_DIR" rev-parse HEAD 2>/dev/null || true)"
+  if [[ -n "$head_now" && "$head_now" != "$P4A_COMMIT" ]]; then
+    die "the python-for-android checkout is at $head_now, not the pinned
+   $P4A_COMMIT. p4a.source_dir stops buildozer managing it, so nothing corrects
+   this automatically. Fix with:
        git -C $P4A_DIR fetch --all && git -C $P4A_DIR reset --hard $P4A_COMMIT
-   then re-run — phase 1e re-applies its patches on every build."
-fi
+   then re-run — the patches are re-applied on every build."
+  fi
 
-python3 - "$P4A_DIR" "$STAGE/deployment/recipes/PySide6/__init__.py" <<'PY'
-import re
-import sys
+  python3 - "$P4A_DIR" <<'PY'
+import re, sys
 from pathlib import Path
-
-p4a_dir, recipe = Path(sys.argv[1]), Path(sys.argv[2])
-
-# 1. The template QtLoader's list is rendered from. Tracked in the p4a repo;
-#    only safe to edit because p4a.source_dir stopped the hard reset.
+p4a_dir = Path(sys.argv[1])
 tmpl = p4a_dir / "pythonforandroid/bootstraps/qt/build/templates/libs.tmpl.xml"
 text = tmpl.read_text()
 before = text
-# `Qt{{ qt_lib }}.abi3.so` -> `libQt{{ qt_lib }}.abi3.so`, leaving the entries
-# that are already prefixed (libshiboken6, libpyside6, libpyside6qml) alone.
 text = re.sub(r'(<item>\{\{ arch \}\};)(Qt\{\{ qt_lib \}\}\.abi3\.so)', r'\1lib\2', text)
 if text != before:
     tmpl.write_text(text)
@@ -799,9 +856,21 @@ elif "libQt{{ qt_lib }}.abi3.so" in text:
     print(f"  {tmpl.name} already patched")
 else:
     sys.exit(f"error: no bare Qt binding entry found in {tmpl}; did p4a change?")
+PY
+  pin_p4a_source_dir
+}
 
-# 2. The recipe that copies the files into the libs dir. Regenerated by
-#    `--init` on every build, so this is re-applied every build by design.
+# The recipe is regenerated by --init every build and lives outside the
+# checkout, so this always runs and always has something to do.
+python3 - "$STAGE/deployment/recipes/PySide6/__init__.py" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+recipe = Path(sys.argv[1])
+
+# The recipe copies the bindings into the libs dir. Renaming them here is half
+# the fix; patch_p4a_template() renames them in QtLoader's list, the other half.
 src = recipe.read_text()
 patched, n = re.subn(r'(get_libs_dir\(arch\.arch\)\)\s*/\s*")(Qt[A-Za-z0-9]+\.abi3\.so")',
                      r'\1lib\2', src)
@@ -815,6 +884,13 @@ else:
     else:
         sys.exit(f"error: no bare Qt binding copy targets in {recipe}")
 PY
+
+if patch_p4a_template; then
+  ABI3_PATCHED=1
+else
+  printf '\033[33mnote:\033[0m p4a not cloned yet; binding names patched after the clone.\n'
+  ABI3_PATCHED=0
+fi
 
 # Phase 2 — the actual build. This is what pyside6-android-deploy would have
 # run itself; invoking it directly is what lets the edits above take effect.
@@ -875,11 +951,12 @@ env -u SOURCE_DATE_EPOCH python3 -m buildozer android "$BUILD_MODE" || BUILDOZER
 
 # Cold build: the clone now exists, so the bootstrap can be patched. Retry once
 # rather than making the user run the whole thing again.
-if (( BUILDOZER_RC != 0 && (ANYDPI_PATCHED == 0 || LINT_PATCHED == 0) )) \
-   && ensure_anydpi_dir && ensure_lint_exemption; then
+if (( BUILDOZER_RC != 0 && (ANYDPI_PATCHED == 0 || LINT_PATCHED == 0 || ABI3_PATCHED == 0) )) \
+   && ensure_anydpi_dir && ensure_lint_exemption && patch_p4a_template; then
   step "Patched p4a's qt bootstrap and retrying the build once"
   ANYDPI_PATCHED=1
   LINT_PATCHED=1
+  ABI3_PATCHED=1
   : > "$STAMP"
   BUILDOZER_RC=0
   env -u SOURCE_DATE_EPOCH python3 -m buildozer android "$BUILD_MODE" || BUILDOZER_RC=$?
