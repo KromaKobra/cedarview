@@ -1,7 +1,7 @@
 [app]
 
 # title of your application
-title = cedarview
+title = mycu
 
 # project root directory. default = The parent directory of input_file
 project_dir = .
@@ -40,7 +40,7 @@ qml_files = .buildozer/android/app/mycu/ui/qml/BalanceTile.qml,.buildozer/androi
 excluded_qml_plugins = QtCharts,QtQuick3D,QtSensors,QtTest,QtWebEngine
 
 # qt modules used. comma separated
-modules = QuickControls2,Core,Quick,Network,OpenGL,WebView,Gui,Qml
+modules = OpenGL,Quick,Network,Gui,WebView,Qml,Core,QuickControls2
 
 # qt plugins used by the application. only relevant for desktop deployment
 # for qt plugins used in android application see [android][plugins]
@@ -55,7 +55,7 @@ wheel_pyside = /home/kroma/Development/cedarview/.android-wheels/pyside6-6.11.0-
 wheel_shiboken = /home/kroma/Development/cedarview/.android-wheels/shiboken6-6.11.0-6.11.0-cp311-cp311-android_aarch64.whl
 
 # plugins to be copied to libs folder of the packaged application. comma separated
-plugins = webview_qtwebview_android,platforms_qtforandroid
+plugins = platforms_qtforandroid,webview_qtwebview_android
 
 [nuitka]
 
@@ -90,7 +90,7 @@ ndk_path = /home/kroma/.pyside6_android_deploy/android-ndk/android-ndk-r27c
 sdk_path = 
 
 # other libraries to be loaded at app startup. comma separated.
-local_libs = plugins_platforms_qtforandroid,plugins_webview_qtwebview_android
+local_libs = plugins_webview_qtwebview_android,plugins_platforms_qtforandroid
 
 # architecture of deployed platform
 arch = aarch64

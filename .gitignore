@@ -40,3 +40,14 @@ result-*
 # Staging copy of the project that scripts/build-apk hands to
 # pyside6-android-deploy (see the header of that script).
 android-build/
+
+# Written by scripts/make-icon-layers every time the icon is regenerated. It is
+# a look-at-it-and-decide check, not an asset.
+assets/_preview.png
+
+# Release signing material, in case it is ever kept beside the project rather
+# than in ~/keys. Committing it would hand anyone the ability to publish an
+# update that installs over yours.
+*.jks
+*.keystore
+*.pass

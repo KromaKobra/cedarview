@@ -428,12 +428,23 @@ print(f"now: version = {app_version}")
 # A release build defaults to an .aab (buildozer/target.py:142), which is a
 # Play upload format and cannot be sideloaded. Anyone installing from a GitHub
 # release needs an .apk.
+# Anchored to the `title` line, which is inside [app]. Appending to the end of
+# the file instead puts it under the LAST section — [buildozer] — where
+# `config.getdefault('app', 'android.release_artifact', 'aab')` cannot see it,
+# so it silently falls back to aab and the release build produces a bundle that
+# cannot be sideloaded. An ini key in the wrong section is not an error to
+# configparser; it is simply a different key.
 if re.search(r'^android\.release_artifact\s*=', text, re.M):
     text = re.sub(r'^android\.release_artifact\s*=.*$',
                   'android.release_artifact = apk', text, flags=re.M)
 else:
-    text = text.rstrip('\n') + '\n\n# Sideloadable; the default is aab.\nandroid.release_artifact = apk\n'
-print("now: android.release_artifact = apk")
+    text, n = re.subn(r'^(title\s*=.*)$',
+                      lambda m: m.group(1) + '\n# Sideloadable; the default is aab.'
+                                             '\nandroid.release_artifact = apk',
+                      text, count=1, flags=re.M)
+    if n != 1:
+        sys.exit("error: could not anchor android.release_artifact inside [app]")
+print("now: android.release_artifact = apk   (in [app])")
 
 before = re.search(r'^android\.permissions\s*=.*$', text, re.M)
 text, n = re.subn(r'^android\.permissions\s*=.*$',
@@ -624,6 +635,74 @@ ensure_anydpi_dir() {
   return 0
 }
 
+# Phase 1d — stop a Play Store policy check from failing a sideloaded build.
+#
+# `lintVitalRelease` runs on release builds only, and its findings are fatal by
+# default. One of them is ExpiredTargetSdkVersion:
+#
+#     Error: Google Play requires that apps target API level 33 or higher.
+#     [ExpiredTargetSdkVersion]  targetSdkVersion 31
+#
+# gradle exits 1, no artifact is produced, and because the check never runs for
+# `debug` the failure appears the first time you try to cut a release — long
+# after the thing it complains about was introduced.
+#
+# The complaint is about *publishing to Play*, which this is not: the APK is
+# sideloaded from GitHub, where no target-API floor applies. targetSdkVersion 31
+# is a real limitation worth fixing (see §3.2), but it is a deliberate one and
+# it should not be able to block a build that was never going to Play.
+#
+# Only `ExpiredTargetSdkVersion` is suppressed. The rest of lintVital stays
+# armed, so a genuine release-only regression still stops the build.
+#
+# ---- THE RULE THIS FILE LEARNED THE HARD WAY -------------------------------
+#
+# Do not modify a tracked file inside the python-for-android checkout. Ever.
+# buildozer runs, on every single build (targets/android.py:701):
+#
+#     git reset --hard <p4a.commit>
+#
+# because this project pins p4a.commit to hold CPython at 3.11. Any edit to a
+# file git knows about is silently reverted before the build starts. The first
+# attempt at this fix patched build.tmpl.gradle and was undone three times in a
+# row, each time looking like the fix simply had not worked.
+#
+# `reset --hard` does NOT touch untracked files, which is why the phase 1c
+# directory below has survived every build. So the lint suppression is a NEW
+# file rather than an edit to an existing one.
+#
+# lint.xml is read automatically by AGP from the gradle module's root
+# directory, no build.gradle change required. The bootstrap's build/ directory
+# is copied wholesale to become the dist, and the dist root is the module root
+# — verified: the phase 1c directory arrives there and p4a writes icon.xml into
+# it.
+P4A_QT_BUILD="$STAGE/.buildozer/android/platform/python-for-android/pythonforandroid/bootstraps/qt/build"
+
+ensure_lint_exemption() {
+  [[ -d "$P4A_QT_BUILD" ]] || return 1
+  cat > "$P4A_QT_BUILD/lint.xml" <<'XML'
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Written by scripts/build-apk (phase 1d). An untracked NEW file on purpose:
+     buildozer does `git reset --hard` on this checkout every build, so edits to
+     tracked files do not survive and additions do. -->
+<lint>
+    <!-- A Google Play policy check, fatal by default in lintVitalRelease. This
+         APK is sideloaded from GitHub Releases and never uploaded to Play, so
+         the target-API floor does not apply to it. -->
+    <issue id="ExpiredTargetSdkVersion" severity="ignore" />
+</lint>
+XML
+  return 0
+}
+
+if ensure_lint_exemption; then
+  step "Wrote p4a's qt bootstrap lint.xml: ExpiredTargetSdkVersion ignored"
+  LINT_PATCHED=1
+else
+  printf '\033[33mnote:\033[0m p4a not cloned yet; lint.xml written after the clone.\n'
+  LINT_PATCHED=0
+fi
+
 if ensure_anydpi_dir; then
   step "Patched p4a's qt bootstrap: res/mipmap-anydpi-v26 exists"
   ANYDPI_PATCHED=1
@@ -693,9 +772,11 @@ env -u SOURCE_DATE_EPOCH python3 -m buildozer android "$BUILD_MODE" || BUILDOZER
 
 # Cold build: the clone now exists, so the bootstrap can be patched. Retry once
 # rather than making the user run the whole thing again.
-if (( BUILDOZER_RC != 0 && ANYDPI_PATCHED == 0 )) && ensure_anydpi_dir; then
+if (( BUILDOZER_RC != 0 && (ANYDPI_PATCHED == 0 || LINT_PATCHED == 0) )) \
+   && ensure_anydpi_dir && ensure_lint_exemption; then
   step "Patched p4a's qt bootstrap and retrying the build once"
   ANYDPI_PATCHED=1
+  LINT_PATCHED=1
   : > "$STAMP"
   BUILDOZER_RC=0
   env -u SOURCE_DATE_EPOCH python3 -m buildozer android "$BUILD_MODE" || BUILDOZER_RC=$?
