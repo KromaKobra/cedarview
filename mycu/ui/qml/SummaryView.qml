@@ -167,8 +167,8 @@ Item {
                     }
 
                     // Hidden rather than empty until a fetch lands — see
-                    // MeterBar.qml for why it is unlabelled and why `fraction`
-                    // is always the remaining share.
+                    // MeterBar.qml for why it is unlabelled. This one is the
+                    // remaining share: it empties as skips are spent.
                     MeterBar {
                         Layout.topMargin: 14
                         visible: chapel.remaining >= 0 && chapel.allowed > 0
@@ -392,7 +392,8 @@ Item {
                         Label {
                             Layout.alignment: Qt.AlignBottom
                             Layout.bottomMargin: 5
-                            text: semester.daysLeft === 1 ? "day left" : "days left"
+                            text: (semester.totalDays >= 0 ? "/ " + semester.totalDays + " " : "")
+                                  + (semester.daysLeft === 1 ? "day left" : "days left")
                             color: theme.muted
                             font.pixelSize: 12
                         }
@@ -412,10 +413,12 @@ Item {
                         wrapMode: Text.Wrap
                     }
 
+                    // Fills as the term runs — completed, not remaining, unlike
+                    // the skip bar above.
                     MeterBar {
                         Layout.topMargin: 14
                         visible: semester.inTerm
-                        fraction: semester.remainingFraction
+                        fraction: semester.elapsedFraction
                     }
                 }
             }

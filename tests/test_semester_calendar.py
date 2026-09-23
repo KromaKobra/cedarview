@@ -83,27 +83,29 @@ def test_spring_is_measured_inside_its_own_year() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_the_fraction_is_full_on_the_first_day_and_empty_on_the_last() -> None:
-    assert FALL.remaining_fraction(date(2026, 8, 19)) == pytest.approx(1.0, abs=0.01)
-    assert FALL.remaining_fraction(date(2026, 12, 11)) == 0.0
+def test_the_countdown_starts_at_the_total() -> None:
+    """"N/N days left" on the first day, "0/N" on the last."""
+    assert FALL.days_left(date(2026, 8, 19)) == FALL.total_days(2026) == 114
+    assert SPRING.days_left(date(2027, 1, 5)) == SPRING.total_days(2027)
+
+
+def test_the_fraction_is_empty_on_the_first_day_and_full_on_the_last() -> None:
+    assert FALL.elapsed_fraction(date(2026, 8, 19)) == 0.0
+    assert FALL.elapsed_fraction(date(2026, 12, 11)) == 1.0
 
 
 def test_the_fraction_is_clamped_outside_the_term() -> None:
-    assert 0.0 <= FALL.remaining_fraction(date(2026, 6, 1)) <= 1.0
-    assert 0.0 <= FALL.remaining_fraction(date(2026, 12, 31)) <= 1.0
+    assert 0.0 <= FALL.elapsed_fraction(date(2026, 6, 1)) <= 1.0
+    assert 0.0 <= FALL.elapsed_fraction(date(2026, 12, 31)) <= 1.0
 
 
-def test_the_fraction_falls_as_the_term_runs() -> None:
-    """The direction matters more than any single value.
-
-    This bar sits directly under the chapel-skip bar, and both must mean "how
-    much is left". A fraction that rose would make two adjacent identical bars
-    say opposite things.
-    """
+def test_the_fraction_rises_as_the_term_runs() -> None:
+    """The direction matters more than any single value: the semester bar
+    shows how much is done, so it fills over the term."""
     readings = [
-        FALL.remaining_fraction(date(2026, m, 1)) for m in (9, 10, 11, 12)
+        FALL.elapsed_fraction(date(2026, m, 1)) for m in (9, 10, 11, 12)
     ]
-    assert readings == sorted(readings, reverse=True)
+    assert readings == sorted(readings)
 
 
 # ---------------------------------------------------------------------------

@@ -71,22 +71,26 @@ class TermWindow:
         """
         return max(0, (self.end_in(day.year) - day).days)
 
-    def length(self, year: int) -> int:
-        """Days from the first to the last, inclusive."""
-        return (self.end_in(year) - self.start_in(year)).days + 1
+    def total_days(self, year: int) -> int:
+        """What :meth:`days_left` reads on the first day of term.
 
-    def remaining_fraction(self, day: date) -> float:
-        """How much of the term is left, 0.0–1.0.
-
-        Clamped, and in the same direction as
-        :attr:`mycu.ui.viewmodels.chapel.ChapelViewModel.remainingFraction`: a
-        full bar means plenty left. The two bars sit one above the other on the
-        summary screen and must not mean opposite things.
+        Not the inclusive length: the last day counts as 0 left, so the
+        countdown runs from this figure down to 0, and "N/N days left" on the
+        first day is the figure you would expect to see.
         """
-        total = self.length(day.year)
+        return (self.end_in(year) - self.start_in(year)).days
+
+    def elapsed_fraction(self, day: date) -> float:
+        """How much of the term is behind us, 0.0–1.0.
+
+        Clamped. Empty on the first day, full on the last — the semester bar
+        fills as the term runs, the opposite of the chapel-skip bar above it,
+        which empties as skips are spent.
+        """
+        total = self.total_days(day.year)
         if total <= 0:
             return 0.0
-        return max(0.0, min(1.0, self.days_left(day) / total))
+        return max(0.0, min(1.0, 1.0 - self.days_left(day) / total))
 
 
 #: Fall runs inside one calendar year; spring runs inside the next one. Neither

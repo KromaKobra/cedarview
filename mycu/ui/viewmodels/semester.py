@@ -76,11 +76,18 @@ class SemesterViewModel(QObject):
         term = current_term(self._today)
         return term.days_left(self._today) if term else -1
 
-    @Property(float, notify=changed)
-    def remainingFraction(self) -> float:
-        """0.0–1.0, for ``MeterBar``. Zero between terms, where the bar hides."""
+    @Property(int, notify=changed)
+    def totalDays(self) -> int:
+        """The countdown's starting figure — the "/ 114" — or ``-1`` between terms."""
         term = current_term(self._today)
-        return term.remaining_fraction(self._today) if term else 0.0
+        return term.total_days(self._today.year) if term else -1
+
+    @Property(float, notify=changed)
+    def elapsedFraction(self) -> float:
+        """0.0–1.0 of the term completed, for ``MeterBar``. Zero between terms,
+        where the bar hides."""
+        term = current_term(self._today)
+        return term.elapsed_fraction(self._today) if term else 0.0
 
     @Property(str, notify=changed)
     def endDateText(self) -> str:

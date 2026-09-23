@@ -11,9 +11,10 @@
 // are without reading anything, and ProgressBar's Basic style brings its own
 // light colours to a screen that has already chosen its own.
 //
-// `fraction` is always **remaining**, never elapsed — a full bar means plenty
-// left, on both of them. Getting that backwards on one of two adjacent bars is
-// the single worst thing this component could do.
+// `fraction` means whatever the caller says it means, and the two callers
+// differ: the chapel bar is skips **remaining** (it empties as you spend them),
+// the semester bar is the term **completed** (it fills as the term runs). Each
+// call site says which.
 
 import QtQuick
 import QtQuick.Layouts
