@@ -15,18 +15,23 @@ from __future__ import annotations
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
 from mycu.core.errors import ParseError
 from mycu.core.models import UpcomingChapel
 from mycu.core.providers.chapel_schedule import (
+    CHAPEL_LENGTH,
     UPCOMING_PATH,
     ChapelScheduleProvider,
+    fetch_schedule,
+    is_happening,
+    is_over,
     next_chapel,
     parse_upcoming,
 )
-from mycu.core.transport import FixtureTransport
+from mycu.core.transport import FixtureTransport, Response
 
 FIXTURE = "mediaserve_cedarville_edu_chapelmedia_api_v2_chapels_upcoming.json"
 
@@ -205,3 +210,92 @@ def test_provider_end_to_end_over_the_fixture(fixtures_dir: Path) -> None:
     chapels = ChapelScheduleProvider(FixtureTransport(fixtures_dir)).fetch()
     assert len(chapels) == 20
     assert chapels[0].who == "Garrett Higbee"
+
+
+def test_provider_asks_for_page_one_unless_told_otherwise() -> None:
+    assert "?page=1&" in ChapelScheduleProvider(None).path
+    assert "?page=3&" in ChapelScheduleProvider(None, page=3).path
+    assert ChapelScheduleProvider(None, page=0).page == 1
+
+
+# ---------------------------------------------------------------------------
+# The whole feed, across pages
+# ---------------------------------------------------------------------------
+
+class PagedTransport:
+    """Serves ``pages[n-1]`` for ``page=n``; an empty page past the end."""
+
+    def __init__(self, pages: list[list[dict]]) -> None:
+        self.pages = pages
+        self.asked: list[int] = []
+
+    def get(self, path: str) -> Response:
+        page = int(parse_qs(urlsplit(path).query)["page"][0])
+        self.asked.append(page)
+        items = self.pages[page - 1] if page <= len(self.pages) else []
+        return Response(status=200, url=path, body=json.dumps({"Items": items}))
+
+
+def _item(day: int, title: str = "Speaker") -> dict:
+    return {"Date": f"2026-10-{day:02d}T14:00:00Z", "Title": f"{title} {day}",
+            "Speakers": [], "WillLiveStream": True}
+
+
+def test_fetch_schedule_walks_pages_until_a_short_one() -> None:
+    transport = PagedTransport([[_item(1), _item(2)], [_item(3)]])
+    chapels = fetch_schedule(transport, page_size=2)
+    assert [c.title for c in chapels] == ["Speaker 1", "Speaker 2", "Speaker 3"]
+    assert transport.asked == [1, 2]
+
+
+def test_a_full_last_page_costs_one_empty_request() -> None:
+    transport = PagedTransport([[_item(1), _item(2)]])
+    assert len(fetch_schedule(transport, page_size=2)) == 2
+    assert transport.asked == [1, 2]
+
+
+def test_fetch_schedule_gives_up_after_max_pages() -> None:
+    transport = PagedTransport([[_item(d)] for d in range(1, 20)])
+    assert len(fetch_schedule(transport, page_size=1, max_pages=3)) == 3
+    assert transport.asked == [1, 2, 3]
+
+
+def test_an_empty_feed_is_an_empty_schedule() -> None:
+    assert fetch_schedule(PagedTransport([])) == ()
+
+
+def test_a_chapel_repeated_across_pages_is_listed_once() -> None:
+    """If a chapel starts between the two requests, page 2 shifts up a slot."""
+    transport = PagedTransport([[_item(1), _item(2)], [_item(2)]])
+    assert [c.title for c in fetch_schedule(transport, page_size=2)] == [
+        "Speaker 1", "Speaker 2",
+    ]
+
+
+def test_fetch_schedule_over_the_fixture_is_one_request(fixtures_dir: Path) -> None:
+    # The capture is a 20-item page — shorter than 30, so the feed has ended.
+    chapels = fetch_schedule(FixtureTransport(fixtures_dir))
+    assert len(chapels) == 20
+
+
+# ---------------------------------------------------------------------------
+# Now and over
+# ---------------------------------------------------------------------------
+
+START = datetime(2026, 9, 23, 14, 0, tzinfo=timezone.utc)
+
+
+def test_a_chapel_is_happening_for_its_length_and_then_over() -> None:
+    chapel = UpcomingChapel(starts_at=START)
+    assert not is_happening(chapel, START - timedelta(minutes=1))
+    assert is_happening(chapel, START)
+    assert is_happening(chapel, START + CHAPEL_LENGTH - timedelta(seconds=1))
+    assert not is_happening(chapel, START + CHAPEL_LENGTH)
+    assert is_over(chapel, START + CHAPEL_LENGTH)
+    assert not is_over(chapel, START)
+
+
+def test_an_undated_chapel_is_neither_happening_nor_over() -> None:
+    chapel = UpcomingChapel(starts_at=None)
+    assert not is_happening(chapel, START)
+    assert not is_over(chapel, START)

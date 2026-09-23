@@ -287,6 +287,115 @@ def test_midnight_and_noon_are_not_rendered_as_zero_and_twelve(vm: ChapelViewMod
 
 
 # ---------------------------------------------------------------------------
+# The schedule (the Chapel tab)
+# ---------------------------------------------------------------------------
+
+def _local(y: int, mo: int, d: int, h: int = 10, mi: int = 0) -> datetime:
+    return datetime(y, mo, d, h, mi).astimezone()
+
+
+#: A Wednesday, ten minutes into chapel.
+NOW = _local(2026, 9, 23, 10, 10)
+
+SCHEDULE = (
+    UpcomingChapel(starts_at=_local(2026, 9, 22), title="Garrett Kell",
+                   speakers=("Garrett Kell",)),
+    UpcomingChapel(starts_at=_local(2026, 9, 23), title="Garrett Kell",
+                   speakers=("Garrett Kell",), description="Lead pastor of Del Ray.",
+                   will_livestream=True),
+    UpcomingChapel(starts_at=_local(2026, 9, 24), title="SGA", will_livestream=True),
+    UpcomingChapel(starts_at=_local(2026, 9, 28), title="Sermon on the Mount",
+                   speakers=("Philip Miller",), will_livestream=True),
+    UpcomingChapel(starts_at=_local(2026, 10, 5, 11), title="Majors Assembly"),
+    UpcomingChapel(starts_at=None, title="Undated"),
+)
+
+
+def _schedule_rows(vm: ChapelViewModel, *roles: str) -> list[tuple]:
+    model = vm.schedule
+    by_name = {bytes(name).decode(): role for role, name in model.roleNames().items()}
+    return [
+        tuple(model.data(model.index(r, 0), by_name[role]) for role in roles)
+        for r in range(model.rowCount())
+    ]
+
+
+@pytest.fixture
+def svm(vm: ChapelViewModel) -> ChapelViewModel:
+    vm._now = lambda: NOW
+    vm._on_schedule_loaded(SCHEDULE)
+    return vm
+
+
+def test_the_schedule_is_grouped_by_week(svm: ChapelViewModel) -> None:
+    assert _schedule_rows(svm, "isHeader", "heading", "who") == [
+        (True, "This week", ""),
+        (False, "", "Garrett Kell"),
+        (False, "", "SGA"),
+        (True, "Next week", ""),
+        (False, "", "Philip Miller"),
+        (True, "Week of Oct 5", ""),
+        (False, "", "Majors Assembly"),
+    ]
+
+
+def test_a_finished_chapel_is_gone_and_the_current_one_is_marked_now(
+    svm: ChapelViewModel,
+) -> None:
+    rows = _schedule_rows(svm, "isHeader", "dayName", "dayNumber", "badge", "isNow")
+    chapels = [r[1:] for r in rows if not r[0]]
+    assert chapels[0] == ("WED", "23", "Now", True)
+    assert chapels[1] == ("THU", "24", "Tomorrow", False)
+    assert chapels[2][2:] == ("", False)
+
+
+def test_the_title_is_shown_only_when_it_adds_something(svm: ChapelViewModel) -> None:
+    subtitles = [r[1] for r in _schedule_rows(svm, "isHeader", "subtitle") if not r[0]]
+    # Same as the speaker; an unnamed chapel whose title *is* its name; a real
+    # sermon title; an unnamed assembly.
+    assert subtitles == ["", "", "Sermon on the Mount", ""]
+
+
+def test_time_description_and_livestream_come_through(svm: ChapelViewModel) -> None:
+    rows = [r[1:] for r in _schedule_rows(svm, "isHeader", "timeText", "description",
+                                          "livestream") if not r[0]]
+    assert rows[0] == ("10:00 AM", "Lead pastor of Del Ray.", True)
+    assert rows[-1] == ("11:00 AM", "", False)
+
+
+def test_the_summary_still_gets_the_next_chapel_from_the_full_schedule(
+    vm: ChapelViewModel,
+) -> None:
+    now = datetime.now().astimezone()
+    # Soonest first, as fetch_schedule delivers it. The first has started, so
+    # it is on the Chapel tab as "Now" but is not the summary's *next* chapel.
+    vm._on_schedule_loaded((
+        UpcomingChapel(starts_at=now - timedelta(minutes=5), title="Started",
+                       speakers=("Started Speaker",)),
+        UpcomingChapel(starts_at=now + timedelta(days=1), title="Sooner",
+                       speakers=("Sooner Speaker",)),
+    ))
+    assert vm.nextSpeaker == "Sooner Speaker"
+
+
+def test_why_the_schedule_is_empty(vm: ChapelViewModel) -> None:
+    assert vm.scheduleEmptyText == "Loading the chapel schedule…"
+
+    vm._on_schedule_failed(TransportError("timed out"))
+    assert vm.scheduleEmptyText.startswith("Couldn't reach the chapel schedule")
+
+    vm._on_schedule_loaded(())
+    assert vm.scheduleEmptyText == "No chapels scheduled right now."
+
+    vm._on_schedule_failed(ParseError("no Items"))
+    assert vm.scheduleEmptyText == "The chapel schedule feed changed shape."
+
+
+def test_a_populated_schedule_has_no_empty_text(svm: ChapelViewModel) -> None:
+    assert svm.scheduleEmptyText == ""
+
+
+# ---------------------------------------------------------------------------
 # Dining viewmodel
 # ---------------------------------------------------------------------------
 

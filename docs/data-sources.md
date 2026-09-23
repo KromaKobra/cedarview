@@ -10,7 +10,7 @@ important fact for planning, and it is why the transport now routes by origin.
 | # | Want | Lives on | Auth | Status |
 |---|---|---|---|---|
 | 2 | Home Cooking, every meal | `diningdata.cedarville.edu` | **none** | ✅ **done, live** |
-| 4 | Next chapel speaker | `mediaserve.cedarville.edu` | **none** | ✅ **done, live** |
+| 4 | Next chapel speaker, full chapel schedule | `mediaserve.cedarville.edu` | **none** | ✅ **done, live** |
 | 3 | Chapel skips remaining | `selfservice.cedarville.edu` | SAML / Entra | ✅ **done, real API** |
 | 1 | Flex dollar balance | `selfservice.cedarville.edu/CedarInfo/Meals/GetBalanceJson` | same Cedarville sign-in | ✅ **done, real endpoint** |
 | 6 | Meals left this week | same page as #1 | same | ✅ **done, real page** |
@@ -118,6 +118,24 @@ an `AttendanceStatus` vocabulary) is deleted. There is no per-session status
 anywhere in the real data.
 
 ---
+
+## ✅ 4. Upcoming chapels — DONE
+
+```
+GET https://mediaserve.cedarville.edu/ChapelMedia/api/v2/chapels/upcoming?page=P&count=N
+```
+
+**Unauthenticated.** Full shape and the data's quirks (empty `Speakers`, titles
+that repeat the speaker) are in `mycu/core/providers/chapel_schedule.py`.
+Verified 2026-09-22:
+
+- `count` is **capped at 30** — `count=100` answers `RequestedCount: 30`. The
+  feed held `TotalCount: 47` (the rest of the term): page 1 had 30, page 2 had
+  17, page 3 was empty. `fetch_schedule` walks pages until a short one.
+- Today's chapel stays in the feed after it starts and drops out later.
+  `/chapel/live` gives the current or next chapel's `StartDate`/`EndDate`
+  (14:00Z–14:45Z), which is where the app's 45-minute "happening now" window
+  comes from.
 
 ## ✅ 1 & 6. Flex dollars and meals left — DONE (re-done 2026-09-22)
 

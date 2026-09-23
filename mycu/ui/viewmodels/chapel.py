@@ -1,9 +1,9 @@
-"""Chapel screen: list model + viewmodel."""
+"""Chapel screen: the skip ledger, the upcoming-chapel schedule, and the viewmodel."""
 
 from __future__ import annotations
 
 import logging
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from PySide6.QtCore import (
@@ -20,7 +20,12 @@ from PySide6.QtCore import (
 from ...core.errors import ParseError, SessionExpired, TransportError
 from ...core.models import ChapelLedgerEntry, ChapelSummary, UpcomingChapel
 from ...core.providers.chapel import ChapelProvider
-from ...core.providers.chapel_schedule import ChapelScheduleProvider, next_chapel
+from ...core.providers.chapel_schedule import (
+    fetch_schedule,
+    is_happening,
+    is_over,
+    next_chapel,
+)
 from ...core.session import SessionStore
 from ..tasks import run_in_background
 
@@ -85,6 +90,109 @@ class ChapelListModel(QAbstractListModel):
         self.endResetModel()
 
 
+class ScheduleListModel(QAbstractListModel):
+    """Current and upcoming chapels, flat, with a header row per week.
+
+    Flat for the same reason as the dining tab's models: one model, one
+    ``Repeater``, and the delegate picks a look from ``isHeader``. Everything
+    is pre-formatted here, because "is this one happening now" and "which week
+    is this" are questions about the clock, and the clock is Python's.
+    """
+
+    _ROLES = {
+        Qt.ItemDataRole.UserRole + 1: b"isHeader",
+        Qt.ItemDataRole.UserRole + 2: b"heading",
+        Qt.ItemDataRole.UserRole + 3: b"who",
+        Qt.ItemDataRole.UserRole + 4: b"subtitle",
+        Qt.ItemDataRole.UserRole + 5: b"description",
+        Qt.ItemDataRole.UserRole + 6: b"dayName",
+        Qt.ItemDataRole.UserRole + 7: b"dayNumber",
+        Qt.ItemDataRole.UserRole + 8: b"timeText",
+        Qt.ItemDataRole.UserRole + 9: b"badge",
+        Qt.ItemDataRole.UserRole + 10: b"isNow",
+        Qt.ItemDataRole.UserRole + 11: b"livestream",
+    }
+    _FIRST = Qt.ItemDataRole.UserRole + 1
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        # One tuple per row, in role order.
+        self._rows: list[tuple] = []
+
+    def roleNames(self) -> dict[int, QByteArray]:
+        return {role: QByteArray(name) for role, name in self._ROLES.items()}
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self._rows)
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+        if not index.isValid() or not 0 <= index.row() < len(self._rows):
+            return None
+        if role not in self._ROLES:
+            return None
+        return self._rows[index.row()][role - self._FIRST]
+
+    def replace(self, chapels: "tuple[UpcomingChapel, ...]", now: datetime) -> None:
+        """Rows for ``chapels`` that are not over yet, grouped by week.
+
+        Undated entries are left out: with no date there is no week to put
+        them under, and no way to say whether they have happened.
+        """
+        today = now.date()
+        self.beginResetModel()
+        self._rows = []
+        last_week: date | None = None
+        for chapel in chapels:
+            if chapel.starts_at is None or is_over(chapel, now):
+                continue
+            when = chapel.starts_at
+            week = when.date() - timedelta(days=when.weekday())
+            if week != last_week:
+                self._rows.append(
+                    (True, _week_label(week, today), "", "", "", "", "", "", "", False, False)
+                )
+                last_week = week
+            happening = is_happening(chapel, now)
+            self._rows.append((
+                False,
+                "",
+                chapel.who,
+                "" if chapel.is_same_as_title else chapel.title,
+                chapel.description,
+                when.strftime("%a").upper(),
+                str(when.day),
+                _clock(when),
+                "Now" if happening else _relative_day(when.date(), today),
+                happening,
+                chapel.will_livestream,
+            ))
+        self.endResetModel()
+
+
+def _week_label(monday: date, today: date) -> str:
+    """"This week" / "Next week" / "Week of Oct 5". No ``%-d``: bionic lacks it."""
+    this_monday = today - timedelta(days=today.weekday())
+    if monday == this_monday:
+        return "This week"
+    if monday == this_monday + timedelta(days=7):
+        return "Next week"
+    return f"Week of {monday.strftime('%b')} {monday.day}"
+
+
+def _relative_day(day: date, today: date) -> str:
+    if day == today:
+        return "Today"
+    if day == today + timedelta(days=1):
+        return "Tomorrow"
+    return ""
+
+
+def _clock(when: datetime) -> str:
+    """"10:00 AM". ``%-I`` is a glibc extension; bionic (Android) does not have it."""
+    hour = when.hour % 12 or 12
+    return f"{hour}:{when.minute:02d} {when.strftime('%p')}"
+
+
 class ChapelViewModel(QObject):
     """State and actions for the chapel screen.
 
@@ -119,6 +227,16 @@ class ChapelViewModel(QObject):
         # where it belongs to a reader, not because it shares a source — so it
         # loads independently and a failure in one never blanks the other.
         self._next: UpcomingChapel | None = None
+
+        # The Chapel tab's list: every chapel from now to the end of the feed,
+        # from the same fetch as `_next`.
+        self._schedule = ScheduleListModel(self)
+        self._schedule_loaded = False
+        self._schedule_error = ""
+
+        # Which chapel is happening now is a function of the clock, so the
+        # clock is a seam — as in DiningViewModel.
+        self._now = lambda: datetime.now().astimezone()
 
     # ------------------------------------------------------------------
     # Properties
@@ -284,22 +402,54 @@ class ChapelViewModel(QObject):
             return ""
         return self._next.title
 
+    @Property(QObject, constant=True)
+    def schedule(self) -> ScheduleListModel:
+        return self._schedule
+
+    @Property(str, notify=changed)
+    def scheduleEmptyText(self) -> str:
+        """Why the schedule list is empty, or "" when it is not."""
+        if self._schedule.rowCount():
+            return ""
+        if self._schedule_error:
+            return self._schedule_error
+        if not self._schedule_loaded:
+            return "Loading the chapel schedule…"
+        # Over breaks and the summer the feed is genuinely empty.
+        return "No chapels scheduled right now."
+
     @Slot()
     def refreshSchedule(self) -> None:
-        """Load the upcoming-chapel feed. Needs no session."""
-        provider = ChapelScheduleProvider(self._transport)
+        """Load the whole upcoming-chapel feed. Needs no session."""
+        transport = self._transport
+        run_in_background(
+            lambda: fetch_schedule(transport), self._on_schedule_loaded, self._on_schedule_failed
+        )
 
-        def done(chapels: object) -> None:
-            self._next = next_chapel(tuple(chapels))  # type: ignore[arg-type]
-            log.info("chapel schedule: next is %s", self._next.who if self._next else "(none)")
-            self.changed.emit()
+    def _on_schedule_loaded(self, chapels: object) -> None:
+        chapels = tuple(chapels)  # type: ignore[arg-type]
+        self._next = next_chapel(chapels)
+        self._schedule.replace(chapels, self._now())
+        self._schedule_loaded = True
+        self._schedule_error = ""
+        log.info(
+            "chapel schedule: %d chapels, next is %s",
+            len(chapels), self._next.who if self._next else "(none)",
+        )
+        self.changed.emit()
 
-        def failed(exc: object) -> None:
-            # Deliberately silent: the attendance figures are the point of this
-            # screen, and losing the speaker line is not worth an error banner.
-            log.warning("chapel schedule unavailable: %r", exc)
-
-        run_in_background(provider.fetch, done, failed)
+    def _on_schedule_failed(self, exc: object) -> None:
+        # No banner: the summary screen's attendance figures matter more than
+        # its speaker line. The Chapel tab, which is *about* the schedule,
+        # says what went wrong in its own empty text instead.
+        if isinstance(exc, ParseError):
+            self._schedule_error = "The chapel schedule feed changed shape."
+        elif isinstance(exc, TransportError):
+            self._schedule_error = f"Couldn't reach the chapel schedule: {exc}"
+        else:
+            self._schedule_error = f"Unexpected error: {exc}"
+        log.warning("chapel schedule unavailable: %r", exc)
+        self.changed.emit()
 
     @Slot()
     def refreshAll(self) -> None:
