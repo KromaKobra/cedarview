@@ -14,6 +14,10 @@
 // Nothing here renders a confident zero. Every figure the app has not actually
 // received is an em dash, because "$0.00" and "0 skips left" are the two most
 // alarming things this app could say, and it must never say either by accident.
+//
+// Each card is also the way in to its tab: tapping one emits `openTab` with the
+// tab's index in Main.qml, and Main.qml switches to it. The semester card has
+// no tab behind it, so it is the one card that does not respond.
 
 import QtQuick
 import QtQuick.Controls
@@ -21,6 +25,10 @@ import QtQuick.Layouts
 
 Item {
     id: root
+
+    //: Asks Main.qml to show the tab at `index` — the same indices as its
+    //: SwipeView and bottom bar.
+    signal openTab(int index)
 
     Theme { id: theme }
 
@@ -50,6 +58,9 @@ Item {
 
             // ---- Chapel -------------------------------------------------
             Card {
+                tappable: true
+                onTapped: root.openTab(1)
+
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: 0
@@ -201,6 +212,8 @@ Item {
                     amount: dining.diningDollars
                     footnote: "Expires this semester"
                     dotColor: theme.violet
+                    tappable: true
+                    onTapped: root.openTab(2)
                 }
 
                 BalanceTile {
@@ -208,10 +221,15 @@ Item {
                     amount: dining.flexDollars
                     footnote: "Rolls over"
                     dotColor: theme.accent
+                    tappable: true
+                    onTapped: root.openTab(2)
                 }
             }
 
             Card {
+                tappable: true
+                onTapped: root.openTab(2)
+
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 12
@@ -263,6 +281,9 @@ Item {
 
             // ---- The next sitting ---------------------------------------
             Card {
+                tappable: true
+                onTapped: root.openTab(3)
+
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: 0

@@ -231,7 +231,9 @@ ApplicationWindow {
                 currentIndex: window.currentPage
                 onCurrentIndexChanged: window.currentPage = currentIndex
 
-                SummaryView {}
+                SummaryView {
+                    onOpenTab: (index) => window.currentPage = index
+                }
                 ChapelView {}
                 DiningView {}
                 ChucksView {}

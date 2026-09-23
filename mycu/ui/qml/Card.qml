@@ -5,6 +5,10 @@
 // screen of Rectangles each carrying its own `Layout.preferredHeight:
 // something.implicitHeight + 32` is a screen where one forgotten +32 clips a
 // line of text off the bottom of a card.
+//
+// Optionally tappable: set `tappable` and handle `tapped`. A TapHandler rather
+// than a MouseArea, so a drag that starts on a card still scrolls the page (and
+// still pulls to refresh) instead of being swallowed as a press.
 
 import QtQuick
 import QtQuick.Layouts
@@ -17,6 +21,9 @@ Rectangle {
     // ColumnLayout { … } }`.
     default property alias content: inner.data
     property int padding: theme.cardPadding
+    property bool tappable: false
+
+    signal tapped()
 
     Theme { id: theme }
 
@@ -26,6 +33,20 @@ Rectangle {
     color: theme.card
     border.width: 1
     border.color: theme.cardBorder
+
+    TapHandler {
+        id: tap
+        enabled: card.tappable
+        onTapped: card.tapped()
+    }
+
+    // The press highlight. Declared before `inner` so it sits under the
+    // content rather than washing over it.
+    Rectangle {
+        anchors.fill: parent
+        radius: card.radius
+        color: tap.pressed ? theme.pressed : "transparent"
+    }
 
     ColumnLayout {
         id: inner
