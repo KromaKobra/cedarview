@@ -11,7 +11,7 @@ cmake_minimum_required(VERSION 3.21)
 
 # The single version source. The APK's versionName and versionCode, the About
 # sheet and `cedarview --version` are all read from here.
-project(CedarView VERSION 0.1.0 LANGUAGES CXX)
+project(CedarView VERSION 0.2.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
