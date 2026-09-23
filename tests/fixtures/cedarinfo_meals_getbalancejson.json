@@ -39,6 +39,13 @@
       "IsDeposit": false
     },
     {
+      "Date": "2026-01-02T07:48:00",
+      "Activity": "Board meal",
+      "MealPeriod": "Breakfast",
+      "Amount": null,
+      "IsDeposit": false
+    },
+    {
       "Date": "2026-01-01T17:45:00",
       "Activity": "Meal exchange",
       "MealPeriod": "Dinner",
@@ -50,6 +57,104 @@
       "Activity": "Flex purchase",
       "MealPeriod": "Dinner",
       "Amount": 3.74,
+      "IsDeposit": false
+    },
+    {
+      "Date": "2025-12-31T18:10:00",
+      "Activity": "Board meal",
+      "MealPeriod": "Dinner",
+      "Amount": null,
+      "IsDeposit": false
+    },
+    {
+      "Date": "2025-12-31T12:40:00",
+      "Activity": "Board meal",
+      "MealPeriod": "Lunch",
+      "Amount": null,
+      "IsDeposit": false
+    },
+    {
+      "Date": "2025-12-31T15:20:00",
+      "Activity": "Flex purchase",
+      "MealPeriod": "Lunch",
+      "Amount": 6.0,
+      "IsDeposit": false
+    },
+    {
+      "Date": "2025-12-30T17:55:00",
+      "Activity": "Meal exchange",
+      "MealPeriod": "Dinner",
+      "Amount": null,
+      "IsDeposit": false
+    },
+    {
+      "Date": "2025-12-30T12:05:00",
+      "Activity": "Board meal",
+      "MealPeriod": "Lunch",
+      "Amount": null,
+      "IsDeposit": false
+    },
+    {
+      "Date": "2025-12-30T07:35:00",
+      "Activity": "Board meal",
+      "MealPeriod": "Breakfast",
+      "Amount": null,
+      "IsDeposit": false
+    },
+    {
+      "Date": "2025-12-29T18:30:00",
+      "Activity": "Board meal",
+      "MealPeriod": "Dinner",
+      "Amount": null,
+      "IsDeposit": false
+    },
+    {
+      "Date": "2025-12-29T12:15:00",
+      "Activity": "Board meal",
+      "MealPeriod": "Lunch",
+      "Amount": null,
+      "IsDeposit": false
+    },
+    {
+      "Date": "2025-12-28T19:15:00",
+      "Activity": "Flex purchase",
+      "MealPeriod": "Dinner",
+      "Amount": 4.25,
+      "IsDeposit": false
+    },
+    {
+      "Date": "2025-12-28T17:40:00",
+      "Activity": "Board meal",
+      "MealPeriod": "Dinner",
+      "Amount": null,
+      "IsDeposit": false
+    },
+    {
+      "Date": "2025-12-28T11:50:00",
+      "Activity": "Board meal",
+      "MealPeriod": "Lunch",
+      "Amount": null,
+      "IsDeposit": false
+    },
+    {
+      "Date": "2025-12-27T18:05:00",
+      "Activity": "Meal exchange",
+      "MealPeriod": "Dinner",
+      "Amount": null,
+      "IsDeposit": false
+    },
+    {
+      "Date": "2025-12-27T12:30:00",
+      "Activity": "Board meal",
+      "MealPeriod": "Lunch",
+      "Amount": null,
+      "IsDeposit": false
+    },
+    {
+      "Date": "2025-12-27T08:02:00",
+      "Activity": "Board meal",
+      "MealPeriod": "Breakfast",
+      "Amount": null,
       "IsDeposit": false
     }
   ],

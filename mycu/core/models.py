@@ -297,6 +297,38 @@ class UpcomingChapel:
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True, slots=True)
+class MealTransaction:
+    """One row of the meal plan's recent activity: a swipe, or money moving.
+
+    The real feed has three kinds, all seen in the 2026-09-22 capture:
+    "Board meal" and "Meal exchange" (``Amount: null``) and "Flex purchase"
+    (with an amount). ``IsDeposit`` exists for money going *in*; no deposit
+    has been seen yet, so it is handled but not verified.
+    """
+
+    at: datetime | None
+    activity: str
+    #: "Breakfast" / "Lunch" / "Dinner", or ``""``.
+    meal_period: str = ""
+    #: ``None`` for a swipe, which moves no money — not ``0.0``.
+    amount: float | None = None
+    is_deposit: bool = False
+
+    @property
+    def is_flex(self) -> bool:
+        """Whether flex dollars moved: any row with an amount, either way."""
+        return self.amount is not None or "flex" in self.activity.lower()
+
+    @property
+    def amount_text(self) -> str:
+        """"−$3.74" spent, "+$20.00" deposited, "" for a swipe."""
+        if self.amount is None:
+            return ""
+        sign = "+" if self.is_deposit else "\u2212"
+        return sign + MealPlan.money(abs(self.amount))
+
+
+@dataclass(frozen=True, slots=True)
 class MealPlan:
     """The balances the meal-plan page reports.
 
@@ -330,6 +362,10 @@ class MealPlan:
     #: assumed: block plans are per-term and telling a term-plan holder their
     #: meals reset on Sunday would be wrong.
     period: str = ""
+
+    #: Recent activity, newest first. Not counted by :attr:`has_any`: a plan
+    #: with no balances is not made "reported" by its history.
+    transactions: tuple[MealTransaction, ...] = ()
 
     #: How long :attr:`meals_remaining` lasts, in words — "this week" /
     #: "this term" / "" when unknown. Here rather than in the QML because

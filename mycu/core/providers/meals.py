@@ -46,6 +46,15 @@ $0.00.
 
 Tenders are matched by ``Type`` and name rather than by position, so a
 reordering upstream cannot shift the values. "Meal Exchange" is not surfaced.
+
+.. rubric:: Recent activity
+
+``RecentTransactions`` is read into :attr:`~mycu.core.models.MealPlan.transactions`
+for the Dining tab. The real capture held 25 rows over nine days, newest first,
+of three kinds: "Board meal" and "Meal exchange" with ``Amount: null``, and
+"Flex purchase" with an amount. Rows are sorted here anyway rather than trusted
+to arrive in order, and a malformed row is skipped rather than failing the
+balances above it.
 """
 
 from __future__ import annotations
@@ -54,11 +63,12 @@ import json
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from urllib.parse import urlencode
 
 from ..errors import ParseError
 from ..minihtml import parse as parse_html
-from ..models import MealPlan
+from ..models import MealPlan, MealTransaction
 from ..transport import Response
 from .base import Provider
 
@@ -194,6 +204,7 @@ def parse_balance(body: str) -> MealPlan:
         flex_dollars=flex,
         plan_name=plan_name,
         period=_period(plan_name),
+        transactions=_transactions(data.get("RecentTransactions")),
     )
 
     if balances and not plan.has_any:
@@ -201,8 +212,9 @@ def parse_balance(body: str) -> MealPlan:
         raise ParseError(f"no recognisable meal-plan balances among: {names}")
 
     log.debug(
-        "meals: %s meals, dining=%s, flex=%s, plan=%r",
+        "meals: %s meals, dining=%s, flex=%s, plan=%r, %d transactions",
         plan.meals_remaining, plan.dining_dollars, plan.flex_dollars, plan.plan_name,
+        len(plan.transactions),
     )
     return plan
 
@@ -212,3 +224,41 @@ def _period(plan_name: str) -> str:
         if pattern.search(plan_name):
             return period
     return ""
+
+
+def _transactions(rows: object) -> tuple[MealTransaction, ...]:
+    """``RecentTransactions`` -> newest-first :class:`MealTransaction` tuple.
+
+    Tolerant on purpose: the history is secondary to the balances, so a
+    missing list is no history and a malformed row is dropped, never a
+    :class:`ParseError`. Undated rows sort last.
+    """
+    if not isinstance(rows, list):
+        return ()
+
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        amount = row.get("Amount")
+        if not isinstance(amount, (int, float)) or isinstance(amount, bool):
+            amount = None
+        out.append(
+            MealTransaction(
+                at=_when(row.get("Date")),
+                activity=str(row.get("Activity") or "").strip(),
+                meal_period=str(row.get("MealPeriod") or "").strip(),
+                amount=None if amount is None else float(amount),
+                is_deposit=bool(row.get("IsDeposit")),
+            )
+        )
+
+    out.sort(key=lambda t: (t.at is not None, t.at or datetime.min), reverse=True)
+    return tuple(out)
+
+
+def _when(value: object) -> datetime | None:
+    try:
+        return datetime.fromisoformat(str(value)) if value else None
+    except ValueError:
+        return None

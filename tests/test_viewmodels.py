@@ -23,6 +23,7 @@ from mycu.core.models import (  # noqa: E402
     ChapelSummary,
     DayMenu,
     MealPlan,
+    MealTransaction,
     MenuBlock,
     MenuItem,
     UpcomingChapel,
@@ -30,7 +31,11 @@ from mycu.core.models import (  # noqa: E402
 from mycu.core.session import SessionStore  # noqa: E402
 from mycu.core.transport import FixtureTransport  # noqa: E402
 from mycu.ui.viewmodels.chapel import ChapelListModel, ChapelViewModel  # noqa: E402
-from mycu.ui.viewmodels.dining import DiningViewModel, MenuListModel  # noqa: E402
+from mycu.ui.viewmodels.dining import (  # noqa: E402
+    ActivityListModel,
+    DiningViewModel,
+    MenuListModel,
+)
 
 
 @pytest.fixture
@@ -367,3 +372,96 @@ def test_tomorrows_breakfast_says_so(dvm: DiningViewModel) -> None:
     ))
     assert dvm.nextMealWhen == "Tomorrow"
     assert dvm.nextMealLabel == "Breakfast"
+
+
+# ---------------------------------------------------------------------------
+# Recent activity (the Dining tab)
+# ---------------------------------------------------------------------------
+
+def _at(days_ago: int, hour: int, minute: int = 0) -> datetime:
+    return datetime.combine(date.today() - timedelta(days=days_ago), time(hour, minute))
+
+
+ACTIVITY = (
+    MealTransaction(at=_at(0, 12, 25), activity="Board meal", meal_period="Lunch"),
+    MealTransaction(at=_at(0, 0, 5), activity="Flex purchase", amount=3.74),
+    MealTransaction(at=_at(1, 17, 45), activity="Meal exchange", meal_period="Dinner"),
+    MealTransaction(at=_at(1, 12, 0), activity="Flex purchase", meal_period="Lunch",
+                    amount=6.0),
+    MealTransaction(at=_at(3, 7, 40), activity="Board meal", meal_period="Breakfast"),
+)
+
+
+def _rows(vm: DiningViewModel) -> list[tuple]:
+    model = vm.activity
+    roles = (ActivityListModel.HeaderRole, ActivityListModel.TitleRole,
+             ActivityListModel.DetailRole, ActivityListModel.AmountRole)
+    return [
+        tuple(model.data(model.index(r, 0), role) for role in roles)
+        for r in range(model.rowCount())
+    ]
+
+
+def test_activity_is_grouped_by_day_under_readable_headers(dvm: DiningViewModel) -> None:
+    dvm._on_plan_loaded(MealPlan(meals_remaining=16, transactions=ACTIVITY))
+    three_days_ago = date.today() - timedelta(days=3)
+
+    assert _rows(dvm) == [
+        (True, "Today", "", ""),
+        (False, "Board meal", "Lunch · 12:25 PM", ""),
+        (False, "Flex purchase", "12:05 AM", "\u2212$3.74"),
+        (True, "Yesterday", "", ""),
+        (False, "Meal exchange", "Dinner · 5:45 PM", ""),
+        (False, "Flex purchase", "Lunch · 12:00 PM", "\u2212$6.00"),
+        (True, f"{three_days_ago.strftime('%a, %b')} {three_days_ago.day}", "", ""),
+        (False, "Board meal", "Breakfast · 7:40 AM", ""),
+    ]
+    assert dvm.activitySummary == (
+        f"Since {three_days_ago.strftime('%b')} {three_days_ago.day}"
+        " · 3 meals · $9.74 flex spent"
+    )
+    assert dvm.activityEmptyText == ""
+
+
+def test_the_flex_toggle_shows_only_money(dvm: DiningViewModel) -> None:
+    dvm._on_plan_loaded(MealPlan(meals_remaining=16, transactions=ACTIVITY))
+
+    dvm.setFlexOnly(True)
+
+    assert dvm.flexOnly is True
+    assert [row[1] for row in _rows(dvm) if not row[0]] == ["Flex purchase"] * 2
+    assert dvm.activitySummary.endswith(" · 2 purchases · $9.74")
+
+    dvm.setFlexOnly(False)
+    assert len([row for row in _rows(dvm) if not row[0]]) == len(ACTIVITY)
+
+
+def test_a_deposit_is_summed_separately_from_spending(dvm: DiningViewModel) -> None:
+    dvm._on_plan_loaded(MealPlan(transactions=(
+        MealTransaction(at=_at(0, 9), activity="Deposit", amount=20.0, is_deposit=True),
+        MealTransaction(at=_at(0, 8), activity="Flex purchase", amount=3.0),
+    )))
+    dvm.setFlexOnly(True)
+    assert dvm.activitySummary.endswith(" · 1 purchase · $3.00 · +$20.00 added")
+
+
+def test_why_the_activity_list_is_empty(dvm: DiningViewModel) -> None:
+    assert dvm.activityEmptyText == "Sign in to see your meal plan activity."
+    assert dvm.activitySummary == ""
+
+    dvm._on_plan_loaded(MealPlan(meals_remaining=16))
+    assert dvm.activityEmptyText == "No recent activity on this card."
+
+    dvm._on_plan_loaded(MealPlan(transactions=ACTIVITY[:1]))
+    dvm.setFlexOnly(True)
+    assert dvm.activity.rowCount() == 0
+    assert dvm.activityEmptyText == "No flex purchases in your recent activity."
+
+
+def test_the_fixture_activity_loads_end_to_end(dvm: DiningViewModel, fixtures_dir: Path) -> None:
+    from mycu.core.providers.meals import MealsProvider
+
+    dvm._on_plan_loaded(MealsProvider(FixtureTransport(fixtures_dir)).fetch())
+    assert dvm.activity.rowCount() > 19  # every row, plus a header per day
+    assert dvm.activitySummary == "Since Dec 27 · 16 meals · $13.99 flex spent"
+

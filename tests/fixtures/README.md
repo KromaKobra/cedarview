@@ -20,6 +20,8 @@ value thing you can do next — see `docs/discovery.md`.
 | `samples/chapel_json_pascal.json` | JSON with PascalCase keys — the ASP.NET default. |
 | `samples/chapel_json_camel.json` | JSON with camelCase keys and an ASP.NET wrapper object, exercising the nested-list search. |
 | `samples/chapel_json_bare_list.json` | A bare top-level array, no envelope, no totals. |
+| `cedarinfo_meals.html` | **Real**, trimmed and scrubbed: the Vue meal-plan page, which carries only `data-target-id`. |
+| `cedarinfo_meals_getbalancejson.json` | **Real in shape**: balances and plan name are verbatim; the `RecentTransactions` rows are made up, following the real mix of board meals, exchanges and flex purchases. |
 | `samples/entra_login_page.html` | What comes back when the session has expired. Used to test that this is detected and never parsed. |
 
 ## Replacing them with real captures

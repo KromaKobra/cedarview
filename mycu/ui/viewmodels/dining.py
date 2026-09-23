@@ -1,4 +1,4 @@
-"""Dining screen: Home Cooking for every meal on a chosen day."""
+"""Dining: the Home Cooking menu (Summary card) and meal-plan balances and activity (Summary and Dining tabs)."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from PySide6.QtCore import (
 )
 
 from ...core.errors import ParseError, TransportError
-from ...core.models import HOME_COOKING, DayMenu, MealPlan
+from ...core.models import HOME_COOKING, DayMenu, MealPlan, MealTransaction
 from ...core.providers.dining import DEFAULT_DAYS, DiningProvider, next_meal_block
 from ...core.providers.meals import MealsProvider
 from ..tasks import run_in_background
@@ -86,6 +86,87 @@ class MenuListModel(QAbstractListModel):
         self.endResetModel()
 
 
+class ActivityListModel(QAbstractListModel):
+    """Recent meal-plan activity, flat, with a header row per day.
+
+    Flat for the same reason as :class:`MenuListModel`: one model, one
+    ``Repeater``, and the delegate picks a look from ``isHeader``.
+    """
+
+    HeaderRole = Qt.ItemDataRole.UserRole + 1
+    TitleRole = Qt.ItemDataRole.UserRole + 2
+    DetailRole = Qt.ItemDataRole.UserRole + 3
+    AmountRole = Qt.ItemDataRole.UserRole + 4
+    FlexRole = Qt.ItemDataRole.UserRole + 5
+    DepositRole = Qt.ItemDataRole.UserRole + 6
+
+    _ROLES = {
+        HeaderRole: b"isHeader",
+        TitleRole: b"title",
+        DetailRole: b"detail",
+        AmountRole: b"amount",
+        FlexRole: b"isFlex",
+        DepositRole: b"isDeposit",
+    }
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        # (isHeader, title, detail, amount, isFlex, isDeposit), in role order.
+        self._rows: list[tuple[bool, str, str, str, bool, bool]] = []
+
+    def roleNames(self) -> dict[int, QByteArray]:
+        return {role: QByteArray(name) for role, name in self._ROLES.items()}
+
+    def rowCount(self, parent: QModelIndex = QModelIndex()) -> int:
+        return 0 if parent.isValid() else len(self._rows)
+
+    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole):
+        if not index.isValid() or not 0 <= index.row() < len(self._rows):
+            return None
+        if role not in self._ROLES:
+            return None
+        return self._rows[index.row()][role - self.HeaderRole]
+
+    def replace(self, transactions, today: date) -> None:
+        """Rows for ``transactions`` (already newest first), grouped by day."""
+        self.beginResetModel()
+        self._rows = []
+        last_day: object = ()
+        for t in transactions:
+            day = t.at.date() if t.at else None
+            if day != last_day:
+                self._rows.append((True, _day_label(day, today), "", "", False, False))
+                last_day = day
+            detail = " · ".join(
+                part for part in (t.meal_period, _clock(t.at) if t.at else "") if part
+            )
+            self._rows.append(
+                (False, t.activity, detail, t.amount_text, t.is_flex, t.is_deposit)
+            )
+        self.endResetModel()
+
+
+def _day_label(day: date | None, today: date) -> str:
+    """"Today" / "Yesterday" / "Mon, Sep 14". No ``%-d``: bionic lacks it."""
+    if day is None:
+        return "Date unknown"
+    if day == today:
+        return "Today"
+    if day == today - timedelta(days=1):
+        return "Yesterday"
+    return f"{day.strftime('%a')}, {day.strftime('%b')} {day.day}"
+
+
+def _clock(when: datetime) -> str:
+    """"7:05 PM". ``%-I`` is a glibc extension; bionic (Android) does not have it."""
+    hour = when.hour % 12 or 12
+    return f"{hour}:{when.minute:02d} {'AM' if when.hour < 12 else 'PM'}"
+
+
+def _count(n: int, noun: str) -> str:
+    return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
+
+
 class DiningViewModel(QObject):
     """State and actions for the dining screen.
 
@@ -126,6 +207,13 @@ class DiningViewModel(QObject):
         # expects it, and it loads independently so a failure in one never
         # blanks the other.
         self._plan = MealPlan()
+        self._plan_loaded = False
+
+        # The Dining tab's history, and its one filter. Filtered here rather
+        # than in QML so the list, the summary line and the empty text all
+        # agree about what is being shown.
+        self._activity = ActivityListModel(self)
+        self._flex_only = False
 
     # ------------------------------------------------------------------
 
@@ -223,6 +311,74 @@ class DiningViewModel(QObject):
         """
         return self._plan.plan_description
 
+    # ---- Recent activity (the Dining tab) ----------------------------
+
+    @Property(QObject, constant=True)
+    def activity(self) -> ActivityListModel:
+        return self._activity
+
+    @Property(bool, notify=changed)
+    def flexOnly(self) -> bool:
+        return self._flex_only
+
+    @Slot(bool)
+    def setFlexOnly(self, on: bool) -> None:
+        """A slot, not a writable property: ToggleSwitch binds ``on`` and
+        reports ``clicked``, and the switch moves when this does."""
+        if on != self._flex_only:
+            self._flex_only = on
+            self._rebuild_activity()
+
+    @Property(str, notify=changed)
+    def activitySummary(self) -> str:
+        """"Since Sep 14 · 20 meals · $9.74 flex spent", or "" with nothing to sum.
+
+        Meals are the swipes (board meals and exchanges). With the flex filter
+        on, the count is of purchases instead.
+        """
+        shown = self._shown_activity()
+        if not shown:
+            return ""
+
+        spent = sum(t.amount for t in shown if t.amount is not None and not t.is_deposit)
+        added = sum(t.amount for t in shown if t.amount is not None and t.is_deposit)
+        purchases = sum(1 for t in shown if t.amount is not None and not t.is_deposit)
+        meals = sum(1 for t in shown if not t.is_flex)
+
+        parts = []
+        dated = [t.at for t in self._plan.transactions if t.at]
+        if dated:
+            oldest = min(dated)
+            parts.append(f"Since {oldest.strftime('%b')} {oldest.day}")
+        if self._flex_only:
+            parts.append(_count(purchases, "purchase"))
+            parts.append(MealPlan.money(spent))
+        else:
+            parts.append(_count(meals, "meal"))
+            parts.append(f"{MealPlan.money(spent)} flex spent")
+        if added:
+            parts.append(f"+{MealPlan.money(added)} added")
+        return " · ".join(parts)
+
+    @Property(str, notify=changed)
+    def activityEmptyText(self) -> str:
+        """Why the list is empty, or "" when it is not."""
+        if self._shown_activity():
+            return ""
+        if not self._plan_loaded:
+            return "Sign in to see your meal plan activity."
+        if self._flex_only and self._plan.transactions:
+            return "No flex purchases in your recent activity."
+        return "No recent activity on this card."
+
+    def _shown_activity(self) -> tuple[MealTransaction, ...]:
+        rows = self._plan.transactions
+        return tuple(t for t in rows if t.is_flex) if self._flex_only else rows
+
+    def _rebuild_activity(self) -> None:
+        self._activity.replace(self._shown_activity(), self._now().date())
+        self.changed.emit()
+
     # ---- The next sitting ---------------------------------------------
     # Public data, so this fills in before sign-in and stays filled in after
     # a sign-out — unlike everything above it.
@@ -267,22 +423,25 @@ class DiningViewModel(QObject):
         """Load the meal-plan balances. Needs the Cedarville session."""
         provider = MealsProvider(self._transport)
 
-        def done(plan: object) -> None:
-            self._plan = plan  # type: ignore[assignment]
-            log.info(
-                "meal plan: %s meals, dining=%s, flex=%s",
-                self._plan.meals_remaining,
-                self._plan.dining_dollars,
-                self._plan.flex_dollars,
-            )
-            self.changed.emit()
-
         def failed(exc: object) -> None:
             # Quiet on purpose: the menu is the bulk of this screen and should
             # not be replaced by an error banner because one panel is missing.
             log.warning("meal plan unavailable: %r", exc)
 
-        run_in_background(provider.fetch, done, failed)
+        run_in_background(provider.fetch, self._on_plan_loaded, failed)
+
+    @Slot(object)
+    def _on_plan_loaded(self, plan: object) -> None:
+        self._plan = plan  # type: ignore[assignment]
+        self._plan_loaded = True
+        log.info(
+            "meal plan: %s meals, dining=%s, flex=%s, %d transactions",
+            self._plan.meals_remaining,
+            self._plan.dining_dollars,
+            self._plan.flex_dollars,
+            len(self._plan.transactions),
+        )
+        self._rebuild_activity()
 
     @Slot()
     def refreshAll(self) -> None:

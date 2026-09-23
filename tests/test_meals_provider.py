@@ -13,12 +13,13 @@ Fixtures, both from a signed-in capture on 2026-09-22 (``scripts/discover meals`
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
 from mycu.core.errors import ParseError, SessionExpired
-from mycu.core.models import MealPlan
+from mycu.core.models import MealPlan, MealTransaction
 from mycu.core.providers.meals import (
     BALANCE_PATH,
     MEALS_PATH,
@@ -256,6 +257,71 @@ def test_an_expired_session_on_either_request_is_reported_as_one(
 ) -> None:
     with pytest.raises(SessionExpired):
         MealsProvider(_RecordingTransport(fixtures_dir, login_on=expires_on)).fetch()
+
+
+# ---------------------------------------------------------------------------
+# Recent activity
+# ---------------------------------------------------------------------------
+
+def _row(date, activity="Board meal", period="Dinner", amount=None, deposit=False) -> dict:
+    return {"Date": date, "Activity": activity, "MealPeriod": period,
+            "Amount": amount, "IsDeposit": deposit}
+
+
+def test_every_transaction_is_read_newest_first(plan, balance) -> None:
+    assert len(plan.transactions) == len(balance["RecentTransactions"])
+    stamps = [t.at for t in plan.transactions]
+    assert stamps == sorted(stamps, reverse=True)
+    # The fixture keeps one out-of-order pair, as delivered; it must come out sorted.
+    assert [t.activity for t in plan.transactions[3:5]] == ["Flex purchase", "Meal exchange"]
+
+
+def test_a_swipe_moves_no_money(plan) -> None:
+    swipe = plan.transactions[0]
+    assert swipe == MealTransaction(
+        at=datetime(2026, 1, 2, 19, 5), activity="Board meal", meal_period="Dinner",
+    )
+    assert swipe.amount is None
+    assert not swipe.is_flex
+    assert swipe.amount_text == ""
+
+
+def test_a_flex_purchase_is_flex_and_reads_as_spent(plan) -> None:
+    purchase = next(t for t in plan.transactions if t.activity == "Flex purchase")
+    assert purchase.is_flex
+    assert purchase.amount == 3.74
+    assert purchase.amount_text == "\u2212$3.74"
+
+
+def test_a_deposit_is_flex_and_reads_as_added(balance) -> None:
+    plan = parse_balance(json.dumps({**balance, "RecentTransactions": [
+        _row("2026-01-03T09:00:00", "Deposit", "", 20, deposit=True),
+    ]}))
+    (deposit,) = plan.transactions
+    assert deposit.is_flex and deposit.is_deposit
+    assert deposit.amount_text == "+$20.00"
+
+
+def test_missing_activity_is_no_activity_not_an_error(balance) -> None:
+    del balance["RecentTransactions"]
+    plan = parse_balance(json.dumps(balance))
+    assert plan.transactions == ()
+    assert plan.meals_remaining == 16
+
+
+def test_malformed_rows_are_dropped_or_undated_not_fatal(balance) -> None:
+    plan = parse_balance(json.dumps({**balance, "RecentTransactions": [
+        _row("not a date"),
+        "not a row",
+        _row("2026-01-02T12:00:00", "Flex purchase", amount=True),
+        _row("2026-01-03T12:00:00"),
+    ]}))
+    assert [t.at for t in plan.transactions] == [
+        datetime(2026, 1, 3, 12), datetime(2026, 1, 2, 12), None,
+    ]
+    # A boolean is not an amount; the name still marks it as flex.
+    assert plan.transactions[1].amount is None
+    assert plan.transactions[1].is_flex
 
 
 # ---------------------------------------------------------------------------
