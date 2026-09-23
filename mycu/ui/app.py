@@ -26,7 +26,7 @@ import os
 import sys
 from pathlib import Path
 
-from PySide6.QtCore import Property, QObject, QUrl, Slot
+from PySide6.QtCore import Property, QObject, Qt, QUrl, Slot
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtQml import QQmlApplicationEngine
 
@@ -139,10 +139,10 @@ def main(argv: list[str] | None = None) -> int:
 
     # --- 2. The application -------------------------------------------------
     app = QGuiApplication(sys.argv[:1])
-    # The app is called CedarView. `mycu` survives as the Python package, the
-    # p4a dist name and the Android applicationId (org.mycu.mycu) — renaming
-    # those would make this a different app to Android and orphan everyone's
-    # session, which is not worth a tidier import path.
+    # The app is called CedarView, and so is its Android applicationId
+    # (com.kromakobra.cedarview, set in scripts/build-apk). `mycu` survives as
+    # the Python package and the session directory — renaming the directory
+    # would sign everyone out, which is not worth a tidier name.
     #
     # These two decide where QSettings writes (~/.config/Kroma/CedarView.conf
     # on Linux, app-private storage on Android), so
@@ -197,6 +197,21 @@ def main(argv: list[str] | None = None) -> int:
     # and setOrganizationName above — otherwise it writes to a file named after
     # the executable.
     settings = SettingsController()
+
+    # The system bars follow the app's theme, not the phone's. Edge to edge
+    # (forced from targetSdk 35) puts the status bar over the app's own ribbon,
+    # and Android picks light or dark status-bar icons from the colour scheme
+    # Qt reports — so a dark app on a phone in light mode would otherwise get
+    # dark icons on a dark ribbon. Harmless on desktop, where the app paints
+    # every colour itself anyway.
+    def apply_color_scheme() -> None:
+        app.styleHints().setColorScheme(
+            Qt.ColorScheme.Light if settings.lightMode else Qt.ColorScheme.Dark
+        )
+
+    apply_color_scheme()
+    settings.changed.connect(apply_color_scheme)
+
     bridge = Bridge(session_transport, CHAPEL_PATH, backend.name, surface_qml)
 
     # The expiry loop, in two connections:

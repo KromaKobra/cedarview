@@ -33,6 +33,30 @@ ApplicationWindow {
     // Phone-sized by default so the desktop build previews the Android layout.
     // On Android the window is fullscreen regardless.
 
+    // ---- Edge to edge ------------------------------------------------------
+    //
+    // From targetSdk 35 Android draws every app edge to edge, and at 36 the
+    // opt-out is gone: the window runs under the status bar at the top and the
+    // gesture handle at the bottom. Qt reports those strips as safe-area
+    // margins. Since 6.9, ApplicationWindow pads its contentItem by them on
+    // its own, but NOT the header or the footer (see the ApplicationWindow
+    // docs), so those two take their insets explicitly below.
+    //
+    // The bottom padding is switched off and handed to the bars themselves, so
+    // the ribbon colour runs on under the gesture handle rather than stopping
+    // above it with a strip of background showing. SafeArea margins are
+    // relative to each item's own geometry, so whichever bar is actually at
+    // the bottom edge — the tab bar, or the status footer while it is showing
+    // — picks up the inset, and the other gets zero.
+    //
+    // On desktop every margin is zero, and all of this is a no-op.
+    bottomPadding: 0
+
+    //: Where the privacy policy lives. Google Play requires the link both in the
+    //: store listing and inside the app, so the overflow menu has one.
+    readonly property string privacyPolicyUrl:
+        "https://github.com/KromaKobra/cedarview/blob/main/PRIVACY.md"
+
     Theme { id: theme }
 
     property bool showingLogin: login.surfaceVisible
@@ -56,13 +80,17 @@ ApplicationWindow {
 
     // ---- Ribbon ------------------------------------------------------------
     header: Rectangle {
-        implicitHeight: 54
+        id: ribbon
+        // The status bar's height on top of the ribbon's own, so the colour
+        // fills in behind the clock and the controls start below it.
+        implicitHeight: 54 + ribbon.SafeArea.margins.top
         color: theme.ribbon
 
         RowLayout {
             anchors.fill: parent
-            anchors.leftMargin: 14
-            anchors.rightMargin: 6
+            anchors.topMargin: ribbon.SafeArea.margins.top
+            anchors.leftMargin: 14 + ribbon.SafeArea.margins.left
+            anchors.rightMargin: 6 + ribbon.SafeArea.margins.right
             spacing: 9
 
             // The one raster image in the app. It lives beside the QML rather
@@ -201,6 +229,11 @@ ApplicationWindow {
                     }
 
                     DarkMenuItem {
+                        text: "Privacy policy"
+                        onTriggered: Qt.openUrlExternally(window.privacyPolicyUrl)
+                    }
+
+                    DarkMenuItem {
                         text: "Sign out"
                         onTriggered: login.signOut()
                     }
@@ -241,8 +274,11 @@ ApplicationWindow {
 
             // ---- Bottom bar --------------------------------------------
             Rectangle {
+                id: bottomBar
                 Layout.fillWidth: true
-                implicitHeight: 60
+                // Grows by the gesture-handle inset when it is the bottom-most
+                // thing on screen; see "Edge to edge" at the top.
+                implicitHeight: 60 + bottomBar.SafeArea.margins.bottom
                 color: theme.ribbon
 
                 Rectangle {
@@ -255,6 +291,7 @@ ApplicationWindow {
                 RowLayout {
                     anchors.fill: parent
                     anchors.topMargin: 1
+                    anchors.bottomMargin: bottomBar.SafeArea.margins.bottom
                     spacing: 0
 
                     NavButton {
@@ -295,9 +332,14 @@ ApplicationWindow {
         // The web surface. Kept loaded at all times — it holds the session, and
         // unloading it would throw away the cookie jar on Android.
         Item {
+            id: surfacePage
+
             Loader {
                 id: surfaceLoader
                 anchors.fill: parent
+                // Microsoft's sign-in page must not sit under the gesture
+                // handle. Zero whenever the status footer is showing below it.
+                anchors.bottomMargin: surfacePage.SafeArea.margins.bottom
                 source: platformSurface          // context property from app.py
                 asynchronous: false
 
@@ -339,17 +381,21 @@ ApplicationWindow {
     }
 
     footer: Rectangle {
+        id: statusFooter
         visible: login.status.length > 0
-        implicitHeight: visible ? statusLabel.implicitHeight + 18 : 0
+        implicitHeight: visible
+                        ? statusLabel.implicitHeight + 18 + statusFooter.SafeArea.margins.bottom
+                        : 0
         color: theme.ribbon
 
         Label {
             id: statusLabel
             anchors.left: parent.left
             anchors.right: parent.right
-            anchors.verticalCenter: parent.verticalCenter
-            anchors.leftMargin: 14
-            anchors.rightMargin: 14
+            anchors.top: parent.top
+            anchors.topMargin: 9
+            anchors.leftMargin: 14 + statusFooter.SafeArea.margins.left
+            anchors.rightMargin: 14 + statusFooter.SafeArea.margins.right
             text: login.status
             color: theme.muted
             font.pixelSize: 12
@@ -363,7 +409,9 @@ ApplicationWindow {
         body: "A personal client for your own Cedarville records.\n\n"
               + "Backend: " + bridge.platformName + "\n\n"
               + "Your password is never seen or stored by this app — sign-in "
-              + "happens on Microsoft's own page."
+              + "happens on Microsoft's own page.\n\n"
+              + "Privacy policy: in the menu, or at "
+              + "github.com/KromaKobra/cedarview/blob/main/PRIVACY.md"
     }
 
     InfoSheet {

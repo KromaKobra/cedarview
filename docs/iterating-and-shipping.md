@@ -78,15 +78,15 @@ broken, never as a habit.
 ## 1.3 Pushing QML straight onto the phone, no build at all
 
 The APK does not execute QML from inside itself. The bootstrap untars
-`assets/private.tar` into `/data/data/org.mycu.mycu/files/app/` and Qt reads
+`assets/private.tar` into `/data/data/com.kromakobra.cedarview/files/app/` and Qt reads
 the `.qml` files from there as ordinary text. So you can overwrite one:
 
 ```bash
 adb push mycu/ui/qml/SummaryView.qml /data/local/tmp/SummaryView.qml
-adb shell run-as org.mycu.mycu cp /data/local/tmp/SummaryView.qml \
+adb shell run-as com.kromakobra.cedarview cp /data/local/tmp/SummaryView.qml \
     files/app/mycu/ui/qml/SummaryView.qml
-adb shell am force-stop org.mycu.mycu
-adb shell monkey -p org.mycu.mycu -c android.intent.category.LAUNCHER 1
+adb shell am force-stop com.kromakobra.cedarview
+adb shell monkey -p com.kromakobra.cedarview -c android.intent.category.LAUNCHER 1
 ```
 
 Seconds instead of minutes, on the real device, with real data.
@@ -104,7 +104,7 @@ ordinary devices; a hardened SELinux policy could refuse. If it does, pipe
 through stdin instead and skip the shared directory entirely:
 
 ```bash
-adb shell "run-as org.mycu.mycu sh -c 'cat > files/app/mycu/ui/qml/SummaryView.qml'" \
+adb shell "run-as com.kromakobra.cedarview sh -c 'cat > files/app/mycu/ui/qml/SummaryView.qml'" \
     < mycu/ui/qml/SummaryView.qml
 ```
 
@@ -138,7 +138,7 @@ Any 3.11.x works — the magic number is per *minor* version.
 HP=android-build/.buildozer/android/platform/build-arm64-v8a/build/other_builds/hostpython3/desktop/hostpython3/native-build/python
 $HP -c "import py_compile; py_compile.compile('mycu/ui/viewmodels/dining.py', 'dining.pyc')"
 adb push dining.pyc /data/local/tmp/
-adb shell run-as org.mycu.mycu cp /data/local/tmp/dining.pyc \
+adb shell run-as com.kromakobra.cedarview cp /data/local/tmp/dining.pyc \
     files/app/mycu/ui/viewmodels/dining.pyc
 ```
 
@@ -201,7 +201,7 @@ adb logcat -c && adb logcat | grep -iE 'python|qml|mycu|Extracting'
 ```
 
 `Extracting private assets.` means the new code landed. If you ever need the
-hammer anyway, `adb shell pm clear org.mycu.mycu` still works — and still signs
+hammer anyway, `adb shell pm clear com.kromakobra.cedarview` still works — and still signs
 you out.
 
 ### A rebuild used to be a dice roll
@@ -445,80 +445,125 @@ a Play Protect warning because it is signed with the debug key.
 For a personal app on your own phone, **this is the whole answer** and I would
 stop here.
 
-## 3.2 Google Play: three concrete blockers
+## 3.2 Google Play: what it took, and what the build now enforces
 
-I checked the build rather than guessing, and there are real obstacles.
+Audited on 2026-09-22 against the shipped v0.1.0 APK and Play's rules as of that
+date. Every item was a hard blocker; every one is now fixed in the build and
+**checked on the built artifact**, so a regression fails `scripts/build-apk`
+instead of failing a Play upload.
 
-### Blocker 1 — you target API 31, Play requires far newer
+| Requirement | Was | Now | Where |
+|---|---|---|---|
+| Target API ≥ 36 (new apps and updates since 2026-08-31) | 31, buildozer's default | **36** | `ANDROID_API` in `scripts/build-apk` |
+| Every 64-bit `.so` 16 KB-aligned (since Nov 2025) | 73 libraries at 4 KB | all 16 KB | phases 1d and 1f |
+| App Bundle, not APK | APK forced | `--aab` | phase 1a |
+| minSdk the runtime supports | 21 | **28** (Qt 6.11's floor) | `ANDROID_MINAPI` |
+| Edge-to-edge (forced from API 35) | header under the status bar | safe-area insets | `Main.qml` |
+| Privacy policy, in the listing **and** in the app | none | `PRIVACY.md`, ⋮ menu | — |
 
-Verified in the generated `build.gradle` and manifest:
+The ones worth knowing about in detail:
 
-```
-minSdkVersion  21
-targetSdkVersion 31          ← Android 12
-compileSdkVersion 31
-```
+### 16 KB pages — the one that needed real work
 
-`android.api` is not set anywhere, so buildozer falls back to its own default
-(`ANDROID_API = '31'` in `buildozer/targets/android.py`). Play will not accept
-new apps or updates targeting anything that old — the rule is roughly "within
-a year of the current Android release", which as of late 2025 means **API 35**.
+Android 15 devices can run with 16 KB memory pages, and a library whose ELF
+LOAD segments are aligned for 4 KB does not load on one. Play rejects the
+upload outright. Qt's own libraries were fine. The 4 KB ones were:
 
-Fixing it means pinning `android.api = 35` into `buildozer.spec` via the same
-block in `scripts/build-apk` that pins permissions — and then finding out
-whether Qt 6.11, p4a and the WebView bootstrap are happy at that level. Assume
-that is an afternoon, not a line.
+- **Everything python-for-android compiles**: `libpython3.11`, `libssl`,
+  `libcrypto`, `libffi`, `libsqlite3`, `libmain`, and 66 CPython extension
+  modules inside `libpybundle.so`. NDK r27c links for 4 KB unless told
+  otherwise. Phase 1d patches p4a to pass `-z max-page-size=16384` through
+  `archs.py` (configure-based recipes) and `APP_SUPPORT_FLEXIBLE_PAGE_SIZES=true`
+  on the ndk-build command lines (sqlite3, libmain).
+- **`libshiboken6.abi3.so` and `Shiboken.abi3.so` from Qt's own wheel.** Every
+  6.11 release ships them 4 KB-aligned, and the segments share 16 KB pages, so
+  patching the header cannot fix it. `scripts/android/recipes/shiboken6`
+  rebuilds both from the pyside-setup 6.11.0 source, with the same NDK and API
+  level Qt used plus the 16 KB flag. The host generator comes from nixpkgs
+  (`SHIBOKEN6_HOST_PATH`, set by `flake.nix`). Before installing them, the
+  recipe **refuses unless the rebuild exports every symbol the original does**
+  (448 of 448) with identical SONAME, NEEDED and RUNPATH, because `libpyside6`
+  and every Qt binding link against it.
 
-*Check the current required level before you start; Google raises it annually.*
+The NDK stays at r27c on purpose: Qt 6.11 was built with it, and the
+`libc++_shared.so` the PySide6 recipe copies from it is already 16 KB-aligned.
 
-### Blocker 2 — size
+The gate: after every build, `scripts/build-apk` reads every ELF in `lib/` —
+and inside `libpybundle.so`, which Play's own checker does not open but the
+phone's loader does — and fails on anything below 16 KB. A build that reuses
+libraries compiled before the flags existed fails there. Rebuild with `--clean`.
 
-148 MB, and it is mostly irreducible: Qt 6.11 for Android plus a full CPython
-and its stdlib. Play caps the **download** size generated from a bundle, and
-you are in the neighbourhood of that cap.
+### Target API 36 — what changes at runtime
 
-Do not guess at this. Build the AAB and measure:
+- **Edge to edge.** From API 35 the window draws under the status bar and the
+  gesture handle, and at 36 the opt-out is gone. Since Qt 6.9, ApplicationWindow
+  pads its content by the safe-area margins, but not its `header` or `footer`.
+  `Main.qml` gives those two, and the tab bar, their insets explicitly, so the
+  ribbon colour fills in behind the system bars. `app.py` sets Qt's colour
+  scheme from the in-app theme so the status-bar icons contrast with it.
+- **Predictive back.** At 36, Android stops delivering the back key to apps
+  that have not moved to `OnBackInvokedCallback`, and Qt 6.11 has not. The
+  manifest carries `android:enableOnBackInvokedCallback="false"`
+  (patched in by `scripts/build-apk` phase 1g), which keeps back behaving as
+  it did.
+- **Large screens** (≥ 600 dp) ignore the portrait lock at 36. The layout
+  stretches; nothing breaks.
+
+### Still worth measuring: size
+
+~150 MB, mostly Qt and CPython. Play caps the compressed download of the base
+module at 200 MB. `--aab` measures it with `bundletool get-size total` on every
+build and fails over the cap.
+
+### The testing requirement — not a software fix
+
+Individual developer accounts registered after late 2023 must run a **closed
+test with 12 opted-in testers for 14 continuous days** before they can apply
+for production. *Check the current numbers — this policy has been adjusted
+more than once.* Internal testing (up to 100 testers) is not gated by it.
+
+## 3.3 Publishing to Play — the runbook
 
 ```bash
-bundletool get-size total --apks=out.apks
+# 1. Bump the version. versionCode = "10" + minSdk + the dotted version folded
+#    into digits, so 0.2.0 at minSdk 28 is 1028200. Play refuses a re-used one.
+$EDITOR mycu/__init__.py
+
+# 2. Build the bundle, signed with your UPLOAD key. The first build after
+#    pulling these changes must add --clean.
+export P4A_RELEASE_KEYSTORE=$HOME/keys/cedarview-release.jks
+export P4A_RELEASE_KEYALIAS=cedarview
+export P4A_RELEASE_KEYSTORE_PASSWD=...
+export P4A_RELEASE_KEYALIAS_PASSWD=...
+nix develop --command mycu-android-build -c './scripts/build-apk --aab'
+
+# 3. Try it exactly as Play would install it (phone on USB):
+nix develop --command mycu-android-build -c \
+  'bundletool install-apks --apks=cedarview-<version>.apks'
 ```
 
-*The cap has moved over the years — look it up rather than trusting a number
-from me.*
+`--aab` writes `cedarview-<version>.aab` (upload this) and
+`cedarview-<version>.apks` (the split APKs Play would serve, for local
+testing). It fails the build unless the manifest says
+`com.kromakobra.cedarview`, targetSdk 36, minSdk 28, not debuggable, the
+back-callback opt-out, and `INTERNET` as the only permission; unless the bundle
+is signed; unless every native library is 16 KB-aligned; and unless the
+download fits under 200 MB.
 
-### Blocker 3 — the testing requirement
+In Play Console:
 
-Individual (non-organisation) developer accounts registered after late 2023
-must run a **closed test with ~12 opted-in testers for 14 continuous days**
-before they can apply for production access. Plus a **$25 one-time**
-registration fee.
-
-*Verify the current numbers — this policy is recent and has been adjusted.*
-
-## 3.3 What publishing would actually involve
-
-1. Register a Play Console account, pay the $25.
-2. Raise `targetSdkVersion` and re-test on-device — including the sign-in
-   WebView, which is the part most likely to break on a new API level.
-3. Switch `[buildozer] mode` from `debug` to `release` in `pysidedeploy.spec`.
-   The spec's own comment states the consequence: *"release creates a .aab,
-   while debug creates a .apk"*. Play requires the AAB.
-4. Generate an upload keystore with `keytool` and **back it up somewhere you
-   will still have in five years** — lose it and you can never update the app
-   under that listing again. Sign by exporting the four variables p4a's
-   `build.tmpl.gradle` reads:
-
-   ```
-   P4A_RELEASE_KEYSTORE            P4A_RELEASE_KEYSTORE_PASSWD
-   P4A_RELEASE_KEYALIAS            P4A_RELEASE_KEYALIAS_PASSWD
-   ```
-
-   The artifact lands in `dists/mycu/build/outputs/bundle/release/`.
-5. Write a privacy policy (a URL is mandatory) and fill in the Data Safety
-   form. Yours is an easy one to answer honestly: the app stores a session
-   locally, sends nothing anywhere, and — by design — never sees your password.
-6. Store listing: title, short and full description, feature graphic, and at
-   least two screenshots.
+1. **App signing.** Play App Signing is mandatory for new apps. The simplest
+   choice is to let Google generate the app-signing key and register
+   `~/keys/cedarview-release.jks` as the **upload** key. The applicationId is
+   new, so there is no existing install base to stay key-compatible with.
+2. **Privacy policy URL**:
+   `https://github.com/KromaKobra/cedarview/blob/main/PRIVACY.md`. The app links
+   the same page from its ⋮ menu, which Play's User Data policy also requires.
+3. **Data safety**: no data collected or shared. Everything is fetched from
+   Cedarville to the device and stays there. No account creation, so the
+   account-deletion requirement does not apply.
+4. **App bundle explorer**, after upload: confirm "16 KB page size: supported".
+5. Content rating questionnaire, store listing, screenshots.
 
 ## 3.4 Two things worth thinking about before you do
 
@@ -537,14 +582,14 @@ need a global storefront to reach a few hundred Cedarville students.
 |---|---|---|
 | **Sideload the APK** | none | What you are doing. Fine for you and a few friends. |
 | **GitHub Releases** | none | Attach the APK to a tag. Link it. People tap and install. Sign it with a stable release key so updates install over each other. |
-| **Play — Internal testing** | $25 | Up to 100 testers by email, and it sidesteps §3.2's blocker 3 entirely: the 14-day closed-test rule gates *production*, not internal testing. Still needs the AAB, the signing key and the target-SDK bump. **This is the sweet spot if you want proper install-and-update plumbing for a campus-sized audience.** |
+| **Play — Internal testing** | $25 | Up to 100 testers by email, and it sidesteps the 14-day closed-test rule (§3.2), which gates *production*, not internal testing. Uses the same `--aab` build as production. **This is the sweet spot if you want proper install-and-update plumbing for a campus-sized audience.** |
 | **Obtainium** | none | Users point it at your GitHub releases and get automatic updates. Very little work for you; requires your users to install one extra app. |
 | **F-Droid** | none | Realistically not an option — it wants a reproducible build from source in their infrastructure, and this toolchain cross-compiles CPython and Qt. |
 
-**My recommendation:** a signed release APK on GitHub Releases now, and Play
-internal testing if and when you want update-delivery to handle itself. Full
-Play production is three real obstacles deep for an audience that is one
-campus wide.
+The software side of Play is done (§3.2): `--aab` produces an upload-ready
+bundle. What is left is the Console work in §3.3 and, for production, the
+closed-test period. Internal testing is a reasonable first stop while that runs,
+and the GitHub APK (§3.6) keeps working alongside either.
 
 ---
 
@@ -597,7 +642,8 @@ nix develop --command mycu-android-build -c "./scripts/build-apk --release"
 ```
 
 `--release` pins `android.release_artifact = apk` (buildozer defaults a release
-to `.aab`, which is a Play upload format and **cannot be sideloaded**), pins
+to `.aab`, which is the Play upload format — `--aab`, §3.3 — and **cannot be
+sideloaded**), pins
 `version` from `__version__`, refuses to start if any signing variable is
 missing, and refuses to finish if the resulting APK has no signature block.
 The artifact is `cedarview-<version>-arm64-v8a.apk` in the project root — named
@@ -623,9 +669,8 @@ gh release create v0.2.0 cedarview-0.2.0-arm64-v8a.apk \
   arm64, so this is fine in practice — but a budget `armeabi-v7a` device will
   refuse to install, with an unhelpful message. Building a second ABI roughly
   doubles the build time and the size.
-* **`minSdkVersion 21`, `targetSdkVersion 31`** — installs on Android 5 through
-  current. Play's target-SDK rule does not apply to sideloading; Android 14's
-  does, and it only blocks `targetSdk < 23`.
+* **`minSdkVersion 28`, `targetSdkVersion 36`** — Android 9 through current,
+  which is the range Qt 6.11 supports.
 * **~150 MB.** Well under GitHub's 2 GB per-file limit, but it is a real
   download on campus wifi.
 
@@ -643,41 +688,26 @@ forever after.
 
 ## 3.7 The name, and the identity behind it
 
-These are two different things and only one of them has been changed.
-
 **The name is CedarView.** Phase 1a pins `title = CedarView` into the generated
 `buildozer.spec`, which is the launcher label, and `app.py` sets the Qt
 application name to match.
 
-**The identity is still `org.mycu.mycu`.** So is the Python package, the p4a
-dist name, and `APP_DIR_NAME` in `mycu/core/session.py`.
+**The identity is `com.kromakobra.cedarview`,** from the release that first
+went to Google Play. Through v0.1.0 it was `org.mycu.mycu`. The change happened
+then because Play makes the applicationId permanent at the first upload, and
+`org.mycu` named a domain nobody here owns plus Cedarville's portal brand.
 
-That split is deliberate. `deploy_lib/android/buildozer.py:18-19` writes one
-value to both `title` and `package.name`:
+To Android an applicationId is the app's identity, not a label: a new one is a
+**different app**. Anyone who sideloaded v0.1.0 has two apps after installing
+the new one. Uninstalling the old `org.mycu.mycu` one costs a sign-in and
+nothing else.
 
-```python
-self.set_value("app", "title",        pysidedeploy_config.title)
-self.set_value("app", "package.name", pysidedeploy_config.title)
-```
+It is set in one place, `APP_PACKAGE_NAME` and `APP_PACKAGE_DOMAIN` at the top
+of `scripts/build-apk`. `--name` feeds `package.name` (and the p4a dist name),
+and phase 1a pins `package.domain`. **Do not change it again.** Play will not
+let the listing move to a new one.
 
-so renaming via `--name` would also change the applicationId. To Android an
-applicationId is the app's identity, not a label: a new one is a **different
-app**. It installs *beside* the old one, with an empty data directory, and
-there is no upgrade path between them.
-
-Where `org.mycu.mycu` is still visible: Settings → Apps, `adb` commands
-throughout this document, and the URL if the app is ever listed on Play.
-
-**If you want to change it, the moment is before the first public release.**
-Right now the cost is one uninstall on one phone — yours. Afterwards it is an
-uninstall for every user, and any of them who miss the announcement simply stop
-getting updates, with a working old copy giving no hint that anything is wrong.
-
-Changing it means editing `--name` in `scripts/build-apk` and `package.domain`
-in the phase 1a pin, then a `--clean`-ish rebuild, since the dist name is part
-of the build tree. Pick a domain you actually control — `io.github.<user>.…` is
-the usual choice for a personal app. **Not** `edu.cedarville.…`: that namespace
-is the university's, and this is an unofficial client.
-
-`APP_DIR_NAME` is separate again and should be left alone regardless — it names
-the directory holding the session, so changing it signs everyone out.
+The Python package is still `mycu`, and `APP_DIR_NAME` in
+`mycu/core/session.py` is still `"mycu"`. That names the directory holding the
+session inside the app's private storage, so it is not part of the identity,
+and changing it would sign everyone out.

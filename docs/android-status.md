@@ -358,7 +358,7 @@ now gets a sign-in page instead of "Couldn't reach Self-Service".
 is empty anyway until a sign-in succeeds, so nothing is lost:
 
 ```bash
-nix shell nixpkgs#android-tools --command adb uninstall org.mycu.mycu
+nix shell nixpkgs#android-tools --command adb uninstall com.kromakobra.cedarview
 nix shell nixpkgs#android-tools --command adb install mycu.apk
 nix shell nixpkgs#android-tools --command adb logcat -c
 # launch it, sign in on the phone, then:
@@ -381,7 +381,7 @@ caused `failed to get the Python codec of the filesystem encoding`. A plain
 `adb install -r` does not always re-extract. If behaviour looks stale:
 
 ```bash
-adb uninstall org.mycu.mycu && adb install mycu.apk
+adb uninstall com.kromakobra.cedarview && adb install mycu.apk
 ```
 
 That wipes the WebView cookie jar, so you sign in again.

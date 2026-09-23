@@ -1,10 +1,10 @@
 """CedarView — a personal client for one student's own Cedarville records.
 
-The app is CedarView; the Python package is still ``mycu``. That is deliberate
-rather than unfinished: the package name is also the p4a dist name and half of
-the Android applicationId (``org.mycu.mycu``), and to Android a new
-applicationId is a different app — it installs beside the old one with an empty
-data directory instead of over it. The import path is not worth that.
+The app is CedarView; the Python package is still ``mycu``. The Android
+applicationId stopped following it at the move to Google Play — it is
+``com.kromakobra.cedarview`` now, set in scripts/build-apk, and was
+``org.mycu.mycu`` through v0.1.0 — so the package name is only an import path,
+and not worth the churn of renaming.
 
 Layout (see docs/architecture.md for the reasoning):
 

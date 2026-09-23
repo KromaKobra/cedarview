@@ -32,12 +32,12 @@ def test_desktop_is_the_default(monkeypatch) -> None:
 
 def test_android_argument_selects_android(monkeypatch) -> None:
     monkeypatch.delenv("MYCU_PLATFORM", raising=False)
-    monkeypatch.setenv("ANDROID_ARGUMENT", "/data/data/org.mycu/files")
+    monkeypatch.setenv("ANDROID_ARGUMENT", "/data/data/com.kromakobra.cedarview/files")
     assert mycu_platform.is_android()
 
 
 def test_the_override_wins_both_ways(monkeypatch) -> None:
-    monkeypatch.setenv("ANDROID_ARGUMENT", "/data/data/org.mycu/files")
+    monkeypatch.setenv("ANDROID_ARGUMENT", "/data/data/com.kromakobra.cedarview/files")
     monkeypatch.setenv("MYCU_PLATFORM", "desktop")
     assert not mycu_platform.is_android()
 

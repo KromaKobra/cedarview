@@ -74,7 +74,7 @@ on, so a redirect is invisible. Fixed, and the rebuilt `mycu.apk` contains it.
 and a plain `-r` can leave you running the old code while looking at a new APK.
 
 ```bash
-nix shell nixpkgs#android-tools --command adb uninstall org.mycu.mycu
+nix shell nixpkgs#android-tools --command adb uninstall com.kromakobra.cedarview
 nix shell nixpkgs#android-tools --command adb install mycu.apk
 nix shell nixpkgs#android-tools --command adb logcat -c
 # launch it, sign in on the phone, then:

@@ -310,34 +310,37 @@ APK build.
 nothing else. Do not let the packaging tool add more by default — check the
 generated `AndroidManifest.xml`.
 
-### Signing
+### Signing, and the three build modes
 
-`pysidedeploy.spec` has `mode = debug`, so buildozer produces a **debug-signed
-APK**. For a personal app on your own phone that is the right choice and needs
-no key management: the APK installs over `adb`, and nothing about the app's
-access to your own records depends on the signature.
+`scripts/build-apk` has three outputs:
 
-Two consequences worth knowing:
+| Flag | Output | Signed with | For |
+|---|---|---|---|
+| (none) | `mycu.apk` | the per-machine debug key | your own phone over adb |
+| `--release` | `cedarview-<version>-arm64-v8a.apk` | your release key | GitHub Releases (sideload) |
+| `--aab` | `cedarview-<version>.aab` + `.apks` | your release (upload) key | Google Play |
 
-- A debug-signed APK cannot be uploaded to Play, and some MDM-managed profiles
-  refuse to install one. Neither applies here.
-- The debug key is generated per machine (`~/.android/debug.keystore`). If it
-  is ever regenerated, the next install is treated as a *different app* and
-  `adb install -r` fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`; uninstall
-  first. That wipes the WebView cookie jar, so you sign in again.
+`--release` and `--aab` both need the four `P4A_RELEASE_*` variables; the
+runbooks are §3.6 (GitHub) and §3.3 (Play) of `docs/iterating-and-shipping.md`.
+Either one fails the build if the artifact comes out unsigned.
 
-Switching to `mode = release` produces an `.aab` and needs a real keystore:
+The debug key is generated per machine (`~/.android/debug.keystore`). If it is
+ever regenerated, the next install is treated as a *different app* and
+`adb install -r` fails with `INSTALL_FAILED_UPDATE_INCOMPATIBLE`; uninstall
+first. That wipes the WebView cookie jar, so you sign in again.
 
-```bash
-keytool -genkey -v -keystore mycu-release.keystore \
-        -alias mycu -keyalg RSA -keysize 4096 -validity 10000
-```
+`.gitignore` excludes `*.keystore`, `*.jks`, `*.pass` and `keystore.properties`.
+**Back the release keystore up somewhere outside this repo.** It is not
+recoverable. Losing it means you can never ship an upgrade to an
+already-installed sideloaded build, and on Play it means requesting an
+upload-key reset.
 
-`.gitignore` already excludes `*.keystore`, `*.jks` and `keystore.properties`.
+### Google Play's requirements
 
-**Back it up somewhere outside this repo.** It is not recoverable, and losing it
-means you can never ship an upgrade to an already-installed build — only an
-uninstall/reinstall, which wipes the session.
+Enforced by the build and re-checked on every artifact: target API 36, minSdk
+28, every native library 16 KB-aligned, and an App Bundle. The details, and
+the two workarounds they needed (python-for-android's link flags and a rebuilt
+`libshiboken6`), are in §3.2 of `docs/iterating-and-shipping.md`.
 
 ---
 
@@ -350,7 +353,7 @@ The APK does not run `mycu/` out of the APK. python-for-android ships the app
 as `assets/private.tar` and the Java bootstrap untars it into
 
 ```
-/data/data/org.mycu.mycu/files/app/
+/data/data/com.kromakobra.cedarview/files/app/
 ```
 
 on **first** launch, then writes a stamp at `files/app/private.version` and
@@ -366,14 +369,14 @@ was a QML warning naming a line number that no longer had that code on it.
 Check what the device actually has, rather than what you built:
 
 ```bash
-adb shell run-as org.mycu.mycu ls files/app/mycu/ui/qml/
+adb shell run-as com.kromakobra.cedarview ls files/app/mycu/ui/qml/
 tar tf <(unzip -p mycu.apk assets/private.tar)   # what you shipped
 ```
 
 Force the unpack:
 
 ```bash
-adb shell pm clear org.mycu.mycu
+adb shell pm clear com.kromakobra.cedarview
 ```
 
 That wipes the app's data directory, which is also where the session lives —
@@ -410,13 +413,16 @@ stdout with the app name, which makes it greppable.
 
 ### Things flagged for on-device verification
 
-Each is marked `# VERIFY:` in the source:
+The first three are marked `# VERIFY:` in the source; the last three came with the move to targetSdk 36:
 
 | Where | What to check |
 |---|---|
 | ~~`qml/WebSurfaceAndroid.qml`~~ | **Resolved statically — no device needed.** `plugins.qmltypes` inside the `android_aarch64` wheel gives `LoadStatus = {LoadStartedStatus, LoadStoppedStatus, LoadSucceededStatus, LoadFailedStatus}`, `loadingChanged(QQuickWebViewLoadRequest)`, and `url`/`status`/`errorString` on the request. The QML is correct as written. |
 | `platform/android.py` | Whether the federated logout round trip really drops the Self-Service cookie, not just the Entra one. |
 | transport, end to end | That a large body survives `runJavaScript` on QtWebView. It was verified at 300 KB on QtWebEngine by `scripts/smoke-transport`; the marshalling limits on the system WebView are not documented. If it truncates, the fix is to chunk the body in the read script. |
+| `qml/Main.qml`, edge to edge | At targetSdk 36 the ribbon must sit below the status bar with its colour behind it, and the tab bar above the gesture handle. Verified on desktop with simulated insets only. |
+| `ui/app.py`, status-bar icons | That light and dark themes each get contrasting status-bar icons (driven by `styleHints().setColorScheme`). |
+| back gesture | That back still behaves as before at targetSdk 36, via `enableOnBackInvokedCallback="false"` (patched into the manifest by `scripts/build-apk` phase 1g). |
 
 The wheel is worth interrogating before reaching for the phone — anything about
 Qt's *API shape* is answerable offline:

@@ -34,6 +34,8 @@ bin/
 deployment/
 *.apk
 *.aab
+# The split-APK set scripts/build-apk --aab generates from a bundle.
+*.apks
 .direnv/
 result
 result-*

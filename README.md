@@ -39,5 +39,11 @@ CedarView is an app developed for **Android devices** to quickly display:
 2. Depending on your phone, you may need to allow the install:
    - **Samsung** — Settings → Security and privacy → Auto Blocker → turn off. (On One UI 6.1+ this is on by default and blocks installs outright, with no "install anyway" option.)
    - **All phones** — Chrome will warn on download → tap **Keep**. Open the file and allow "install unknown apps" for your browser when prompted. Play Protect will flag an unknown developer → **More details** → **Install anyway**.
-   - Requires a 64-bit phone (any Pixel, or Samsung/Motorola from ~2019 on).
+   - Requires a 64-bit phone running Android 9 or newer (any Pixel, or Samsung/Motorola from ~2019 on).
 3. Launch the app and sign in with your Cedarville account. Sign-in is handled through Microsoft, so CedarView never sees or collects your login info.
+
+> **Coming from v0.1.0?** Later releases install as a separate app (the app's internal ID changed ahead of Google Play). Uninstall the old CedarView afterwards. You'll just need to sign in once more.
+
+## Privacy
+
+CedarView has no servers, no ads and no analytics. It talks only to Cedarville's own sites and Microsoft's sign-in page, and keeps everything on your phone. Full details are in the [privacy policy](PRIVACY.md).
