@@ -228,22 +228,54 @@ def home_cooking_for(days: "tuple[DayMenu, ...]", on: date | None = None) -> tup
     return ()
 
 
-#: When each sitting stops being "next".
+#: Chuck's posted serving hours, as ``(start, end)`` per slot, keyed by the kind
+#: of day: ``"weekday"`` (Mon–Fri), ``"saturday"``, ``"sunday"``.
 #:
-#: **These are ours, not the API's.** The menu feed carries no serving times at
-#: all — only a ``slot`` label — so something has to decide when breakfast stops
-#: being the meal you are about to eat. These are the posted Chuck's windows
-#: rounded outward, so the answer changes a little late rather than a little
-#: early: being told "up next: lunch" while you are still eating breakfast is
-#: the more annoying of the two failures.
-#:
-#: They affect *which menu is shown first* and nothing else. The full day is on
-#: the Chucks tab either way, so a wrong guess here costs a tap, not a meal.
-SERVING_ENDS = {
-    "breakfast": time(10, 30),
-    "lunch": time(16, 0),
-    "dinner": time(20, 0),
+#: **Hardcoded, not the API's.** The menu feed carries no serving times at all —
+#: only a ``slot`` label — so these are copied off the posted hours. A sitting
+#: stops being "next" the moment its window closes: at 9:30 on a weekday the
+#: summary card moves on to lunch. If Chuck's changes its hours, this is the
+#: one place to change.
+CHUCKS_HOURS = {
+    "weekday": {
+        "breakfast": (time(7, 0), time(9, 30)),
+        "lunch": (time(10, 30), time(14, 30)),
+        "dinner": (time(16, 30), time(19, 30)),
+    },
+    "saturday": {
+        "breakfast": (time(8, 0), time(9, 0)),
+        "lunch": (time(11, 0), time(13, 0)),
+        "dinner": (time(16, 30), time(18, 30)),
+    },
+    "sunday": {
+        "breakfast": (time(8, 0), time(9, 0)),
+        "lunch": (time(11, 30), time(14, 0)),
+        "dinner": (time(17, 0), time(19, 30)),
+    },
 }
+
+
+def serving_hours(on: date, slot: str) -> "tuple[time, time] | None":
+    """``(start, end)`` for ``slot`` on ``on``'s day of the week.
+
+    ``None`` for anything that is not a sitting — in practice ``"anytime"``,
+    the all-day stations, which have no window to be before or after.
+    """
+    weekday = on.weekday()
+    kind = "saturday" if weekday == 5 else "sunday" if weekday == 6 else "weekday"
+    return CHUCKS_HOURS[kind].get(slot.casefold())
+
+
+def _clock_short(at: time) -> str:
+    """"7am" / "9:30am" / "2:30pm". By hand: ``%-I`` is glibc-only, bionic lacks it."""
+    hour = at.hour % 12 or 12
+    minutes = f":{at.minute:02d}" if at.minute else ""
+    return f"{hour}{minutes}{'am' if at.hour < 12 else 'pm'}"
+
+
+def format_hours(start: time, end: time) -> str:
+    """"10:30am–2:30pm" — a serving window, for the summary card."""
+    return f"{_clock_short(start)}–{_clock_short(end)}"
 
 
 def next_meal_block(
@@ -263,7 +295,7 @@ def next_meal_block(
     as a bug, and the next real sitting is the useful answer.
 
     ``now`` is injectable because the whole behaviour is a function of the
-    clock, and a test that could only be run before 10:30am would be no test.
+    clock, and a test that could only be run before 9:30am would be no test.
     """
     moment = now or datetime.now()
     today = moment.date()
@@ -274,9 +306,9 @@ def next_meal_block(
         for block in day.for_venue(venue):
             # `for_venue` includes all-day stations (slot "anytime"), which are
             # never "next" — they are always on.
-            ends = SERVING_ENDS.get(block.slot.casefold())
-            if ends is None or not block.items:
+            hours = serving_hours(day.on, block.slot)
+            if hours is None or not block.items:
                 continue
-            if day.on > today or moment.time() < ends:
+            if day.on > today or moment.time() < hours[1]:
                 return day.on, block
     return None

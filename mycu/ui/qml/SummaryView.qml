@@ -302,6 +302,15 @@ Item {
                         }
 
                         Item { Layout.fillWidth: true }
+
+                        // That sitting's serving window ("10:30am–2:30pm"),
+                        // for the day it is on.
+                        Label {
+                            visible: dining.hasNextMeal
+                            text: dining.nextMealHours
+                            color: theme.muted
+                            font.pixelSize: 11
+                        }
                     }
 
                     Label {

@@ -483,6 +483,50 @@ def test_tomorrows_breakfast_says_so(dvm: DiningViewModel) -> None:
     assert dvm.nextMealLabel == "Breakfast"
 
 
+def _wednesday_menu() -> tuple[DayMenu, ...]:
+    return (
+        DayMenu(on=date(2026, 9, 16), blocks=(
+            MenuBlock(venue=HOME_COOKING, meal="Breakfast", slot="breakfast",
+                      items=(MenuItem(name="Bacon"),)),
+            MenuBlock(venue=HOME_COOKING, meal="Lunch", slot="lunch",
+                      items=(MenuItem(name="Pork Loin"),)),
+        )),
+    )
+
+
+def test_the_next_sitting_says_when_it_is_served(dvm: DiningViewModel) -> None:
+    dvm._now = lambda: datetime(2026, 9, 16, 9, 0)  # a Wednesday
+    dvm._on_loaded(_wednesday_menu())
+    assert dvm.nextMealLabel == "Breakfast"
+    assert dvm.nextMealHours == "7am–9:30am"
+
+
+def test_no_next_sitting_has_no_hours(dvm: DiningViewModel) -> None:
+    dvm._on_loaded(())
+    assert dvm.nextMealHours == ""
+
+
+def test_the_card_moves_on_when_breakfast_closes_without_a_refresh(
+    dvm: DiningViewModel,
+) -> None:
+    """An app left open through 9:30 must flip to lunch on its own."""
+    dvm._now = lambda: datetime(2026, 9, 16, 9, 0)
+    dvm._on_loaded(_wednesday_menu())
+
+    emitted = []
+    dvm.changed.connect(lambda: emitted.append(True))
+
+    dvm._tick()  # still breakfast: nothing to say
+    assert emitted == []
+
+    dvm._now = lambda: datetime(2026, 9, 16, 9, 31)
+    dvm._tick()
+    assert emitted == [True]
+    assert dvm.nextMealLabel == "Lunch"
+    assert dvm.nextMealHours == "10:30am–2:30pm"
+    assert dvm.nextMealItems.rowCount() == 1
+
+
 # ---------------------------------------------------------------------------
 # Paging through days (the Chucks tab)
 # ---------------------------------------------------------------------------

@@ -13,7 +13,7 @@ dining site's own script fetches it with `credentials: "omit"`.
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
 
 import pytest
@@ -23,9 +23,11 @@ from mycu.core.models import HOME_COOKING, SLOT_ORDER, DayMenu, MenuBlock, MenuI
 from mycu.core.providers.dining import (
     DINING_PATH,
     DiningProvider,
+    format_hours,
     home_cooking_for,
     next_meal_block,
     parse_menus,
+    serving_hours,
 )
 from mycu.core.transport import DINING_BASE, FixtureTransport
 
@@ -305,36 +307,81 @@ def test_fixture_slug_includes_the_host_for_non_default_origins() -> None:
 # The next sitting
 #
 # What the summary screen puts on the front page. The menu feed carries no
-# serving times, so the cutoffs in `SERVING_ENDS` are the app's own — which is
-# exactly why they need tests: a rule nobody can look up is a rule that drifts.
+# serving times, so the hours in `CHUCKS_HOURS` are hardcoded — which is exactly
+# why they need tests: a rule nobody can look up is a rule that drifts. The
+# fixture's days are a Wednesday and a Thursday, so these are weekday hours.
 # ---------------------------------------------------------------------------
 
-def test_before_half_ten_the_next_meal_is_breakfast(menus: tuple[DayMenu, ...]) -> None:
+def test_before_half_nine_the_next_meal_is_breakfast(menus: tuple[DayMenu, ...]) -> None:
     on, block = next_meal_block(menus, datetime(2026, 9, 16, 7, 30))
     assert on == FIXTURE_DATE
     assert block.slot == "breakfast"
 
 
-def test_late_morning_has_moved_on_to_lunch(menus: tuple[DayMenu, ...]) -> None:
-    _on, block = next_meal_block(menus, datetime(2026, 9, 16, 10, 45))
+def test_between_breakfast_and_lunch_it_is_already_lunch(menus: tuple[DayMenu, ...]) -> None:
+    _on, block = next_meal_block(menus, datetime(2026, 9, 16, 10, 0))
     assert block.slot == "lunch"
 
 
-def test_the_afternoon_is_looking_at_dinner(menus: tuple[DayMenu, ...]) -> None:
-    _on, block = next_meal_block(menus, datetime(2026, 9, 16, 16, 30))
-    assert block.slot == "dinner"
+def test_after_lunch_closes_it_is_dinner(menus: tuple[DayMenu, ...]) -> None:
+    assert next_meal_block(menus, datetime(2026, 9, 16, 14, 29))[1].slot == "lunch"
+    assert next_meal_block(menus, datetime(2026, 9, 16, 14, 31))[1].slot == "dinner"
 
 
 def test_after_dinner_it_rolls_over_to_tomorrow(menus: tuple[DayMenu, ...]) -> None:
     """The alternative is showing a menu for a meal that is already over."""
-    on, block = next_meal_block(menus, datetime(2026, 9, 16, 21, 0))
+    assert next_meal_block(menus, datetime(2026, 9, 16, 19, 29))[1].slot == "dinner"
+    on, block = next_meal_block(menus, datetime(2026, 9, 16, 19, 31))
     assert on == date(2026, 9, 17)
     assert block.slot == "breakfast"
 
 
-def test_the_boundary_belongs_to_the_meal_that_is_ending(menus: tuple[DayMenu, ...]) -> None:
-    assert next_meal_block(menus, datetime(2026, 9, 16, 10, 29))[1].slot == "breakfast"
-    assert next_meal_block(menus, datetime(2026, 9, 16, 10, 30))[1].slot == "lunch"
+def test_the_card_moves_on_as_soon_as_breakfast_closes(menus: tuple[DayMenu, ...]) -> None:
+    """Breakfast ends at 9:30 on a weekday; by then it is lunch that is next."""
+    assert next_meal_block(menus, datetime(2026, 9, 16, 9, 29))[1].slot == "breakfast"
+    assert next_meal_block(menus, datetime(2026, 9, 16, 9, 30))[1].slot == "lunch"
+    assert next_meal_block(menus, datetime(2026, 9, 16, 9, 31))[1].slot == "lunch"
+
+
+def _full_day(on: date) -> DayMenu:
+    return DayMenu(on=on, blocks=tuple(
+        MenuBlock(venue=HOME_COOKING, meal=slot.title(), slot=slot,
+                  items=(MenuItem(name=f"{slot} dish"),))
+        for slot in SLOT_ORDER
+    ))
+
+
+def test_saturday_runs_on_saturday_hours() -> None:
+    saturday = _full_day(date(2026, 9, 19))
+    assert next_meal_block((saturday,), datetime(2026, 9, 19, 8, 59))[1].slot == "breakfast"
+    assert next_meal_block((saturday,), datetime(2026, 9, 19, 9, 1))[1].slot == "lunch"
+    assert next_meal_block((saturday,), datetime(2026, 9, 19, 13, 1))[1].slot == "dinner"
+
+
+def test_sunday_runs_on_sunday_hours() -> None:
+    sunday = _full_day(date(2026, 9, 20))
+    assert next_meal_block((sunday,), datetime(2026, 9, 20, 9, 1))[1].slot == "lunch"
+    assert next_meal_block((sunday,), datetime(2026, 9, 20, 13, 59))[1].slot == "lunch"
+    assert next_meal_block((sunday,), datetime(2026, 9, 20, 14, 1))[1].slot == "dinner"
+
+
+def test_serving_hours_follow_the_day_of_the_week() -> None:
+    assert serving_hours(date(2026, 9, 16), "breakfast") == (time(7, 0), time(9, 30))
+    assert serving_hours(date(2026, 9, 18), "Lunch") == (time(10, 30), time(14, 30))
+    assert serving_hours(date(2026, 9, 19), "lunch") == (time(11, 0), time(13, 0))
+    assert serving_hours(date(2026, 9, 19), "dinner") == (time(16, 30), time(18, 30))
+    assert serving_hours(date(2026, 9, 20), "lunch") == (time(11, 30), time(14, 0))
+    assert serving_hours(date(2026, 9, 20), "dinner") == (time(17, 0), time(19, 30))
+
+
+def test_all_day_stations_have_no_serving_hours() -> None:
+    assert serving_hours(date(2026, 9, 16), "anytime") is None
+
+
+def test_hours_read_like_the_posted_sign() -> None:
+    assert format_hours(time(10, 30), time(14, 30)) == "10:30am–2:30pm"
+    assert format_hours(time(7, 0), time(9, 30)) == "7am–9:30am"
+    assert format_hours(time(11, 0), time(13, 0)) == "11am–1pm"
 
 
 def test_nothing_left_in_the_payload_is_not_an_error(menus: tuple[DayMenu, ...]) -> None:

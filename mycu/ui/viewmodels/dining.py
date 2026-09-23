@@ -13,12 +13,19 @@ from PySide6.QtCore import (
     Property,
     Qt,
     Signal,
+    QTimer,
     Slot,
 )
 
 from ...core.errors import ParseError, TransportError
 from ...core.models import HOME_COOKING, DayMenu, MealPlan, MealTransaction
-from ...core.providers.dining import DEFAULT_DAYS, DiningProvider, next_meal_block
+from ...core.providers.dining import (
+    DEFAULT_DAYS,
+    DiningProvider,
+    format_hours,
+    next_meal_block,
+    serving_hours,
+)
 from ...core.providers.meals import MealsProvider
 from ..tasks import run_in_background
 
@@ -28,6 +35,10 @@ log = logging.getLogger(__name__)
 #: costs one request per week travelled rather than one per tap, and a week of
 #: menus is about a hundred kilobytes.
 WINDOW_DAYS = 7
+
+#: How often the summary card re-checks the clock, in milliseconds. A sitting
+#: ends on the minute, so this keeps the switchover within half a minute of it.
+NEXT_MEAL_CHECK_MS = 30_000
 
 
 class MenuListModel(QAbstractListModel):
@@ -222,6 +233,17 @@ class DiningViewModel(QObject):
         # clock is a seam. Without it the test for "after dinner, show
         # tomorrow's breakfast" could only be run after dinner.
         self._now = datetime.now
+
+        # Loads are not the only thing that moves the next sitting on — the
+        # clock does too. An app left open through 9:30 should flip from
+        # breakfast to lunch without being refreshed. Repeating rather than
+        # aimed at the next cutoff, so a phone waking from sleep catches up on
+        # the first tick instead of trusting a deadline it slept through.
+        self._next_meal_timer = QTimer(self)
+        self._next_meal_timer.setInterval(NEXT_MEAL_CHECK_MS)
+        self._next_meal_timer.timeout.connect(self._tick)
+        self._next_meal_timer.start()
+
         self._busy = False
         self._error = ""
         self._loaded = False
@@ -467,6 +489,18 @@ class DiningViewModel(QObject):
         return self._next_meal_on.strftime("%A")
 
     @Property(str, notify=changed)
+    def nextMealHours(self) -> str:
+        """"10:30am–2:30pm" — that day's serving window, or "".
+
+        Read off the sitting's own date, so tomorrow's breakfast on a Saturday
+        says "8am–9am", not the weekday hours.
+        """
+        if self._next_meal_block is None or self._next_meal_on is None:
+            return ""
+        hours = serving_hours(self._next_meal_on, self._next_meal_block.slot)
+        return format_hours(*hours) if hours else ""
+
+    @Property(str, notify=changed)
     def nextMealVenue(self) -> str:
         return self._next_meal_block.venue if self._next_meal_block else HOME_COOKING
 
@@ -615,7 +649,25 @@ class DiningViewModel(QObject):
         refresh rather than cached: an app left open over lunch should be
         showing dinner by the time you look at it again.
         """
+        self._apply_next_meal(next_meal_block(self._menus, self._now()))
+
+    @Slot()
+    def _tick(self) -> None:
+        """Re-pick the next sitting off the clock, and speak up only if it moved.
+
+        Runs every :data:`NEXT_MEAL_CHECK_MS`, so it must not reset the model
+        when nothing changed — that would rebuild the card's list twice a
+        minute for no reason.
+        """
         found = next_meal_block(self._menus, self._now())
+        if found == (self._next_meal_on, self._next_meal_block) or (
+            found is None and self._next_meal_block is None
+        ):
+            return
+        self._apply_next_meal(found)
+        self.changed.emit()
+
+    def _apply_next_meal(self, found) -> None:
         if found is None:
             self._next_meal_on, self._next_meal_block = None, None
             self._next_meal.replace_items(())
