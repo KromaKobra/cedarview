@@ -9,7 +9,7 @@
 //
 //   ribbon header      logo, wordmark, refresh, overflow — always visible
 //   StackLayout
-//     0 — the app: three tabs behind a bottom bar
+//     0 — the app: four tabs behind a bottom bar
 //     1 — the web surface, shown ONLY during an interactive sign-in
 //
 // During normal operation the browser is invisible: it is an implementation
@@ -234,6 +234,7 @@ ApplicationWindow {
                 SummaryView {}
                 ChapelView {}
                 DiningView {}
+                ChucksView {}
             }
 
             // ---- Bottom bar --------------------------------------------
@@ -276,6 +277,14 @@ ApplicationWindow {
                         kind: "dining"
                         selected: window.currentPage === 2
                         onClicked: window.currentPage = 2
+                    }
+
+                    NavButton {
+                        Layout.fillWidth: true
+                        text: "Chucks"
+                        kind: "chucks"
+                        selected: window.currentPage === 3
+                        onClicked: window.currentPage = 3
                     }
                 }
             }

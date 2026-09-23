@@ -19,7 +19,8 @@ import QtQuick
 Canvas {
     id: glyph
 
-    //: "tree" | "refresh" | "summary" | "chapel" | "dining"
+    //: "tree" | "refresh" | "summary" | "chapel" | "dining" | "chucks"
+    //: | "chevronLeft" | "chevronRight"
     //: "tree" is no longer drawn anywhere — the header uses icon.png now — but
     //: it stays as the fallback mark for anywhere an image would be wrong.
     property string kind: "tree"
@@ -50,6 +51,9 @@ Canvas {
         case "summary": paintSummary(ctx, w, h); break
         case "chapel":  paintChapel(ctx, w, h);  break
         case "dining":  paintDining(ctx, w, h);  break
+        case "chucks":  paintChucks(ctx, w, h);  break
+        case "chevronLeft":  paintChevron(ctx, w, h, -1); break
+        case "chevronRight": paintChevron(ctx, w, h, 1);  break
         }
     }
 
@@ -172,6 +176,40 @@ Canvas {
         ctx.beginPath()
         ctx.moveTo(0.69 * w, 0.44 * h)
         ctx.lineTo(0.69 * w, 0.90 * h)
+        ctx.stroke()
+    }
+
+    // ---- Chucks: a serving cloche on its tray -----------------------------
+    // Not a second fork and knife: Dining sits beside it in the tab bar, and
+    // two tabs with the same picture are two tabs you have to read.
+    function paintChucks(ctx, w, h) {
+        // The dome, filled: a half-disc standing on the tray.
+        ctx.beginPath()
+        ctx.arc(0.50 * w, 0.72 * h, 0.36 * w, Math.PI, 2 * Math.PI, false)
+        ctx.closePath()
+        ctx.fill()
+
+        // The knob on top.
+        ctx.beginPath()
+        ctx.arc(0.50 * w, 0.27 * h, 0.07 * Math.min(w, h), 0, 2 * Math.PI, false)
+        ctx.fill()
+
+        // The tray, a touch wider than the dome.
+        ctx.lineWidth = 0.09 * Math.min(w, h)
+        ctx.beginPath()
+        ctx.moveTo(0.06 * w, 0.84 * h)
+        ctx.lineTo(0.94 * w, 0.84 * h)
+        ctx.stroke()
+    }
+
+    // ---- Chevrons: day paging on the Chucks tab ---------------------------
+    // `dir` is -1 for left, 1 for right; one drawing mirrored about the middle.
+    function paintChevron(ctx, w, h, dir) {
+        ctx.lineWidth = 0.13 * Math.min(w, h)
+        ctx.beginPath()
+        ctx.moveTo((0.5 - 0.12 * dir) * w, 0.18 * h)
+        ctx.lineTo((0.5 + 0.18 * dir) * w, 0.50 * h)
+        ctx.lineTo((0.5 - 0.12 * dir) * w, 0.82 * h)
         ctx.stroke()
     }
 }

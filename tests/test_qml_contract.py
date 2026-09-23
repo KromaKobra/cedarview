@@ -86,7 +86,7 @@ def test_the_refresh_gesture_reaches_every_source_on_the_screen() -> None:
     the meals-left and dollar figures loaded once at sign-in and never moved
     again, no matter how hard you pulled.
     """
-    for name in ("Main.qml", "ChapelView.qml", "DiningView.qml", "SummaryView.qml"):
+    for name in ("Main.qml", "ChapelView.qml", "DiningView.qml", "ChucksView.qml", "SummaryView.qml"):
         source = COMMENT_RE.sub("", (QML_DIR / name).read_text(encoding="utf-8"))
         for vm_name in VIEWMODELS:
             assert not re.search(rf"\b{vm_name}\.refresh\(\)", source), (

@@ -375,6 +375,146 @@ def test_tomorrows_breakfast_says_so(dvm: DiningViewModel) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Paging through days (the Chucks tab)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture
+def fetches(monkeypatch: pytest.MonkeyPatch) -> list:
+    """Every background fetch the dining viewmodel starts, never run.
+
+    Each entry is ``(provider, on_done, on_error)``; a test answers one by
+    calling its handler, the same way the rest of this file calls ``_on_loaded``.
+    """
+    calls: list = []
+
+    def capture(fn, on_done, on_error) -> None:
+        calls.append((fn.__self__, on_done, on_error))
+
+    monkeypatch.setattr("mycu.ui.viewmodels.dining.run_in_background", capture)
+    return calls
+
+
+def _home(on: date, *dishes: str) -> DayMenu:
+    return DayMenu(on=on, blocks=(
+        MenuBlock(venue=HOME_COOKING, meal="Lunch", slot="lunch",
+                  items=tuple(MenuItem(name=d) for d in dishes)),
+    ))
+
+
+def _texts(vm: DiningViewModel) -> list[str]:
+    model = vm.items
+    return [model.data(model.index(r, 0), MenuListModel.TextRole)
+            for r in range(model.rowCount())]
+
+
+TODAY = date.today()
+
+
+def test_paging_back_fetches_the_week_ending_on_that_day(
+    dvm: DiningViewModel, fetches: list,
+) -> None:
+    dvm._on_loaded((_home(TODAY, "Bratwurst"),))
+    assert fetches == []
+
+    dvm.previousDay()
+
+    assert dvm.dayOffset == -1
+    assert dvm.dateText == "Yesterday"
+    assert dvm.dayLoading is True
+    assert dvm.dayEmptyText == "Loading the menu…"
+    (provider, done, _), = fetches
+    assert provider.start == TODAY - timedelta(days=7)
+    assert provider.days == 7
+
+
+def test_a_fetched_window_fills_the_day_and_serves_the_rest_of_the_week(
+    dvm: DiningViewModel, fetches: list,
+) -> None:
+    dvm._on_loaded((_home(TODAY, "Bratwurst"),))
+    dvm.previousDay()
+    _, done, _ = fetches[0]
+
+    done((_home(TODAY - timedelta(days=1), "Tacos"),
+          _home(TODAY - timedelta(days=2), "Lasagna")))
+
+    assert _texts(dvm) == ["Lunch", "Tacos"]
+    assert dvm.dayLoading is False
+    dvm.previousDay()
+    assert _texts(dvm) == ["Lunch", "Lasagna"]
+    assert len(fetches) == 1
+
+
+def test_paging_forward_past_the_week_fetches_from_that_day(
+    dvm: DiningViewModel, fetches: list,
+) -> None:
+    dvm._on_loaded((_home(TODAY, "Bratwurst"),))
+    for _ in range(7):
+        dvm.nextDay()
+
+    (provider, _, _), = fetches
+    assert provider.start == TODAY + timedelta(days=7)
+
+
+def test_a_day_with_nothing_posted_says_so(dvm: DiningViewModel, fetches: list) -> None:
+    dvm._on_loaded((DayMenu(on=TODAY, blocks=(
+        MenuBlock(venue="No Venues Found", meal="", slot="anytime", items=()),
+    )),))
+    assert dvm.items.rowCount() == 0
+    assert dvm.dayEmptyText == "Nothing posted for Home Cooking on this day."
+    assert fetches == []
+
+
+def test_a_failed_window_is_reported_on_its_own_day_only(
+    dvm: DiningViewModel, fetches: list,
+) -> None:
+    dvm._on_loaded((_home(TODAY, "Bratwurst"),))
+    dvm.previousDay()
+    _, _, failed = fetches[0]
+
+    failed(TransportError("timed out"))
+
+    assert "Couldn't reach the dining menu service" in dvm.dayEmptyText
+    assert dvm.error == ""  # the summary card's menu is unaffected
+
+    dvm.goToToday()
+    assert dvm.isToday is True
+    assert _texts(dvm) == ["Lunch", "Bratwurst"]
+    assert dvm.dayEmptyText == ""
+
+
+def test_going_back_to_a_failed_day_tries_again(dvm: DiningViewModel, fetches: list) -> None:
+    dvm._on_loaded((_home(TODAY, "Bratwurst"),))
+    dvm.previousDay()
+    fetches[0][2](TransportError("timed out"))
+
+    dvm.nextDay()
+    dvm.previousDay()
+
+    assert len(fetches) == 2
+    assert dvm.dayEmptyText == "Loading the menu…"
+
+
+def test_a_refresh_refetches_a_paged_day_rather_than_keeping_it(
+    dvm: DiningViewModel, fetches: list,
+) -> None:
+    dvm._on_loaded((_home(TODAY, "Bratwurst"),))
+    dvm.previousDay()
+    fetches[0][1]((_home(TODAY - timedelta(days=1), "Tacos"),))
+
+    dvm._on_loaded((_home(TODAY, "Bratwurst"),))
+
+    assert len(fetches) == 2
+    assert fetches[1][0].start == TODAY - timedelta(days=1)
+
+
+def test_a_distant_day_names_its_year() -> None:
+    vm = DiningViewModel(None)
+    vm._offset = (date(TODAY.year - 1, 9, 1) - TODAY).days
+    assert vm.dateDetail.endswith(f", {TODAY.year - 1}")
+    assert vm.dateDetail.startswith(date(TODAY.year - 1, 9, 1).strftime("%A, September 1"))
+
+
+# ---------------------------------------------------------------------------
 # Recent activity (the Dining tab)
 # ---------------------------------------------------------------------------
 

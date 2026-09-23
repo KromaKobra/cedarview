@@ -41,7 +41,22 @@ a sitting, and ``null`` for all-day stations, which carry ``slot: "anytime"``
 instead.
 
 ``days=N`` was tested at 1, 7 and 14 and returns exactly N dates starting
-today. There is also a ``refresh=1`` parameter, which the site's own script
+today. The server caps it at 31: ``days=60``, ``120`` and ``365`` all come back
+with 31 dates (about half a megabyte).
+
+``start=YYYY-MM-DD`` moves the first date, in either direction. The site's own
+script never sends it, but it was verified on 2026-09-22 against dates from
+2025-09-01 to 2026-11-15, all of which returned real menus. It is what lets
+the Chucks tab page back to last week or forward past the 31-day cap.
+
+A date with nothing posted — a holiday, a break, or simply too far out — is
+not an error. It comes back HTTP 200 with a single placeholder block::
+
+    {"2026-12-25": [{"venue": "No Venues Found", "meal": null,
+                     "slot": "anytime", "items": []}]}
+
+which parses like any other block and is dropped by
+:meth:`~mycu.core.models.DayMenu.for_venue`, leaving an empty day. There is also a ``refresh=1`` parameter, which the site's own script
 uses hourly; this provider never sends it, because it appears to force an
 upstream refetch from Pioneer College Caterers (``my.pcconline.com``) and there
 is no reason for a personal app to make someone else's server work harder.
@@ -70,17 +85,22 @@ DEFAULT_DAYS = 7
 
 
 class DiningProvider(Provider[tuple[DayMenu, ...]]):
-    """Menus for the next ``days`` days, oldest first."""
+    """Menus for ``days`` days from ``start`` (default today), oldest first."""
 
     label = "Dining"
 
-    def __init__(self, transport, days: int = DEFAULT_DAYS) -> None:
+    def __init__(self, transport, days: int = DEFAULT_DAYS, start: date | None = None) -> None:
         super().__init__(transport)
         self.days = max(1, int(days))
+        #: First date to ask for; ``None`` leaves it to the server, which means today.
+        self.start = start
 
     @property
     def path(self) -> str:  # type: ignore[override]
-        return f"{DINING_PATH}?days={self.days}"
+        path = f"{DINING_PATH}?days={self.days}"
+        if self.start is not None:
+            path += f"&start={self.start.isoformat()}"
+        return path
 
     def parse(self, response: Response) -> tuple[DayMenu, ...]:
         return parse_menus(response.json())
@@ -198,8 +218,8 @@ def home_cooking_for(days: "tuple[DayMenu, ...]", on: date | None = None) -> tup
     """Home Cooking's breakfast, lunch and dinner for one date.
 
     Defaults to today. Returns an empty tuple if that date is not in the
-    payload — which happens legitimately: the API only serves forward from
-    today, so asking about yesterday gets you nothing.
+    payload — which happens legitimately: the payload covers only the window
+    that was asked for.
     """
     target = on or date.today()
     for day in days:
@@ -218,7 +238,7 @@ def home_cooking_for(days: "tuple[DayMenu, ...]", on: date | None = None) -> tup
 #: the more annoying of the two failures.
 #:
 #: They affect *which menu is shown first* and nothing else. The full day is on
-#: the Dining tab either way, so a wrong guess here costs a tap, not a meal.
+#: the Chucks tab either way, so a wrong guess here costs a tap, not a meal.
 SERVING_ENDS = {
     "breakfast": time(10, 30),
     "lunch": time(16, 0),

@@ -323,8 +323,8 @@ Item {
                             }
 
                             // Dish names only. The allergen list is still on the
-                            // model (`allergens`, for the Dining tab when it is
-                            // built) but it is not what this card is for: this
+                            // model (`allergens`, which the Chucks tab shows)
+                            // but it is not what this card is for: this
                             // is the glance that tells you whether to walk over
                             // to The Commons, and a grey second line under every
                             // item turned four dishes into eight lines of text.

@@ -1,4 +1,4 @@
-"""Dining: the Home Cooking menu (Summary card) and meal-plan balances and activity (Summary and Dining tabs)."""
+"""Dining: the Home Cooking menu (Summary card and Chucks tab) and meal-plan balances and activity (Summary and Dining tabs)."""
 
 from __future__ import annotations
 
@@ -23,6 +23,11 @@ from ...core.providers.meals import MealsProvider
 from ..tasks import run_in_background
 
 log = logging.getLogger(__name__)
+
+#: How many days one Chucks-tab fetch asks for. Paging a day at a time then
+#: costs one request per week travelled rather than one per tap, and a week of
+#: menus is about a hundred kilobytes.
+WINDOW_DAYS = 7
 
 
 class MenuListModel(QAbstractListModel):
@@ -163,16 +168,27 @@ def _clock(when: datetime) -> str:
     return f"{hour}:{when.minute:02d} {'AM' if when.hour < 12 else 'PM'}"
 
 
+def _menu_error_text(exc: object) -> str:
+    if isinstance(exc, ParseError):
+        return "The dining menu feed changed shape."
+    if isinstance(exc, TransportError):
+        return f"Couldn't reach the dining menu service: {exc}"
+    return f"Unexpected error: {exc}"
+
+
 def _count(n: int, noun: str) -> str:
     return f"{n} {noun}" if n == 1 else f"{n} {noun}s"
 
 
 class DiningViewModel(QObject):
-    """State and actions for the dining screen.
+    """State and actions for the dining screens.
 
-    Fetches a week at a time and pages through it locally — the payload is
-    small, the menu does not change minute to minute, and a request per day
-    would be rude to a service that is reformatting someone else's data.
+    :meth:`refresh` fetches the week from today, which is what the summary
+    card's next sitting is picked from. The Chucks tab pages through any date
+    at all: days already fetched are served from :attr:`_by_date`, and a date
+    that is not there is fetched with the week around it (:data:`WINDOW_DAYS`)
+    — the menu does not change minute to minute, and a request per tap would be
+    rude to a service that is reformatting someone else's data.
     """
 
     changed = Signal()
@@ -185,8 +201,17 @@ class DiningViewModel(QObject):
         self._menus: tuple[DayMenu, ...] = ()
         self._offset = 0
 
+        # Every day fetched so far, by date — what the Chucks tab reads. Kept
+        # apart from `_menus`, which stays the week from today because the
+        # summary card needs it wherever the tab has paged to.
+        self._by_date: dict[date, DayMenu] = {}
+        # Dates a window fetch has been sent for and not answered, so tapping
+        # back three times in a row sends one request rather than three.
+        self._pending: set[date] = set()
+        self._day_error = ""
+
         # The one sitting the summary screen shows, picked off the clock. A
-        # second model rather than a filtered view of the first: the Dining tab
+        # second model rather than a filtered view of the first: the Chucks tab
         # pages through days independently, and the summary must keep showing
         # the next meal while it does.
         self._next_meal = MenuListModel(self)
@@ -239,7 +264,7 @@ class DiningViewModel(QObject):
 
     @Property(str, notify=changed)
     def dateText(self) -> str:
-        """"Today", "Tomorrow", or a spelled-out date.
+        """"Today", "Tomorrow", "Yesterday", or a short date.
 
         Built by hand rather than with ``%-d``: the no-pad strftime flag is a
         glibc extension that Android's bionic libc does not have.
@@ -249,24 +274,51 @@ class DiningViewModel(QObject):
             return "Today"
         if self._offset == 1:
             return "Tomorrow"
+        if self._offset == -1:
+            return "Yesterday"
         return f"{day.strftime('%a %b')} {day.day}"
+
+    @Property(str, notify=changed)
+    def dateDetail(self) -> str:
+        """"Tuesday, September 22", with the year only when it is not this one."""
+        day = self._selected_date()
+        text = f"{day.strftime('%A, %B')} {day.day}"
+        if day.year != date.today().year:
+            text += f", {day.year}"
+        return text
 
     @Property(int, notify=changed)
     def dayOffset(self) -> int:
         return self._offset
 
     @Property(bool, notify=changed)
-    def canGoBack(self) -> bool:
-        return self._offset > 0
+    def isToday(self) -> bool:
+        return self._offset == 0
 
     @Property(bool, notify=changed)
-    def canGoForward(self) -> bool:
-        """Whether another day is actually in the payload.
+    def dayLoading(self) -> bool:
+        """Whether the selected day is on its way — by window fetch or refresh."""
+        target = self._selected_date()
+        return target in self._pending or (self._busy and target not in self._by_date)
 
-        The API serves forward from today only, so paging past the end would
-        show a blank screen and look broken.
+    @Property(str, notify=changed)
+    def dayEmptyText(self) -> str:
+        """Why the selected day has no menu, or "" when it has one.
+
+        There is no "can't go further" here: which days are posted is not known
+        until they are asked for, and the gaps (breaks, holidays) are in the
+        middle as well as at the ends. So every day can be paged to, and one
+        with nothing on it says so.
         """
-        return any(d.on > self._selected_date() for d in self._menus)
+        if self._model.rowCount():
+            return ""
+        if self.dayLoading:
+            return "Loading the menu…"
+        if self._day_error:
+            return self._day_error
+        if self._selected_date() not in self._by_date and self._error:
+            return self._error
+        return f"Nothing posted for {HOME_COOKING} on this day."
 
     # ------------------------------------------------------------------
 
@@ -470,30 +522,90 @@ class DiningViewModel(QObject):
 
     @Slot()
     def nextDay(self) -> None:
-        if self.canGoForward:
-            self._offset += 1
-            self._rebuild()
+        self._move_to(self._offset + 1)
 
     @Slot()
     def previousDay(self) -> None:
-        if self.canGoBack:
-            self._offset -= 1
-            self._rebuild()
+        self._move_to(self._offset - 1, backward=True)
+
+    @Slot()
+    def goToToday(self) -> None:
+        self._move_to(0)
 
     # ------------------------------------------------------------------
 
     def _selected_date(self) -> date:
         return date.today() + timedelta(days=self._offset)
 
-    def _rebuild(self) -> None:
+    def _move_to(self, offset: int, backward: bool = False) -> None:
+        if offset == self._offset:
+            return
+        self._offset = offset
+        self._day_error = ""
+        self._rebuild(backward)
+
+    def _rebuild(self, backward: bool = False) -> None:
         target = self._selected_date()
-        blocks = ()
-        for day in self._menus:
-            if day.on == target:
-                blocks = day.for_venue(HOME_COOKING)
-                break
-        self._model.replace_from_blocks(blocks)
+        day = self._by_date.get(target)
+        self._model.replace_from_blocks(day.for_venue(HOME_COOKING) if day else ())
+        self._ensure_selected_loaded(backward)
         self._rebuild_next_meal()
+        self.changed.emit()
+
+    def _ensure_selected_loaded(self, backward: bool) -> None:
+        """Fetch the week around the selected day, if nothing has it yet.
+
+        The window extends in the direction of travel — back from the target
+        when paging backwards — so the next six taps that way are free.
+        """
+        target = self._selected_date()
+        if target in self._by_date or target in self._pending:
+            return
+
+        today = date.today()
+        if self._busy and today <= target < today + timedelta(days=self._days):
+            return  # the refresh in flight covers it
+
+        start = target - timedelta(days=WINDOW_DAYS - 1) if backward else target
+        window = {
+            d for d in (start + timedelta(days=i) for i in range(WINDOW_DAYS))
+            if d not in self._by_date
+        }
+        self._pending |= window
+        self._day_error = ""
+
+        provider = DiningProvider(self._transport, days=WINDOW_DAYS, start=start)
+        run_in_background(
+            provider.fetch,
+            lambda menus: self._on_window_loaded(window, menus),
+            lambda exc: self._on_window_failed(window, exc),
+        )
+
+    def _store(self, dates, menus) -> None:
+        """Cache ``menus``, and an empty day for any of ``dates`` it lacks.
+
+        The server answers every date it is asked for, but if it ever skipped
+        one, leaving the gap uncached would have :meth:`_rebuild` ask for it
+        again on every rebuild.
+        """
+        for day in menus:
+            self._by_date[day.on] = day
+        for on in dates:
+            self._by_date.setdefault(on, DayMenu(on=on, blocks=()))
+
+    def _on_window_loaded(self, window: set[date], menus: object) -> None:
+        self._pending -= window
+        self._store(window, menus)
+        log.info("dining: %d days paged in from %s", len(window), min(window))
+        self._rebuild()
+
+    def _on_window_failed(self, window: set[date], exc: object) -> None:
+        # No rebuild here: it would retry at once, and a retry loop against a
+        # service that is down helps nobody. Paging away and back retries.
+        self._pending -= window
+        if self._selected_date() in window:
+            self._day_error = _menu_error_text(exc)
+        log.error("dining window from %s failed: %r", min(window), exc)
         self.changed.emit()
 
     def _rebuild_next_meal(self) -> None:
@@ -524,17 +636,17 @@ class DiningViewModel(QObject):
         self._busy = False
         self._loaded = True
         self._error = ""
+        # A refresh starts the cache over, so a day paged to earlier is
+        # fetched again when next shown rather than served stale forever.
+        today = date.today()
+        self._by_date = {}
+        self._store((today + timedelta(days=i) for i in range(self._days)), self._menus)
         log.info("dining: %d days loaded", len(self._menus))
         self._rebuild()
 
     @Slot(object)
     def _on_failed(self, exc: object) -> None:
         self._busy = False
-        if isinstance(exc, ParseError):
-            self._error = "The dining menu feed changed shape."
-        elif isinstance(exc, TransportError):
-            self._error = f"Couldn't reach the dining menu service: {exc}"
-        else:
-            self._error = f"Unexpected error: {exc}"
+        self._error = _menu_error_text(exc)
         log.error("dining refresh failed: %r", exc)
         self.changed.emit()

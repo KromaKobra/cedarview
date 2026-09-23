@@ -256,6 +256,24 @@ def test_provider_requests_the_days_it_was_asked_for() -> None:
     assert DiningProvider(None, days=3).path.endswith("?days=3")
 
 
+def test_provider_asks_for_a_start_date_only_when_given_one() -> None:
+    assert "start" not in DiningProvider(None, days=7).path
+    assert DiningProvider(None, days=7, start=date(2026, 9, 1)).path.endswith(
+        "?days=7&start=2026-09-01"
+    )
+
+
+def test_a_day_with_nothing_posted_parses_to_an_empty_home_cooking() -> None:
+    """The server's "No Venues Found" placeholder, verbatim from 2026-12-25."""
+    days = parse_menus({
+        "2026-12-25": [
+            {"venue": "No Venues Found", "meal": None, "slot": "anytime", "items": []}
+        ]
+    })
+    assert days[0].on == date(2026, 12, 25)
+    assert days[0].for_venue(HOME_COOKING) == ()
+
+
 def test_days_is_clamped_to_something_sane() -> None:
     assert DiningProvider(None, days=0).days == 1
     assert DiningProvider(None, days=-5).days == 1

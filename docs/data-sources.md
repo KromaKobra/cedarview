@@ -27,7 +27,18 @@ GET https://diningdata.cedarville.edu/api/menus?days=N
 
 **Unauthenticated.** The dining site's own script fetches it with
 `credentials: "omit"`, so there is no session to have. Verified `days=1`, `7`
-and `14`; returns exactly N dates starting today.
+and `14`; returns exactly N dates starting today. The server caps `days` at
+**31** (`60`, `120` and `365` all return 31 dates, ~500 KB).
+
+**`start=YYYY-MM-DD`** (undocumented; the site's `menu.js` never sends it) moves
+the first date in either direction. Verified 2026-09-22 against dates from
+2025-09-01 through 2026-11-15 — all real menus. The Chucks tab pages with it, a
+week per request. A date with nothing posted (holidays, breaks, far future) is
+HTTP 200 with one placeholder block:
+
+```json
+{"2026-12-25": [{"venue": "No Venues Found", "meal": null, "slot": "anytime", "items": []}]}
+```
 
 ```json
 {"2026-09-16": [{"venue": "Home Cooking", "meal": "Breakfast",

@@ -10,7 +10,7 @@ import QtQuick.Controls
 AbstractButton {
     id: nav
 
-    //: One of Glyph's kinds — "summary", "chapel", "dining".
+    //: One of Glyph's kinds — "summary", "chapel", "dining", "chucks".
     property string kind
     property bool selected: false
 
