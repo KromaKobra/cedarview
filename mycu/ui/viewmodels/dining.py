@@ -193,7 +193,7 @@ class DiningViewModel(QObject):
 
     @Property(str, notify=changed)
     def diningDollars(self) -> str:
-        """Meal Plan Dining Dollars — these **expire at the end of term**."""
+        """The plan's own dollars ("Flex Dollars" on the page) — these **expire at the end of term**."""
         return MealPlan.money(self._plan.dining_dollars)
 
     @Property(str, notify=changed)
@@ -217,10 +217,9 @@ class DiningViewModel(QObject):
 
     @Property(str, notify=changed)
     def planDescription(self) -> str:
-        """"Weekly meal plan" / "Semester meal plan" / "".
+        """"21 Meals per week" / "Block 120" / "Weekly meal plan" / "".
 
-        Not the plan's *name*: Self-Service's meal-plan page never states it.
-        This is what the page does support — which cycle the meals run on.
+        See :attr:`MealPlan.plan_description`.
         """
         return self._plan.plan_description
 

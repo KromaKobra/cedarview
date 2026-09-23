@@ -148,7 +148,7 @@ Item {
                             Layout.alignment: Qt.AlignBottom
                             Layout.bottomMargin: 5
                             visible: chapel.allowed >= 0
-                            text: "of " + chapel.allowed + " this semester"
+                            text: "/ " + chapel.allowed + " this semester"
                             color: theme.muted
                             font.pixelSize: 12
                         }
@@ -188,8 +188,8 @@ Item {
                 font.letterSpacing: 1.2
             }
 
-            // Two balances, side by side and never added together. Meal Plan
-            // Dining Dollars expire at the end of the term; purchased
+            // Two balances, side by side and never added together. The plan's
+            // own Flex Dollars expire at the end of the term; purchased
             // Voluntary Flex Dollars do not. Each keeps its expiry on screen
             // underneath it, because that is the whole difference between them.
             RowLayout {
@@ -228,9 +228,8 @@ Item {
 
                         Label {
                             Layout.fillWidth: true
-                            // Self-Service never states the plan's name — only
-                            // which cycle the count runs on. Saying "14 Meals
-                            // per week" would be inventing the number.
+                            // The plan's name from Self-Service ("21 Meals per
+                            // week"), or just its cycle when no name came back.
                             text: dining.planDescription.length > 0
                                   ? dining.planDescription
                                   : "Meal plan"

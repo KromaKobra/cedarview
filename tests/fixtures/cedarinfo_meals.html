@@ -1,29 +1,274 @@
 <!DOCTYPE html>
-<!--
-  TRIMMED REAL CAPTURE — selfservice.cedarville.edu/Cedarinfo/Meals, 2026-09-17.
-  Name scrubbed to "Sample Student"; prox card ID scrubbed to 0000.
-  Balances kept verbatim: they ARE the thing being parsed.
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Meal Plan Info</title>
+</head>
+<body>
+<!-- Trimmed from a signed-in capture of selfservice.cedarville.edu/Cedarinfo/Meals,
+     2026-09-22 (scripts/discover meals). Site chrome, analytics and the side
+     cards are cut; the Vue mount element and the script that loads the
+     balances are verbatim apart from the person ID, scrubbed to 0000000. -->
+<script type="text/javascript">
+    var basepath = "/CedarInfo/";
+</script>
+<cu-root-styles measure="100%"></cu-root-styles>
 
-  The full page is ~35 KB of Cedarville chrome and meal-plan marketing copy.
-  Everything the provider reads is in this one <fieldset>. Note: there is no
-  <table> anywhere on the page — the numbers are prose, wrapped in <strong>.
-  Note also that the Voluntary Flex paragraph contains a SECOND <strong> ("do
-  not"), so "the first <strong> in the paragraph" is the only safe rule.
--->
-<html lang="en"><head><title>Meal Plan Info</title></head><body>
-<div class="container">
-<fieldset>
-            <legend><strong>Meal Plan Information</strong></legend>
-            <h5>Sample Student</h5>
-            <div style="padding: 1em; padding-left: 1em;">
+
+<cu-container id="app" stack padding="0" space="var(--s0, 2rem)"
+              data-target-id="0000000"
+              data-target-card=""
+              data-is-admin="0">
+
+
+    <div class="meals-layout">
+        <div class="meals-main">
+
+            <p v-if="loading" class="meals-loading">
+                <cu-icon icon="spinner-part" size="xl" fore-color="var(--primary-color)" back-color="none" spin></cu-icon>
+                Loading your meal plan&hellip;
+            </p>
+
+            <cu-alert v-if="!loading &amp;&amp; loadError" variant="danger">{{ loadError }}</cu-alert>
+
+            <template v-if="!loading &amp;&amp; data">
+
+                <cu-alert v-if="data.Status === 'error'" variant="danger">{{ data.Message }}</cu-alert>
+
+                <div v-else-if="data.Status === 'no_card'" class="meals-card">
+                    <h3>No ID Card on Record</h3>
+                    <p>{{ data.Message }}</p>
+                    <p>
+                        New students must pick up their Cedarville ID card from Campus Security
+                        before they can use a meal plan.
+                    </p>
+                </div>
+
+                <div v-else-if="!data.Found" class="meals-card">
+                    <h3>No Meal Plan On File</h3>
+                    <p>
+                        Your meal plan information may appear here after meal plans have been
+                        loaded for the current academic term.
+                    </p>
+                    <p>
+                        If you&rsquo;ve recently received a new ID card, you may see this message
+                        until Pioneer College Caterers updates the information in their system.
+                    </p>
+                </div>
+
+                <template v-else>
+                    <div class="meals-card">
+                        <h3>Current Balances</h3>
+                        <p v-if="data.PlanName" class="meals-plan">
+                            Meal plan: <strong>{{ data.PlanName }}</strong>
+                        </p>
+                        <div class="meals-tiles">
+                            <div v-for="tender in data.Balances" :key="tender.Name" class="meals-tile">
+                                <div class="meals-tile-value">{{ tenderAmount(tender) }}</div>
+                                <div class="meals-tile-label">{{ tender.Name }}</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="meals-card">
+                        <h3>Recent Activity</h3>
+                        <p v-if="!data.RecentTransactions.length" class="meals-none">
+                            <em>No recent activity on this card.</em>
+                        </p>
+                        <cu-data-table v-if="activityRows"
+                                       id="mealsActivityTable"
+                                       caption="Recent meal plan activity"
+                                       :headers="activityHeaders"
+                                       :data="activityRows"
+                                       condensed
+                                       paginate
+                                       per-page="15"
+                                       scroll-offset="-120">
+                        </cu-data-table>
+                    </div>
+                </template>
+            </template>
+        </div>
+
+        <div class="meals-side">
+            <div class="meals-card">
+                <h4>Changing Your Meal Plan</h4>
                 <p>
-                    You have <strong>19</strong> meal(s) remaining in your meal plan for the current week.
+                    Meal plan changes are managed through Erezlife.
+                    <a href="https://cedarville.erezlife.com" target="_blank" rel="noopener">Visit Erezlife</a>
+                    to make changes to your meal plan.
                 </p>
-                <p>You have <strong>$112.08</strong> remaining in Meal Plan Dining Dollars. These dollars expire at the <span style="color:red;">end of the current term</span>, so use them!</p>
-                <p>You have <strong>$0.00</strong> remaining in purchased Voluntary Flex Dollars. These dollars <strong>do not</strong> expire at the end of the current term.</p>
-                <p>
-                    Your Prox Card ID: <strong>0000          </strong>                 </p>
             </div>
-        </fieldset>
-</div>
-</body></html>
+
+            <div class="meals-card">
+                <h4>Restricted Meal Plan &ndash; Block 120</h4>
+                <p>Block 120 meal plans may only be chosen for the following reasons:</p>
+                <ul>
+                    <li>Living off campus, in a townhouse, or commuting.</li>
+                    <li>Dietary restrictions confirmed with a doctor&rsquo;s note.</li>
+                    <li>Academic requirements such as clinicals, student teaching, or required off-campus internships.</li>
+                </ul>
+                <p>
+                    If you meet one of these qualifications you may apply. You will be notified by
+                    email whether your request has been granted.
+                </p>
+                <cu-button slim variant="primary"
+                           href="https://cedarville.kualibuild.com/app/67083d18a01e32014d76becf/run"
+                           target="_blank">
+                    Apply for a Block 120 Plan
+                </cu-button>
+            </div>
+
+            <div class="meals-card">
+                <h4>Questions?</h4>
+                <p>
+                    See
+                    <a href="https://www.cedarville.edu/offices/cashiers/meal-plan" target="_blank" rel="noopener">detailed descriptions of each plan</a>
+                    on the Cashier&rsquo;s Office website.
+                </p>
+                <p>
+                    For questions about this information, contact Pioneer College Caterers on
+                    campus at <a href="tel:+19377667890">(937) 766-7890</a>.
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <cu-action-bar padding="0" border-width="0" light-color="transparent">
+        <cu-button slim variant="secondary" href="/cedarinfo">
+            <cu-icon icon="arrow-left"></cu-icon> Back to MyCU
+        </cu-button>
+    </cu-action-bar>
+</cu-container>
+
+<script type="module">
+    import { escapeHtml, getJson, debounce, formatMoney, formatTenderAmount, formatDateTime } from '/CedarInfo/Scripts/meals-common.js'
+    import { createApp, ref, computed, onMounted } from 'https://unpkg.com/vue@3/dist/vue.esm-browser.prod.js'
+
+    const urls = {
+        balance: '/CedarInfo/Meals/GetBalanceJson',
+        page: '/CedarInfo/Meals',
+        suggest: '/CedarInfo/PersonLookup/AutoComplete'
+    }
+
+    const root = document.getElementById('app')
+    const targetId = root.dataset.targetId || ''
+    const targetCard = root.dataset.targetCard || ''
+    const isAdmin = root.dataset.isAdmin === '1'
+
+    const app = createApp({
+        setup() {
+            const loading = ref(true)
+            const loadError = ref('')
+            const data = ref(null)
+
+            const searchTerm = ref('')
+            const cardTerm = ref(targetCard)
+            const suggestions = ref('[]')
+            const suggestLoading = ref(false)
+            const showSuggest = ref(false)
+
+            const tenderAmount = (tender) => formatTenderAmount(tender)
+
+            const activityHeaders = computed(() => JSON.stringify([
+                {
+                    key: 'date',
+                    label: 'Date',
+                    sortable: true,
+                    // The cell holds the raw ISO timestamp so the column sorts chronologically
+                    // (ISO 8601 sorts lexicographically); this only changes how it reads.
+                    transform: "if (!value) return ''; const d = new Date(value); return isNaN(d.getTime()) ? '' : d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })"
+                },
+                { key: 'activity', label: 'Activity', sortable: true, filterable: true },
+                { key: 'meal', label: 'Meal', sortable: true, filterable: true },
+                { key: 'amount', label: 'Amount', html: true }
+            ]))
+
+            const activityRows = computed(() => {
+                const rows = data.value?.RecentTransactions
+                if (!rows || rows.length === 0) return null
+                return JSON.stringify(rows.map(t => ({
+                    date: t.Date,
+                    activity: t.Activity,
+                    meal: t.MealPeriod || '—',
+                    amount: amountCell(t)
+                })))
+            })
+
+            // A swipe moves no money, so it shows a dash rather than $0.00 - otherwise the
+            // handful of rows that did move money are lost in a column of zeroes.
+            function amountCell(t) {
+                if (t.Amount === null || t.Amount === undefined) {
+                    return '<span class="meals-none">—</span>'
+                }
+                const text = escapeHtml((t.IsDeposit ? '+' : '') + formatMoney(t.Amount))
+                return t.IsDeposit
+                    ? `<span class="meals-amount meals-deposit">${text}</span>`
+                    : `<span class="meals-amount">${text}</span>`
+            }
+
+            async function load() {
+                loading.value = true
+                loadError.value = ''
+                try {
+                    data.value = await getJson(urls.balance, { id: targetId, card: targetCard })
+                } catch (e) {
+                    loadError.value = e.message || 'We could not load your meal plan information.'
+                } finally {
+                    loading.value = false
+                }
+            }
+
+            const onSearchInput = debounce(async () => {
+                const term = (searchTerm.value || '').trim()
+                if (term.length < 3) {
+                    showSuggest.value = false
+                    suggestions.value = '[]'
+                    return
+                }
+                suggestLoading.value = true
+                showSuggest.value = true
+                try {
+                    const rows = await getJson(urls.suggest, { term })
+                    suggestions.value = JSON.stringify((rows || []).map(r => ({ label: r.Name, value: r.ID })))
+                } catch (e) {
+                    suggestions.value = '[]'
+                    showSuggest.value = false
+                } finally {
+                    suggestLoading.value = false
+                }
+            })
+
+            function pickPerson(e) {
+                const picked = e.detail && e.detail[0]
+                if (!picked) return
+                showSuggest.value = false
+                window.location.href = urls.page + '?id=' + encodeURIComponent(picked)
+            }
+
+            function lookUpCard() {
+                const card = (cardTerm.value || '').trim()
+                if (!card) return
+                window.location.href = urls.page + '?card=' + encodeURIComponent(card)
+            }
+
+            onMounted(load)
+
+            return {
+                loading, loadError, data, isAdmin,
+                searchTerm, cardTerm, suggestions, suggestLoading, showSuggest,
+                activityHeaders, activityRows, tenderAmount,
+                onSearchInput, pickPerson, lookUpCard
+            }
+        }
+    })
+    app.config.compilerOptions.isCustomElement = (tag) => tag.includes('-')
+    app.mount('#app')
+</script>
+    <div class="cols-3 text-center well">
+        <div class="alert alert--info">
+            <div><span><strong>User:</strong></span> <span>  [samplestudent&nbsp;&middot;&nbsp;0000000]</span></div>
+        </div>
+    </div>
+</body>
+</html>

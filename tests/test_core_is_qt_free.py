@@ -123,10 +123,13 @@ import mycu.core.providers.meals
 # Importing is not enough: the old code imported lxml lazily, inside the
 # parse function, so actually parse a page with the extensions blocked.
 from pathlib import Path
-fixture = Path('tests/fixtures/cedarinfo_meals.html').read_text()
-plan = mycu.core.providers.meals.parse_meals(fixture)
-assert plan.meals_remaining == 19, plan
-assert plan.dining_dollars == 112.08, plan
+page = Path('tests/fixtures/cedarinfo_meals.html').read_text()
+target = mycu.core.providers.meals.parse_target(page)
+assert target.person_id == '0000000', target
+balance = Path('tests/fixtures/cedarinfo_meals_getbalancejson.json').read_text()
+plan = mycu.core.providers.meals.parse_balance(balance)
+assert plan.meals_remaining == 16, plan
+assert plan.dining_dollars == 102.34, plan
 print('ok')
 """
     result = subprocess.run(

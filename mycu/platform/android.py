@@ -77,6 +77,13 @@ class AndroidBackend:
         """
         log.debug("android: cookie persistence is handled by the system WebView")
 
+    def qml_profile(self) -> object | None:
+        """None: QtWebView has no profile object to hand to QML."""
+        return None
+
+    def shutdown(self) -> None:
+        """Nothing to release."""
+
     def clear_cookies(self) -> None:
         """Clear cookies by asking the WebView layer, not the cookie store.
 

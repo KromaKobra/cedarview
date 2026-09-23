@@ -44,6 +44,17 @@ class WebBackend(ABC):
         storage already, which is the behaviour we wanted anyway.
         """
 
+    def qml_profile(self) -> object | None:
+        """The web profile the QML surface should use, or ``None`` for its default.
+
+        Only meaningful after :meth:`configure_profile`. Exposed to QML as
+        ``webProfile``.
+        """
+        return None
+
+    def shutdown(self) -> None:
+        """Release web-engine objects once the QML engine is gone."""
+
     @abstractmethod
     def clear_cookies(self) -> None:
         """Drop all cookies, forcing a fresh login.

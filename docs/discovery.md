@@ -63,6 +63,50 @@ Then look for:
 
 ---
 
+## Capturing a page's network traffic (when a page changes)
+
+When a myCU page is redesigned and a provider stops parsing it, as the Meals
+page did in September 2026, record what the new page actually does rather
+than guessing:
+
+```bash
+nix develop --command python scripts/discover meals
+#   sign in → click through to the flex / meal-plan info → wait for the numbers → Capture
+```
+
+A recorder is injected into every page and frame before the page's own
+scripts run. It logs each `fetch`, `XMLHttpRequest`, `sendBeacon` and form
+submission, with its method, headers, body, status and response body, from
+sign-in until you press Capture, across page changes. It writes to
+`docs/captures/`:
+
+| File | Contents | Share it? |
+|---|---|---|
+| `meals-report-<stamp>.txt` | RECORDED TRAFFIC: each request's method, URL, header names, and the *shape* of the request and response bodies. Values are redacted; cookies, tokens and bare-digit IDs are always masked. Responses mentioning flex/meal/dining are flagged `<<<`. | **Yes**, this is the one to hand over |
+| `meals-network-<stamp>.har` | Every recorded request with full values. Opens in DevTools (Network → Import HAR). | **No**, it has live cookies and tokens |
+| `meals-dom-<stamp>.html` | The rendered DOM as it was on screen | No, it has your name and balances |
+
+Useful flags:
+
+- `--start URL`: open somewhere else first, if the information moved. The
+  report lists every navigation, so you will see where it ended up either way.
+- `--devtools 9222`: open `http://127.0.0.1:9222` in Chromium to get the full
+  Network panel on the discover window. Tick **Preserve log**. Use this for
+  anything the in-page recorder cannot see: cross-origin iframes, service
+  workers, or plain link navigations.
+- `--from-har x.har`: no window. Summarise any HAR into the same redacted
+  report: ours, or one saved from Chrome/Firefox (**Save all as HAR**),
+  including one captured on another machine.
+- `--all-hosts`: include the analytics and static-asset requests that are
+  hidden by default.
+- `--show-values`: put real values in the report. Credentials stay masked.
+
+URLs already in RECORDED TRAFFIC are not re-probed with a bare GET afterwards.
+Replaying a POST or a token-guarded endpoint that way only produces a
+misleading error.
+
+---
+
 ## Recording what you found
 
 Fill this in and keep it in the repo — it is the answer sheet for everyone

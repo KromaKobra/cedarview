@@ -1,55 +1,63 @@
-"""Meal plan — meals left this week, and the two dollar balances.
+"""Meal plan — meals left, and the dollar balances.
 
-**Verified against the real page**, captured 2026-09-17 with
-``scripts/discover meals``.
+**Verified against the real page**, recaptured 2026-09-22 with
+``scripts/discover meals`` after Self-Service redesigned it.
 
-    GET https://selfservice.cedarville.edu/Cedarinfo/Meals
-
-Same origin and the same Microsoft sign-in as chapel, so it needs no new auth
-and reuses the WebView transport unchanged. (An earlier guess had this on
-Transact's cardholder site, which would have meant a second, separate
-credential. It does not live there.)
-
-.. rubric:: The page
-
-Server-rendered, and — worth saying plainly — **there is no table and no JSON**.
-The numbers are prose inside ``<strong>`` tags in one ``<fieldset>``:
+The page is now a Vue app. Its HTML carries no figures at all, only who to look
+up, on the mount element:
 
 .. code-block:: html
 
-    <fieldset>
-      <legend><strong>Meal Plan Information</strong></legend>
-      <h5>Sample Student</h5>
-      <p>You have <strong>19</strong> meal(s) remaining in your meal plan for the current week.</p>
-      <p>You have <strong>$112.08</strong> remaining in Meal Plan Dining Dollars.
-         These dollars expire at the <span style="color:red;">end of the current term</span>, so use them!</p>
-      <p>You have <strong>$0.00</strong> remaining in purchased Voluntary Flex Dollars.
-         These dollars <strong>do not</strong> expire at the end of the current term.</p>
-      <p>Your Prox Card ID: <strong>0000</strong></p>
-    </fieldset>
+    <cu-container id="app" data-target-id="0000000" data-target-card="" data-is-admin="0">
 
-.. rubric:: Two traps in that markup
+and its script then asks a JSON endpoint for the balances:
 
-1. **Two different dollar balances.** "Meal Plan Dining Dollars" expire at the
-   end of the term; "Voluntary Flex Dollars" are purchased separately and do
-   not. Reporting one as "your balance" would misstate money. Both are parsed
-   and kept distinct — see :class:`~mycu.core.models.MealPlan`.
-2. **The Voluntary Flex paragraph contains a second ``<strong>``** — the
-   ``<strong>do not</strong>`` in "These dollars **do not** expire". Taking
-   "a ``<strong>`` in the paragraph" would sometimes yield the string
-   ``"do not"``. Only the *first* ``<strong>`` in each paragraph is read.
+.. code-block:: text
 
-Paragraphs are matched by their distinguishing phrase rather than by position,
-so inserting or reordering a line upstream does not silently shift the values.
+    GET /CedarInfo/Meals/GetBalanceJson?id=<data-target-id>
+    {
+      "Status": "ok", "Message": null, "Found": true, "PlanName": "21 Meals",
+      "Balances": [
+        {"Name": "Board Meals",   "Type": "MEAL",     "Amount": 16,     "IsCurrency": false},
+        {"Name": "Flex Dollars",  "Type": "DEBIT",    "Amount": 102.34, "IsCurrency": true},
+        {"Name": "Meal Exchange", "Type": "EXCHANGE", "Amount": 16,     "IsCurrency": false}
+      ],
+      "RecentTransactions": [...], "Admin": null
+    }
+
+So :meth:`MealsProvider.fetch` makes two requests, exactly as the page does.
+Both are plain same-origin GETs with no token or custom header (the recorded
+request had none), so the WebView transport needs nothing new.
+
+.. rubric:: Which balance is which
+
+The old page had "Meal Plan Dining Dollars" (expire at term end) and "Voluntary
+Flex Dollars" (purchased, do not expire). The new one lists a single "Flex
+Dollars" tender, and it is the *first* of those under a new name: the old page
+read $112.08 dining / $0.00 voluntary, and the new one read $102.34 after two
+flex purchases totalling exactly $9.74. It maps to
+:attr:`~mycu.core.models.MealPlan.dining_dollars`.
+
+The response for that account lists no voluntary balance at all, so a tender is
+only treated as voluntary flex when its name says so (:data:`VOLUNTARY_WORDS`).
+Otherwise :attr:`~mycu.core.models.MealPlan.flex_dollars` stays ``None`` and the
+UI shows "—": that the endpoint left it out is not the same as knowing it is
+$0.00.
+
+Tenders are matched by ``Type`` and name rather than by position, so a
+reordering upstream cannot shift the values. "Meal Exchange" is not surfaced.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+from dataclasses import dataclass
+from urllib.parse import urlencode
 
 from ..errors import ParseError
-from ..minihtml import Element, parse as parse_html
+from ..minihtml import parse as parse_html
 from ..models import MealPlan
 from ..transport import Response
 from .base import Provider
@@ -57,25 +65,29 @@ from .base import Provider
 log = logging.getLogger(__name__)
 
 MEALS_PATH = "/Cedarinfo/Meals"
+BALANCE_PATH = "/CedarInfo/Meals/GetBalanceJson"
 
-#: Phrases that identify each paragraph. Matched case-insensitively against the
-#: paragraph's visible text. Ordered most-specific-first within each group so a
-#: rewording upstream degrades to "not reported" rather than to a wrong number.
-MEALS_MARKERS = ("meal(s) remaining", "meals remaining", "remaining in your meal plan")
-DINING_MARKERS = ("meal plan dining dollars", "dining dollars")
-FLEX_MARKERS = ("voluntary flex dollars", "flex dollars")
-PROX_MARKERS = ("prox card id",)
+#: A currency tender whose name contains one of these is the purchased,
+#: non-expiring balance; any other currency tender is the plan's own.
+VOLUNTARY_WORDS = ("voluntary", "permanent", "purchased", "rollover", "roll over")
 
-#: Which cycle the meal count runs on, read off the same sentence as the count:
-#: "…remaining in your meal plan for the current **week**". Ordered
-#: most-specific-first, and matched rather than assumed — weekly plans and
-#: per-term block plans both exist, and saying "this week" to a block-plan
-#: holder would misstate when the number resets. An unrecognised wording gives
-#: ``""``, which the UI renders as no qualifier at all.
-PERIOD_MARKERS = (
-    ("week", ("current week", "this week", "per week", "week")),
-    ("term", ("current term", "current semester", "this term", "semester", "term")),
+#: Which cycle the meal count runs on, read off ``PlanName``. Cedarville's
+#: weekly plans are named for their count ("21 Meals", "14 Meals"); the
+#: per-term plan is "Block 120". Block is checked first because its name has a
+#: number in it too. An unrecognised name gives ``""``, which the UI renders as
+#: no qualifier at all rather than a guessed one.
+PERIOD_PATTERNS = (
+    ("term", re.compile(r"\bblock\b", re.I)),
+    ("week", re.compile(r"^\s*\d+\s+meals?\b", re.I)),
 )
+
+
+@dataclass(frozen=True, slots=True)
+class MealsTarget:
+    """Who the page looks up: the ``data-target-*`` attributes on ``#app``."""
+
+    person_id: str = ""
+    card: str = ""
 
 
 class MealsProvider(Provider[MealPlan]):
@@ -84,159 +96,119 @@ class MealsProvider(Provider[MealPlan]):
     path = MEALS_PATH
     label = "Meal plan"
 
+    def fetch(self) -> MealPlan:
+        """Load the page for its target id, then the balances for that id.
+
+        Both responses are checked for an expired session before parsing, as
+        :meth:`Provider.fetch` does for the single-request providers.
+        """
+        page = self.transport.get(self.path).raise_for_session()
+        target = parse_target(page.body)
+        response = self.transport.get(balance_path(target)).raise_for_session()
+        return self.parse(response)
+
     def parse(self, response: Response) -> MealPlan:
-        return parse_meals(response.body)
+        return parse_balance(response.body)
 
 
-def parse_meals(body: str) -> MealPlan:
-    """Read the three balances out of the meal-plan page.
-
-    Raises :class:`ParseError` only if the page has no recognisable meal-plan
-    section at all. A *missing individual figure* is not an error — it is
-    reported as ``None`` and rendered as "not reported", because a student may
-    legitimately have no meal plan, and a confident ``0`` would be worse than
-    an honest blank.
-    """
+def parse_target(body: str) -> MealsTarget:
+    """Read ``data-target-id`` / ``data-target-card`` off the page's mount element."""
     if not (body or "").strip():
         raise ParseError("empty response body for the meal-plan page")
 
-    tree = parse_html(body)
+    for node in parse_html(body).iter_descendants():
+        if "data-target-id" in node.attrs:
+            return MealsTarget(
+                person_id=node.attrs.get("data-target-id", "").strip(),
+                card=node.attrs.get("data-target-card", "").strip(),
+            )
 
-    paragraphs = [(_text(p), p) for p in tree.find_all("p")]
-    if not paragraphs:
-        raise ParseError("no paragraphs in the meal-plan page — it has changed shape")
+    raise ParseError(
+        "the meal-plan page has no data-target-id — it has changed shape again; "
+        "recapture with `scripts/discover meals`"
+    )
 
-    meals = _find_int(paragraphs, MEALS_MARKERS)
-    dining = _find_money(paragraphs, DINING_MARKERS, exclude=FLEX_MARKERS)
-    flex = _find_money(paragraphs, FLEX_MARKERS)
+
+def balance_path(target: MealsTarget) -> str:
+    """The balance URL for ``target``, sending only the non-empty parameters.
+
+    That is what the page's own ``getJson`` does: the recorded request was
+    ``?id=…`` alone, with the empty ``card`` left off.
+    """
+    params = {k: v for k, v in (("id", target.person_id), ("card", target.card)) if v}
+    return f"{BALANCE_PATH}?{urlencode(params)}" if params else BALANCE_PATH
+
+
+def parse_balance(body: str) -> MealPlan:
+    """Turn ``GetBalanceJson`` into a :class:`MealPlan`.
+
+    "No meal plan on file" and "no ID card" are answers, not failures: they
+    give an empty plan, rendered as blanks. A response that does not have the
+    expected shape raises :class:`ParseError`.
+    """
+    if not (body or "").strip():
+        raise ParseError("empty response body for the meal-plan balances")
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise ParseError(f"meal-plan balances are not JSON: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ParseError("meal-plan balances are not a JSON object")
+
+    status = str(data.get("Status") or "").lower()
+    if status == "error":
+        raise ParseError(f"Self-Service could not load the meal plan: {data.get('Message')}")
+    if status == "no_card" or (status == "ok" and not data.get("Found")):
+        log.info("meals: no plan on file (%s)", status)
+        return MealPlan()
+    if status != "ok":
+        raise ParseError(f"unrecognised meal-plan status {data.get('Status')!r}")
+
+    balances = data.get("Balances")
+    if not isinstance(balances, list):
+        raise ParseError("meal-plan response has no Balances list — it has changed shape")
+
+    plan_name = str(data.get("PlanName") or "").strip()
+    meals = dining = flex = None
+    for tender in balances:
+        if not isinstance(tender, dict):
+            continue
+        name = str(tender.get("Name") or "")
+        kind = str(tender.get("Type") or "").upper()
+        amount = tender.get("Amount")
+        if not isinstance(amount, (int, float)) or isinstance(amount, bool):
+            continue
+
+        if kind == "MEAL" and meals is None:
+            meals = int(amount)
+        elif tender.get("IsCurrency") or kind == "DEBIT":
+            if any(w in name.lower() for w in VOLUNTARY_WORDS):
+                flex = float(amount) if flex is None else flex
+            elif dining is None:
+                dining = float(amount)
 
     plan = MealPlan(
         meals_remaining=meals,
         dining_dollars=dining,
         flex_dollars=flex,
-        student_name=_student_name(tree),
-        prox_card_id=_find_text(paragraphs, PROX_MARKERS),
-        period=_find_period(paragraphs),
+        plan_name=plan_name,
+        period=_period(plan_name),
     )
 
-    if not plan.has_any:
-        raise ParseError(
-            "found no meal-plan figures on the page. Either the layout changed "
-            "or this account has no meal plan; recapture with "
-            "`scripts/discover meals` to tell the two apart."
-        )
+    if balances and not plan.has_any:
+        names = ", ".join(repr(t.get("Name")) for t in balances if isinstance(t, dict))
+        raise ParseError(f"no recognisable meal-plan balances among: {names}")
 
     log.debug(
-        "meals: %s meals, dining=%s, flex=%s",
-        plan.meals_remaining, plan.dining_dollars, plan.flex_dollars,
+        "meals: %s meals, dining=%s, flex=%s, plan=%r",
+        plan.meals_remaining, plan.dining_dollars, plan.flex_dollars, plan.plan_name,
     )
     return plan
 
 
-# ---------------------------------------------------------------------------
-
-def _matching(paragraphs, markers, exclude=()):
-    """Paragraphs whose text contains one of ``markers`` and none of ``exclude``.
-
-    ``exclude`` exists because "dining dollars" and "voluntary flex dollars"
-    both end in "dollars" and both sit in a "You have $N remaining in…"
-    sentence; without it a loosened marker could match the wrong line.
-    """
-    for text, node in paragraphs:
-        lowered = text.lower()
-        if any(m in lowered for m in markers) and not any(x in lowered for x in exclude):
-            yield text, node
-
-
-def _first_strong(node) -> str:
-    """Text of the FIRST ``<strong>`` in a paragraph.
-
-    Load-bearing: the Voluntary Flex paragraph's second ``<strong>`` is the
-    words "do not", so anything less specific than "the first one" will
-    eventually return that instead of an amount.
-    """
-    for strong in node.find_all("strong", "b"):
-        text = _text(strong)
-        if text:
-            return text
+def _period(plan_name: str) -> str:
+    for period, pattern in PERIOD_PATTERNS:
+        if pattern.search(plan_name):
+            return period
     return ""
-
-
-def _find_int(paragraphs, markers) -> int | None:
-    for text, node in _matching(paragraphs, markers):
-        value = _as_int(_first_strong(node))
-        if value is None:
-            value = _as_int(text)          # fall back to the sentence itself
-        if value is not None:
-            return value
-    return None
-
-
-def _find_money(paragraphs, markers, exclude=()) -> float | None:
-    for text, node in _matching(paragraphs, markers, exclude):
-        value = _as_money(_first_strong(node))
-        if value is None:
-            value = _as_money(text)
-        if value is not None:
-            return value
-    return None
-
-
-def _find_period(paragraphs) -> str:
-    """``"week"`` / ``"term"`` / ``""`` — which cycle the meal count runs on.
-
-    Only the meals sentence is examined. The dollar paragraphs also say "the
-    end of the current term", and reading the period off the page as a whole
-    would therefore call every plan a term plan.
-    """
-    for text, _node in _matching(paragraphs, MEALS_MARKERS):
-        lowered = text.lower()
-        for period, markers in PERIOD_MARKERS:
-            if any(m in lowered for m in markers):
-                return period
-    return ""
-
-
-def _find_text(paragraphs, markers) -> str:
-    for _text_, node in _matching(paragraphs, markers):
-        value = _first_strong(node)
-        if value:
-            return value
-    return ""
-
-
-def _student_name(tree: Element) -> str:
-    """The ``<h5>`` inside the meal-plan fieldset, if it is there."""
-    for fieldset in tree.find_all("fieldset"):
-        for node in fieldset.find_all("h5"):
-            text = _text(node)
-            if text:
-                return text
-    return ""
-
-
-def _as_int(text: str) -> int | None:
-    match = re.search(r"\b(\d{1,4})\b", text or "")
-    return int(match.group(1)) if match else None
-
-
-def _as_money(text: str) -> float | None:
-    """Parse ``$112.08`` / ``1,234.56`` / ``$0.00``.
-
-    Requires a currency marker or a decimal part, so the ``19`` from the meals
-    sentence can never be read as a dollar amount.
-    """
-    if not text:
-        return None
-    match = re.search(r"\$\s*(-?[\d,]+(?:\.\d{1,2})?)|(-?[\d,]+\.\d{2})\b", text)
-    if not match:
-        return None
-    raw = match.group(1) or match.group(2)
-    try:
-        return float(raw.replace(",", ""))
-    except ValueError:
-        return None
-
-
-def _text(node: Element) -> str:
-    return re.sub(r"\s+", " ", node.text_content()).strip()

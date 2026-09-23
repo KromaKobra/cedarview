@@ -31,6 +31,33 @@ when it is nowhere in the served HTML. Anything that looks like a data endpoint
 is then fetched and reported too. This is how to find the JSON behind a page
 without reading its JavaScript.
 
+.. rubric:: Recording the traffic itself
+
+A URL list is not enough to rebuild a client for a page that loads its data
+with a POST, a JSON body or an anti-forgery header: re-fetching the URL with a
+bare GET gets a 405, an error page or a different answer. So before the first
+page loads, a recorder is injected into every page and frame
+(:data:`NET_RECORDER_JS`). It wraps ``fetch``, ``XMLHttpRequest``,
+``sendBeacon`` and form submission, and logs each one's method, headers, body,
+status, response headers and response body, from the moment you sign in to the
+moment you press Capture, across navigations. On Capture you get:
+
+``<target>-network-<stamp>.har``
+    Every recorded request with full values. Chrome/Firefox DevTools can open
+    it (Network → Import HAR). **It contains live cookies and tokens.**
+``<target>-dom-<stamp>.html``
+    The rendered DOM as it was on screen, which is not the same as the served
+    HTML when the page builds itself in JavaScript.
+``<target>-report-<stamp>.txt``
+    Includes a RECORDED TRAFFIC section: the shape of each request and
+    response, with credentials always masked. This is the file to share.
+
+Two fallbacks for anything the in-page hooks cannot see (cross-origin iframes,
+service workers, plain navigations)::
+
+    python scripts/discover meals --devtools 9222     # full Chromium Network panel
+    python scripts/discover meals --from-har x.har    # summarise any HAR, no window
+
 .. rubric:: Your password
 
 Never touched. You type it into the site's own page inside the window; this
@@ -40,11 +67,15 @@ script only ever sees which URL you ended up on and what the page returned.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
+import os
 import re
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import parse_qsl, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -67,7 +98,11 @@ TARGETS = {
         "probes": ["https://selfservice.cedarville.edu/Cedarinfo/Meals"],
         "note": "Meal plan — flex dollars and meals left. Same Cedarville\n"
                 "sign-in as chapel, so you may already be signed in.\n"
-                "Wait for the numbers to appear, then press Capture.",
+                "Click through to wherever the balances now appear, wait for\n"
+                "the numbers, then press Capture.",
+        # Responses mentioning these are flagged in RECORDED TRAFFIC, so the
+        # one request that carries the balances stands out from the noise.
+        "keywords": ["flex", "meal", "dining", "balance", "prox"],
     },
     "chapel-schedule": {
         "start": "https://www.cedarville.edu/chapel",
@@ -83,7 +118,11 @@ TARGETS = {
 INTERESTING = re.compile(r"(api|json|ajax|service|data|feed|rest|graphql|\.ashx|\.asmx)", re.I)
 BORING = re.compile(
     r"\.(css|js|png|jpe?g|gif|svg|webp|woff2?|ttf|eot|ico|mp4|webm)(\?|$)"
-    r"|googletagmanager|google-analytics|doubleclick|facebook|hotjar|cdn\.jsdelivr",
+    r"|googletagmanager|google-analytics|doubleclick|facebook|hotjar|cdn\.jsdelivr"
+    # Seen on every selfservice page in the 2026-09-17 capture, and never data.
+    r"|cookieyes\.com|cdn-cookieyes|siteimproveanalytics|technolutions\.net"
+    r"|t\.vibe\.co|googleadservices|analytics\.google\.com|google\.com/(rmkt|pagead)"
+    r"|fonts\.googleapis|fonts\.gstatic|connect\.cedarville\.edu/ping",
     re.I,
 )
 
@@ -128,9 +167,14 @@ def describe_json(node, show_values: bool, depth: int = 0, max_depth: int = 6) -
         return "<float>"
 
     text = str(node)
+    # A bare run of digits is an ID (student, prox card) far more often than a
+    # date, so it is masked; a real date has a separator in it.
+    if re.fullmatch(r"\d{4,}", text):
+        return f"<digits len={len(text)}>"
     # Date-ish and short enumerated strings are shape, not secrets, and they are
     # exactly what a parser needs to know. Everything longer is masked.
-    if re.fullmatch(r"[\d/:\-T+. ]{6,32}Z?", text) or re.fullmatch(r"/Date\(-?\d+\)/", text):
+    if (re.fullmatch(r"(?=.*[/:\-])[\d/:\-T+. ]{6,32}Z?", text)
+            or re.fullmatch(r"/Date\(-?\d+\)/", text)):
         return f'"{text}"   <- date-ish'
     if len(text) <= 24:
         return f'"{text}"'
@@ -140,11 +184,15 @@ def describe_json(node, show_values: bool, depth: int = 0, max_depth: int = 6) -
 def describe_html(body: str, show_values: bool) -> str:
     """Summarise a server-rendered page: its tables, headers and labelled numbers."""
     try:
+        from lxml import etree
         from lxml import html as lxml_html
     except ImportError:
         return "(lxml unavailable)"
 
-    tree = lxml_html.fromstring(body)
+    try:
+        tree = lxml_html.fromstring(body)
+    except (etree.ParserError, ValueError) as exc:
+        return f"(not parseable as HTML: {exc})"
     out: list[str] = []
 
     tables = tree.xpath("//table")
@@ -202,12 +250,541 @@ def _text(node) -> str:
 def _mask(value: str) -> str:
     if not value:
         return ""
-    if re.fullmatch(r"[\d/:\-. ]{4,}", value):
-        return value            # dates are structure
+    if re.fullmatch(r"(?=.*[/:\-])[\d/:\-. ]{4,}", value):
+        return value            # dates are structure; bare digits are IDs
     return f"<{len(value)} chars>"
 
 
 # ---------------------------------------------------------------------------
+# Network recorder
+# ---------------------------------------------------------------------------
+
+#: Injected at DocumentCreation into the page's own JavaScript world, in every
+#: frame, before any of the page's scripts run. It has to be the main world
+#: rather than an isolated one: the point is to wrap the *page's* ``fetch`` and
+#: ``XMLHttpRequest``, and an isolated world has its own copies of both.
+#:
+#: Records queue on ``window.__mycuNet`` in the top frame (a same-origin
+#: subframe pushes to its parent's queue) and Python drains them every
+#: :data:`DRAIN_INTERVAL_MS`. Anything still queued when the page unloads is
+#: carried over in sessionStorage, so a form POST or redirect between two
+#: drains does not lose the request that caused it.
+NET_RECORDER_JS = r"""
+(function () {
+  if (window.__mycuNetInstalled) { return; }
+  window.__mycuNetInstalled = true;
+
+  var MAX = 2 * 1024 * 1024;
+  var CARRY = '__mycuNetCarry';
+  var isTop = window.top === window;
+
+  window.__mycuNet = [];
+  if (isTop) {
+    try {
+      var carried = sessionStorage.getItem(CARRY);
+      if (carried) {
+        sessionStorage.removeItem(CARRY);
+        window.__mycuNet = JSON.parse(carried) || [];
+      }
+    } catch (e) {}
+    window.addEventListener('pagehide', function () {
+      try {
+        if (window.__mycuNet.length) {
+          sessionStorage.setItem(CARRY, JSON.stringify(window.__mycuNet));
+        }
+      } catch (e) {}
+    });
+  }
+
+  function push(rec) {
+    rec.page = String(location.href);
+    rec.frame = isTop ? 'top' : 'sub';
+    try {
+      if (!isTop && window.top.__mycuNet) { window.top.__mycuNet.push(rec); return; }
+    } catch (e) { /* cross-origin parent: keep it local */ }
+    window.__mycuNet.push(rec);
+  }
+
+  function abs(url) {
+    try { return new URL(String(url), location.href).href; } catch (e) { return String(url); }
+  }
+
+  function cap(t) {
+    if (t == null) { return null; }
+    t = String(t);
+    return t.length > MAX ? t.slice(0, MAX) + '\n<truncated, ' + t.length + ' chars>' : t;
+  }
+
+  function ser(b) {
+    if (b == null) { return null; }
+    if (typeof b === 'string') { return b; }
+    try {
+      if (b instanceof URLSearchParams) { return b.toString(); }
+      if (typeof FormData !== 'undefined' && b instanceof FormData) {
+        var parts = [];
+        b.forEach(function (v, k) {
+          parts.push(encodeURIComponent(k) + '=' + encodeURIComponent(
+            typeof v === 'string' ? v : '<file ' + (v.name || '') + '>'));
+        });
+        return parts.join('&');
+      }
+      if (typeof Blob !== 'undefined' && b instanceof Blob) { return '<binary ' + b.size + ' bytes>'; }
+      if (b instanceof ArrayBuffer || ArrayBuffer.isView(b)) { return '<binary ' + b.byteLength + ' bytes>'; }
+      if (typeof Document !== 'undefined' && b instanceof Document) {
+        return new XMLSerializer().serializeToString(b);
+      }
+    } catch (e) {}
+    return String(b);
+  }
+
+  function hdrs(h) {
+    var out = [];
+    if (!h) { return out; }
+    try {
+      if (typeof Headers !== 'undefined' && h instanceof Headers) {
+        h.forEach(function (v, k) { out.push({name: k, value: v}); });
+      } else if (Array.isArray(h)) {
+        h.forEach(function (p) { out.push({name: String(p[0]), value: String(p[1])}); });
+      } else {
+        Object.keys(h).forEach(function (k) { out.push({name: k, value: String(h[k])}); });
+      }
+    } catch (e) {}
+    return out;
+  }
+
+  function rawHdrs(s) {
+    return String(s || '').trim().split(/[\r\n]+/).filter(Boolean).map(function (line) {
+      var i = line.indexOf(':');
+      return {name: line.slice(0, i).trim(), value: line.slice(i + 1).trim()};
+    });
+  }
+
+  // --- fetch -------------------------------------------------------------
+  var origFetch = window.fetch;
+  if (origFetch) {
+    window.fetch = function (input, init) {
+      var t0 = Date.now();
+      var rec = {kind: 'fetch', started: new Date(t0).toISOString()};
+      try {
+        var isReq = typeof Request !== 'undefined' && input instanceof Request;
+        rec.url = abs(isReq ? input.url : input);
+        rec.method = String((init && init.method) || (isReq ? input.method : 'GET')).toUpperCase();
+        rec.reqHeaders = hdrs((init && init.headers) || (isReq ? input.headers : null));
+        if (init && init.body != null) {
+          rec.reqBody = cap(ser(init.body));
+        } else if (isReq && rec.method !== 'GET' && rec.method !== 'HEAD') {
+          // Must clone before the real fetch consumes the body.
+          input.clone().text().then(function (t) { rec.reqBody = cap(t); }, function () {});
+        }
+      } catch (e) { rec.error = 'recorder: ' + e; }
+
+      var p = origFetch.apply(this, arguments);
+      p.then(function (res) {
+        rec.status = res.status;
+        rec.statusText = res.statusText;
+        rec.finalUrl = res.url;
+        rec.resHeaders = hdrs(res.headers);
+        rec.mimeType = res.headers.get('content-type') || '';
+        return res.clone().text().then(
+          function (t) { rec.resBody = cap(t); },
+          function (e) { rec.error = 'body: ' + e; });
+      }, function (e) { rec.error = String(e); })
+      .then(function () { rec.ms = Date.now() - t0; push(rec); });
+      return p;
+    };
+  }
+
+  // --- XMLHttpRequest (jQuery.ajax, Knockout, most of Ellucian) ------------
+  var XP = XMLHttpRequest.prototype;
+  var origOpen = XP.open, origSetHeader = XP.setRequestHeader, origSend = XP.send;
+  XP.open = function (method, url) {
+    this.__mycuRec = {kind: 'xhr', method: String(method).toUpperCase(), url: abs(url), reqHeaders: []};
+    return origOpen.apply(this, arguments);
+  };
+  XP.setRequestHeader = function (name, value) {
+    if (this.__mycuRec) { this.__mycuRec.reqHeaders.push({name: String(name), value: String(value)}); }
+    return origSetHeader.apply(this, arguments);
+  };
+  XP.send = function (body) {
+    var xhr = this, rec = xhr.__mycuRec;
+    if (rec) {
+      var t0 = Date.now();
+      rec.started = new Date(t0).toISOString();
+      rec.reqBody = cap(ser(body));
+      xhr.addEventListener('loadend', function () {
+        try {
+          rec.status = xhr.status;
+          rec.statusText = xhr.statusText;
+          rec.finalUrl = xhr.responseURL;
+          rec.resHeaders = rawHdrs(xhr.getAllResponseHeaders());
+          rec.mimeType = xhr.getResponseHeader('content-type') || '';
+          var rt = xhr.responseType;
+          if (rt === '' || rt === 'text') { rec.resBody = cap(xhr.responseText); }
+          else if (rt === 'json') { rec.resBody = cap(JSON.stringify(xhr.response)); }
+          else if (rt === 'document' && xhr.response) { rec.resBody = cap(xhr.response.documentElement.outerHTML); }
+          else { rec.resBody = ser(xhr.response); }
+        } catch (e) { rec.error = 'recorder: ' + e; }
+        rec.ms = Date.now() - t0;
+        push(rec);
+      });
+    }
+    return origSend.apply(this, arguments);
+  };
+
+  // --- sendBeacon (fire and forget; no response to record) ----------------
+  if (navigator.sendBeacon) {
+    var origBeacon = navigator.sendBeacon;
+    navigator.sendBeacon = function (url, data) {
+      push({kind: 'beacon', method: 'POST', url: abs(url), reqHeaders: [],
+            reqBody: cap(ser(data)), started: new Date().toISOString()});
+      return origBeacon.apply(this, arguments);
+    };
+  }
+
+  // --- Form submission: the request itself becomes a navigation, so only the
+  // outgoing half can be seen from here. The response is the next page.
+  window.addEventListener('submit', function (ev) {
+    try {
+      var form = ev.target;
+      var method = String(form.method || 'GET').toUpperCase();
+      var body = ser(new FormData(form));
+      push({kind: 'form', method: method, url: abs(form.action || location.href),
+            reqHeaders: [{name: 'Content-Type', value: form.enctype || 'application/x-www-form-urlencoded'}],
+            reqBody: method === 'GET' ? null : cap(body), started: new Date().toISOString()});
+    } catch (e) {}
+  }, true);
+})();
+"""
+
+#: Swap the queue out and hand it over. The swap is one JS turn, so nothing a
+#: request pushes can land between the read and the reset.
+DRAIN_JS = """
+(function () {
+  var items = window.__mycuNet || [];
+  window.__mycuNet = [];
+  return JSON.stringify({href: String(location.href),
+                         installed: !!window.__mycuNetInstalled,
+                         items: items});
+})()
+"""
+
+DRAIN_INTERVAL_MS = 750
+DRAIN_TOKEN = "mycu-discover-drain"
+
+#: Header and form-field names whose values are credentials. These are masked
+#: in the report even with --show-values: a session cookie is not "a value you
+#: might be comfortable sharing", it is your login.
+SENSITIVE = re.compile(
+    r"cookie|authorization|token|csrf|xsrf|session|saml|secret|password"
+    # Microsoft's sign-in sends its anti-forgery value as `canary`, and its
+    # telemetry an `apikey`; neither says so in a way the words above catch.
+    r"|canary|api-?key",
+    re.I,
+)
+
+
+def install_recorder(backend) -> bool:
+    """Add :data:`NET_RECORDER_JS` to the default profile, for every page and frame.
+
+    Profile-wide rather than per-view so the surface QML stays untouched; the
+    desktop and Android surfaces must keep an identical interface.
+    """
+    profile_of = getattr(backend, "_default_profile", None)
+    if profile_of is None:
+        return False
+
+    from PySide6.QtWebEngineCore import QWebEngineScript
+
+    script = QWebEngineScript()
+    script.setName("mycu-net-recorder")
+    script.setSourceCode(NET_RECORDER_JS)
+    script.setInjectionPoint(QWebEngineScript.InjectionPoint.DocumentCreation)
+    script.setWorldId(QWebEngineScript.ScriptWorldId.MainWorld)
+    script.setRunsOnSubFrames(True)
+    profile_of().scripts().insert(script)
+    return True
+
+
+class NetLog:
+    """Everything the recorder has seen, drained off the page as it goes.
+
+    Runs entirely on the GUI thread: ``evalAsync`` is non-blocking and its
+    answer arrives on the surface's ``evalResult`` signal, which the transport
+    also listens to and ignores for tokens it does not own.
+    """
+
+    def __init__(self, surface) -> None:
+        self.surface = surface
+        self.records: list[dict] = []
+        self.navigations: list[dict] = []
+        #: Whether the recorder was present on the page at the latest drain.
+        self.last_installed: bool | None = None
+        self.stopped = False
+        self._last_url = ""
+        surface.evalResult.connect(self._on_result)
+
+    def tick(self) -> None:
+        if self.stopped:
+            return
+        url = str(self.surface.property("currentUrl") or "")
+        if url and url != self._last_url:
+            self._last_url = url
+            self.navigations.append({"url": url, "at": _now_iso()})
+        if url.startswith("http"):
+            self.surface.evalAsync(DRAIN_TOKEN, DRAIN_JS)
+
+    def ingest(self, raw: object) -> None:
+        """Take one drain result. Also used for the final, blocking drain."""
+        try:
+            payload = json.loads(str(raw))
+        except (json.JSONDecodeError, TypeError):
+            return
+        if not isinstance(payload, dict):
+            return
+        self.last_installed = bool(payload.get("installed"))
+        self.records.extend(r for r in payload.get("items") or [] if isinstance(r, dict))
+
+    def _on_result(self, token: str, result: object) -> None:
+        # Still ingested after stop(): a drain already in flight has swapped the
+        # page's queue out, so dropping its answer would lose those records.
+        if token == DRAIN_TOKEN:
+            self.ingest(result)
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+# ---------------------------------------------------------------------------
+# HAR in and out
+# ---------------------------------------------------------------------------
+
+def records_to_har(records: list[dict], navigations: list[dict]) -> dict:
+    """Recorder output as HAR 1.2, so DevTools can open it (Network → Import)."""
+    entries = []
+    for rec in records:
+        url = str(rec.get("url", ""))
+        req_headers = list(rec.get("reqHeaders") or [])
+        res_headers = list(rec.get("resHeaders") or [])
+        req_body = rec.get("reqBody")
+        res_body = rec.get("resBody") or ""
+        ms = float(rec.get("ms") or 0)
+
+        request = {
+            "method": rec.get("method", "GET"),
+            "url": url,
+            "httpVersion": "HTTP/1.1",
+            "cookies": [],
+            "headers": req_headers,
+            "queryString": [{"name": k, "value": v}
+                            for k, v in parse_qsl(urlsplit(url).query, keep_blank_values=True)],
+            "headersSize": -1,
+            "bodySize": len(req_body) if req_body is not None else 0,
+        }
+        if req_body is not None:
+            request["postData"] = {"mimeType": _header(req_headers, "content-type"),
+                                   "text": req_body}
+
+        entries.append({
+            "startedDateTime": rec.get("started") or _now_iso(),
+            "time": ms,
+            "request": request,
+            "response": {
+                "status": int(rec.get("status") or 0),
+                "statusText": rec.get("statusText", ""),
+                "httpVersion": "HTTP/1.1",
+                "cookies": [],
+                "headers": res_headers,
+                "content": {"size": len(res_body), "mimeType": rec.get("mimeType", ""),
+                            "text": res_body},
+                "redirectURL": "",
+                "headersSize": -1,
+                "bodySize": len(res_body),
+            },
+            "cache": {},
+            "timings": {"send": 0, "wait": ms, "receive": 0},
+            "_resourceType": rec.get("kind", ""),
+            "_page": rec.get("page", ""),
+            "_frame": rec.get("frame", ""),
+            "_finalUrl": rec.get("finalUrl", ""),
+            "_error": rec.get("error", ""),
+        })
+
+    return {"log": {
+        "version": "1.2",
+        "creator": {"name": "mycu scripts/discover", "version": "1"},
+        "pages": [],
+        "entries": entries,
+        "_navigations": navigations,
+    }}
+
+
+def har_to_records(har: dict) -> tuple[list[dict], list[dict]]:
+    """Read any HAR — ours, or a DevTools/Firefox export — back into records."""
+    log = har.get("log") or {}
+    records = []
+    for entry in log.get("entries") or []:
+        req = entry.get("request") or {}
+        res = entry.get("response") or {}
+        content = res.get("content") or {}
+        text = content.get("text")
+        if text and content.get("encoding") == "base64":
+            try:
+                text = base64.b64decode(text).decode("utf-8")
+            except (ValueError, UnicodeDecodeError):
+                text = f"<binary {content.get('size', '?')} bytes>"
+        records.append({
+            "kind": entry.get("_resourceType") or "",
+            "method": req.get("method", "GET"),
+            "url": req.get("url", ""),
+            "reqHeaders": req.get("headers") or [],
+            "reqBody": (req.get("postData") or {}).get("text"),
+            "status": res.get("status", 0),
+            "resHeaders": res.get("headers") or [],
+            "mimeType": content.get("mimeType") or _header(res.get("headers") or [], "content-type"),
+            "resBody": text or "",
+            "page": entry.get("_page", ""),
+            "error": entry.get("_error", ""),
+            "started": entry.get("startedDateTime", ""),
+        })
+    return records, list(log.get("_navigations") or [])
+
+
+def _header(headers: list[dict], name: str) -> str:
+    for h in headers:
+        if str(h.get("name", "")).lower() == name:
+            return str(h.get("value", ""))
+    return ""
+
+
+# ---------------------------------------------------------------------------
+# Traffic report
+# ---------------------------------------------------------------------------
+
+def describe_traffic(records: list[dict], navigations: list[dict], *, show_values: bool,
+                     all_hosts: bool, keywords: list[str]) -> list[str]:
+    """The RECORDED TRAFFIC section: one block per request, credentials masked."""
+    out = ["", "-" * 72, "RECORDED TRAFFIC — what the page actually sent and got back", "-" * 72]
+
+    if navigations:
+        out.append("\n  navigations (in order):")
+        for nav in navigations:
+            out.append(f"    {nav.get('at', '')}  {nav.get('url', '')}")
+
+    shown = [r for r in records if all_hosts or not BORING.search(str(r.get("url", "")))]
+    hidden = len(records) - len(shown)
+    out.append(f"\n  {len(records)} request(s) recorded, {len(shown)} shown"
+               + (f" ({hidden} analytics/static hidden; --all-hosts to include)" if hidden else ""))
+
+    for n, rec in enumerate(shown, 1):
+        url = str(rec.get("url", ""))
+        body = str(rec.get("resBody") or "")
+        mime = str(rec.get("mimeType") or "")
+        status = rec.get("status", "")
+        status_text = "—" if status in ("", None, 0) and rec.get("kind") in ("beacon", "form") else status
+
+        hits = [k for k in keywords if k.lower() in body.lower()]
+        flag = f"   <<< mentions {', '.join(hits)}" if hits else ""
+        out.append("")
+        out.append(f"  #{n} [{rec.get('kind', '?')}] {rec.get('method', '?')} {status_text}  {url}{flag}")
+        out.append(f"     {mime or '(no content-type)'}  {len(body):,} bytes"
+                   + (f"  from page {rec['page']}" if rec.get("page") else ""))
+        if rec.get("finalUrl") and rec["finalUrl"] != url:
+            out.append(f"     final URL: {rec['finalUrl']}")
+        if rec.get("error"):
+            out.append(f"     error: {rec['error']}")
+
+        req_headers = rec.get("reqHeaders") or []
+        if req_headers:
+            out.append("     request headers:")
+            for h in req_headers:
+                out.append(f"       {h.get('name')}: {_header_value(h)}")
+
+        req_body = rec.get("reqBody")
+        if req_body:
+            out.append("     request body:")
+            out.extend("       " + line for line in
+                       _describe_request_body(str(req_body), req_headers, show_values))
+
+        if body:
+            out.append("     response:")
+            out.extend("       " + line for line in
+                       _describe_response_body(body, mime, show_values).splitlines())
+
+    return out
+
+
+def _header_value(header: dict) -> str:
+    name, value = str(header.get("name", "")), str(header.get("value", ""))
+    if SENSITIVE.search(name):
+        return f"<masked, {len(value)} chars>"
+    # Content-Type, Accept, X-Requested-With and friends are structure, not
+    # personal data, and they are exactly what a rebuilt client must send.
+    return value
+
+
+def _describe_request_body(body: str, headers: list[dict], show_values: bool) -> list[str]:
+    stripped = body.lstrip()
+    if stripped[:1] in "{[":
+        try:
+            return describe_json(json.loads(stripped), show_values).splitlines()
+        except json.JSONDecodeError:
+            pass
+    ctype = _header(headers, "content-type").lower()
+    if "=" in body and ("form" in ctype or not ctype):
+        lines = ["form fields:"]
+        for key, value in parse_qsl(body, keep_blank_values=True):
+            if SENSITIVE.search(key):
+                shown = f"<masked, {len(value)} chars>"
+            else:
+                shown = repr(value) if show_values else (_mask(value) or "''")
+            lines.append(f"  {key} = {shown}")
+        return lines
+    return [f"<{len(body)} chars, content-type {ctype or 'unknown'}>"
+            if not show_values else body[:2000]]
+
+
+def _describe_response_body(body: str, mime: str, show_values: bool) -> str:
+    stripped = body.lstrip()
+    if stripped[:1] in "{[" or "json" in mime.lower():
+        try:
+            return "JSON SHAPE:\n" + describe_json(json.loads(stripped), show_values)
+        except json.JSONDecodeError:
+            pass
+    if "html" in mime.lower() or stripped[:1] == "<":
+        return "HTML STRUCTURE:\n" + describe_html(body, show_values)
+    if show_values:
+        return body[:2000]
+    return f"<{len(body)} chars of {mime or 'text'}>"
+
+
+# ---------------------------------------------------------------------------
+
+def summarise_har(args: argparse.Namespace, spec: dict) -> int:
+    """``--from-har``: the RECORDED TRAFFIC report for a HAR made anywhere."""
+    try:
+        har = json.loads(args.from_har.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"could not read {args.from_har}: {exc}")
+        return 1
+
+    records, navigations = har_to_records(har)
+    lines = [
+        "=" * 72,
+        f"TARGET: {args.target}   (from {args.from_har.name})",
+        f"values: {'SHOWN' if args.show_values else 'REDACTED (use --show-values to include)'}",
+        "=" * 72,
+    ]
+    lines += describe_traffic(records, navigations, show_values=args.show_values,
+                              all_hosts=args.all_hosts, keywords=spec.get("keywords", []))
+    print("\n".join(lines))
+
+    CAPTURES.mkdir(parents=True, exist_ok=True)
+    summary = CAPTURES / f"{args.target}-report-{time.strftime('%Y%m%d-%H%M%S')}.txt"
+    summary.write_text("\n".join(lines), encoding="utf-8")
+    print(f"\nreport saved to {summary.relative_to(ROOT)}")
+    return 0
+
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -218,9 +795,26 @@ def main() -> int:
                         help="an extra URL to probe after login; repeatable")
     parser.add_argument("--timeout", type=float, default=900.0,
                         help="seconds to wait for you to press Capture")
+    parser.add_argument("--start", metavar="URL",
+                        help="open this page instead of the target's usual start page")
+    parser.add_argument("--from-har", metavar="PATH", type=Path,
+                        help="no window: summarise an existing HAR (ours, or a "
+                             "Chrome/Firefox 'Save all as HAR') and exit")
+    parser.add_argument("--devtools", metavar="PORT", type=int,
+                        help="expose Chromium remote debugging on 127.0.0.1:PORT, "
+                             "for the full DevTools Network panel on this window")
+    parser.add_argument("--all-hosts", action="store_true",
+                        help="do not hide analytics and static assets in RECORDED TRAFFIC")
     args = parser.parse_args()
 
     spec = TARGETS[args.target]
+
+    if args.from_har:
+        return summarise_har(args, spec)
+
+    if args.devtools:
+        # Read by Chromium at startup, so it has to be set before before_app().
+        os.environ["QTWEBENGINE_REMOTE_DEBUGGING"] = f"127.0.0.1:{args.devtools}"
 
     from mycu.platform import current_backend
 
@@ -242,6 +836,11 @@ def main() -> int:
     store = SessionStore()
     store.ensure_dirs()
     backend.configure_profile(store.profile_dir())
+
+    # Before the first navigation, or the page that matters loads unrecorded.
+    if not install_recorder(backend):
+        print(f"warning: no network recorder on the {backend.name} backend; "
+              "RECORDED TRAFFIC will be empty")
 
     qml_dir = ROOT / "mycu" / "ui" / "qml"
     wrapper = qml_dir / "_discover_window.qml"
@@ -307,8 +906,14 @@ ApplicationWindow {{
     transport = WebViewTransport()
     transport.attach_surface(surface)
 
+    net = NetLog(surface)
+    drainer = QTimer()
+    drainer.timeout.connect(net.tick)
+    drainer.start(DRAIN_INTERVAL_MS)
+
     report: list[str] = []
     started = time.monotonic()
+    stamp = time.strftime("%Y%m%d-%H%M%S")
 
     def out(line: str = "") -> None:
         print(line)
@@ -322,6 +927,44 @@ ApplicationWindow {{
 
         current = transport.current_url
         out(f"\ncurrent page: {current}")
+        CAPTURES.mkdir(parents=True, exist_ok=True)
+
+        # --- 0. Recorded traffic ----------------------------------------------
+        # Drained BEFORE anything below runs: the probes further down go through
+        # the page's fetch(), which the recorder wraps, and the tool's own
+        # requests must not end up in the log of what the page did.
+        try:
+            net.ingest(transport.evaluate(DRAIN_JS))
+        except Exception as exc:  # noqa: BLE001
+            out(f"  (final drain failed: {exc})")
+
+        installed = net.last_installed
+        out(f"recorder installed on this page: "
+            f"{'yes' if installed else 'NO — use --devtools' if installed is False else 'unknown'}")
+
+        har_path = CAPTURES / f"{args.target}-network-{stamp}.har"
+        har_path.write_text(json.dumps(records_to_har(net.records, net.navigations), indent=1),
+                            encoding="utf-8")
+        har_path.chmod(0o600)
+        out(f"network log   {har_path.relative_to(ROOT)}   "
+            "(gitignored; LIVE COOKIES AND TOKENS — never commit or paste)")
+
+        try:
+            dom = transport.evaluate("document.documentElement.outerHTML", timeout_s=30)
+            dom_path = CAPTURES / f"{args.target}-dom-{stamp}.html"
+            dom_path.write_text(str(dom or ""), encoding="utf-8")
+            out(f"rendered DOM  {dom_path.relative_to(ROOT)}   (gitignored, full values)")
+        except Exception as exc:  # noqa: BLE001
+            out(f"rendered DOM  unavailable: {exc}")
+
+        for line in describe_traffic(net.records, net.navigations,
+                                     show_values=args.show_values, all_hosts=args.all_hosts,
+                                     keywords=spec.get("keywords", [])):
+            out(line)
+
+        # Anything the recorder already has in full is not re-fetched: a bare
+        # GET replay of a POST or token-guarded endpoint only produces noise.
+        recorded = {str(r.get(k)) for r in net.records for k in ("url", "finalUrl") if r.get(k)}
 
         # --- 1. What did this page fetch? --------------------------------
         out("\n" + "-" * 72)
@@ -358,7 +1001,11 @@ ApplicationWindow {{
         # found anything at all, which is exactly backwards: a server-rendered
         # page has the data in its own HTML and often traces nothing but a chart
         # image. That gap lost the Meals page entirely on the first run.
-        probes = [current] + list(spec["probes"]) + list(args.extra) + discovered
+        replayable = [u for u in discovered if u not in recorded]
+        if len(replayable) < len(discovered):
+            out(f"\n  ({len(discovered) - len(replayable)} traced URL(s) not re-probed: "
+                "already in RECORDED TRAFFIC with their real method and body)")
+        probes = [current] + list(spec["probes"]) + list(args.extra) + replayable
 
         seen: set[str] = set()
         for url in probes:
@@ -383,10 +1030,10 @@ ApplicationWindow {{
 
             CAPTURES.mkdir(parents=True, exist_ok=True)
             stem = re.sub(r"[^A-Za-z0-9]+", "_", url)[:80].strip("_")
-            stamp = time.strftime("%Y%m%d-%H%M%S")
+            probe_stamp = time.strftime("%Y%m%d-%H%M%S")
             stripped = response.body.lstrip()
             is_json = stripped[:1] in "{[" or "json" in ctype.lower()
-            path = CAPTURES / f"{args.target}-{stem}-{stamp}.{'json' if is_json else 'html'}"
+            path = CAPTURES / f"{args.target}-{stem}-{probe_stamp}.{'json' if is_json else 'html'}"
             path.write_text(response.body, encoding="utf-8")
             out(f"  raw body      {path.relative_to(ROOT)}   (gitignored, full values)")
 
@@ -407,11 +1054,16 @@ ApplicationWindow {{
         out("done — close the window")
 
     def on_capture() -> None:
+        # No more drains from the timer; capture() does the last one itself.
+        net.stopped = True
+        drainer.stop()
+
         def finish(_: object) -> None:
-            summary = CAPTURES / f"{args.target}-report-{time.strftime('%Y%m%d-%H%M%S')}.txt"
+            summary = CAPTURES / f"{args.target}-report-{stamp}.txt"
             CAPTURES.mkdir(parents=True, exist_ok=True)
             summary.write_text("\n".join(report), encoding="utf-8")
             print(f"\nreport saved to {summary.relative_to(ROOT)}")
+            print("share the report; keep the .har and -dom files local")
             app.quit()
 
         def failed(exc: object) -> None:
@@ -431,10 +1083,14 @@ ApplicationWindow {{
     ticker.timeout.connect(deadline)
     ticker.start(5000)
 
-    print(f"opening {spec['start']}")
+    start = args.start or spec["start"]
+    print(f"opening {start}")
     print(spec["note"])
+    if args.devtools:
+        print(f"\nDevTools: open http://127.0.0.1:{args.devtools} in Chromium (or "
+              "chrome://inspect) → pick the page → Network. Tick 'Preserve log'.")
     print("\nSign in if needed, get to the page you care about, then press Capture.\n")
-    surface.navigate(spec["start"])
+    surface.navigate(start)
 
     return app.exec()
 

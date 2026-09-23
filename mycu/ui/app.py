@@ -233,6 +233,8 @@ def main(argv: list[str] | None = None) -> int:
     # the palette agree on which one is showing.
     ctx.setContextProperty("settings", settings)
     ctx.setContextProperty("platformSurface", surface_qml)
+    # Desktop only: the persistent profile WebSurfaceDesktop.qml binds to.
+    ctx.setContextProperty("webProfile", backend.qml_profile())
 
     engine.addImportPath(str(QML_DIR))
     engine.load(QUrl.fromLocalFile(str(QML_DIR / "Main.qml")))
@@ -249,7 +251,14 @@ def main(argv: list[str] | None = None) -> int:
         chapel.refreshAll()
         dining.refreshAll()
 
-    return app.exec()
+    try:
+        return app.exec()
+    finally:
+        # Tear down in dependency order rather than leaving it to Python, which
+        # frees main()'s locals in no particular order: QtWebEngine segfaults
+        # if the web profile goes before the views using it.
+        del engine
+        backend.shutdown()
 
 
 def run() -> None:

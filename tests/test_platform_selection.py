@@ -186,3 +186,32 @@ def test_the_shared_qml_never_imports_a_web_module() -> None:
 
 def test_describe_mentions_the_backend() -> None:
     assert mycu_platform.backend_name() in mycu_platform.describe()
+
+
+def test_desktop_profile_actually_persists(tmp_path: Path) -> None:
+    """The login must survive a relaunch, or every test run costs an MFA prompt.
+
+    Qt 6's default profile is off-the-record and silently ignores a storage
+    path, so this asserts on what Qt reports back rather than on what we set.
+    Runs in a subprocess because QtWebEngine must initialise before any
+    QGuiApplication, and other tests may already have made one.
+    """
+    import subprocess
+    import sys
+
+    script = f"""
+from pathlib import Path
+from PySide6.QtGui import QGuiApplication
+from mycu.platform.desktop import DesktopBackend
+backend = DesktopBackend()
+backend.before_app()
+app = QGuiApplication([])
+backend.configure_profile(Path({str(tmp_path)!r}))
+p = backend.qml_profile()
+print(p.isOffTheRecord(), p.persistentCookiesPolicy().name, p.persistentStoragePath())
+"""
+    out = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=60
+    )
+    assert out.returncode == 0, out.stderr
+    assert out.stdout.split()[-3:] == ["False", "ForcePersistentCookies", str(tmp_path)]

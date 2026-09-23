@@ -36,6 +36,11 @@ Item {
         id: view
         anchors.fill: parent
 
+        // The persistent profile from DesktopBackend.configure_profile. Without
+        // it the view uses Qt's default profile, which is off-the-record, and
+        // the sign-in (and its MFA prompt) is lost on every relaunch.
+        profile: webProfile
+
         // A blank start page: app.py decides where to go, via
         // LoginController.begin(), so that RelayState carries the return path.
         url: "about:blank"

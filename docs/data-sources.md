@@ -12,7 +12,7 @@ important fact for planning, and it is why the transport now routes by origin.
 | 2 | Home Cooking, every meal | `diningdata.cedarville.edu` | **none** | ✅ **done, live** |
 | 4 | Next chapel speaker | `mediaserve.cedarville.edu` | **none** | ✅ **done, live** |
 | 3 | Chapel skips remaining | `selfservice.cedarville.edu` | SAML / Entra | ✅ **done, real API** |
-| 1 | Flex dollar balance | `selfservice.cedarville.edu/Cedarinfo/Meals` | same Cedarville sign-in | ✅ **done, real page** |
+| 1 | Flex dollar balance | `selfservice.cedarville.edu/CedarInfo/Meals/GetBalanceJson` | same Cedarville sign-in | ✅ **done, real endpoint** |
 | 6 | Meals left this week | same page as #1 | same | ✅ **done, real page** |
 
 ---
@@ -108,69 +108,56 @@ anywhere in the real data.
 
 ---
 
-## ✅ 1 & 6. Flex dollars and meals left — DONE
+## ✅ 1 & 6. Flex dollars and meals left — DONE (re-done 2026-09-22)
 
-**Transact is not needed.** These live at
+**Transact is not needed.** These live on Self-Service, same origin and same
+Microsoft sign-in as chapel, with no second credential.
+
+In September 2026 the page was rebuilt as a Vue app, which broke the original
+prose scraper. Recaptured with `scripts/discover meals`, the page now works in
+two steps, and `MealsProvider.fetch` does the same:
 
 ```
-GET https://selfservice.cedarville.edu/Cedarinfo/Meals
+GET /Cedarinfo/Meals
+    → HTML with no figures, only who to look up:
+      <cu-container id="app" data-target-id="0000000" data-target-card="" …>
+
+GET /CedarInfo/Meals/GetBalanceJson?id=0000000      (plain GET, no token or header)
+    → {"Status": "ok", "Found": true, "PlanName": "21 Meals",
+       "Balances": [
+         {"Name": "Board Meals",   "Type": "MEAL",     "Amount": 16,     "IsCurrency": false},
+         {"Name": "Flex Dollars",  "Type": "DEBIT",    "Amount": 102.34, "IsCurrency": true},
+         {"Name": "Meal Exchange", "Type": "EXCHANGE", "Amount": 16,     "IsCurrency": false}],
+       "RecentTransactions": [{"Date", "Activity", "MealPeriod", "Amount", "IsDeposit"}, …]}
 ```
 
-— same origin, same Microsoft sign-in as chapel. No second credential, no
-second cookie jar, existing transport unchanged.
+`Status` can also be `"error"` (with a `Message`) or `"no_card"`, and
+`Found: false` means no plan on file. Those last two render as blanks rather
+than as errors.
 
-Server-rendered, and worth stating plainly: **no table, no JSON.** The numbers
-are prose inside `<strong>` tags in one `<fieldset>`:
+### Which dollars are which
 
-```html
-<fieldset>
-  <legend><strong>Meal Plan Information</strong></legend>
-  <h5>Sample Student</h5>
-  <p>You have <strong>19</strong> meal(s) remaining in your meal plan for the current week.</p>
-  <p>You have <strong>$112.08</strong> remaining in Meal Plan Dining Dollars.
-     These dollars expire at the <span style="color:red;">end of the current term</span>, so use them!</p>
-  <p>You have <strong>$0.00</strong> remaining in purchased Voluntary Flex Dollars.
-     These dollars <strong>do not</strong> expire at the end of the current term.</p>
-  <p>Your Prox Card ID: <strong>0000</strong></p>
-</fieldset>
-```
+There are still two kinds of dollars, and they must not be conflated:
 
-### Two traps in that markup
+- **"Flex Dollars"** on the new page is what the old page called **"Meal Plan
+  Dining Dollars"**: part of the plan, and they expire at term end. The proof
+  is the same account five days apart: $112.08 before, $102.34 after two flex
+  purchases of exactly $3.74 + $6.00. It is `MealPlan.dining_dollars`, shown
+  as *Temporary Flex*.
+- **Voluntary Flex Dollars** (purchased, do not expire) are `flex_dollars`,
+  shown as *Permanent Flex*. The captured response had **no** such tender (the
+  old page showed $0.00). A tender is only treated as voluntary when its name
+  says so, so Permanent Flex shows "—", not a guessed $0.00.
 
-1. **There are *two* dollar balances, not one.** "Meal Plan Dining Dollars"
-   expire at the end of term; "Voluntary Flex Dollars" are purchased separately
-   and do not. You asked for "flex dollar balance" — on this page that is
-   unambiguously the second one, which currently reads **$0.00**. Reporting only
-   that would be technically right and practically useless, so the app shows
-   both, each labelled with its own expiry. Say the word if you want only one.
-2. **The Voluntary Flex paragraph contains a second `<strong>`** — the
-   `<strong>do not</strong>` in "These dollars **do not** expire". Reading "a
-   `<strong>` in the paragraph" would eventually return the string `"do not"`
-   instead of an amount. Only the *first* `<strong>` per paragraph is read, and
-   a test guards it.
+Tenders are matched by `Type` and name, never by position. *Meal Exchange* is
+parsed past but not shown.
 
-Paragraphs are matched by phrase, never by position, so a reordering upstream
-cannot silently shift the values. Every figure is independently optional: a
-missing one renders as blank, never as a confident `0` or `$0.00`.
+### The plan's name
 
-### What this page does *not* say: the plan's name
-
-There is no "14 Meals per week" anywhere on it. The only thing the page states
-about the plan itself is the **cycle** the count runs on — "…remaining in your
-meal plan for the current *week*" — so that is what is parsed
-(`MealPlan.period`) and that is what the summary screen shows: "Weekly meal
-plan", with the count beside it as "19 left this week".
-
-The cycle is read rather than assumed because per-term block plans exist, and
-telling a block-plan holder their meals reset on Sunday would be a wrong
-statement about their own account. An unrecognised wording gives `""` and the
-UI simply drops the qualifier.
-
-**If you want the plan's real name on the card**, it has to come from
-somewhere: either another Self-Service page that states it (recapture with
-`scripts/discover` and say which page), or you tell the app once and it stores
-it. It is not on this page, and inventing "14 Meals per week" from a count of
-19 is not something the app will do.
+The endpoint now gives it (`PlanName`: "21 Meals", "Block 120"), so the summary
+card shows "21 Meals per week". The cycle is still read from the name rather
+than assumed: "N Meals" is weekly and "Block …" is per term. Any other name is
+shown as is, with no "this week" qualifier.
 
 ## ✂️ 5. Print quota — dropped
 

@@ -1,79 +1,261 @@
-"""Meal plan, against a REAL captured page.
+"""Meal plan, against a REAL captured page and endpoint.
 
-Fixture: `tests/fixtures/cedarinfo_meals.html`, trimmed from a signed-in capture
-of `selfservice.cedarville.edu/Cedarinfo/Meals` on 2026-09-17. The name and prox
-card ID are scrubbed; the balances are verbatim, because they are the thing
-being parsed.
+Fixtures, both from a signed-in capture on 2026-09-22 (``scripts/discover meals``):
+
+* ``tests/fixtures/cedarinfo_meals.html`` — the Vue page, trimmed. It carries
+  no figures, only ``data-target-id`` (scrubbed to 0000000).
+* ``tests/fixtures/cedarinfo_meals_getbalancejson.json`` — what
+  ``/CedarInfo/Meals/GetBalanceJson`` returned. Balances and plan name are
+  verbatim, because they are the thing being parsed; the transaction rows are
+  replaced with made-up ones of the same shape.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
-from mycu.core.errors import ParseError
+from mycu.core.errors import ParseError, SessionExpired
 from mycu.core.models import MealPlan
-from mycu.core.providers.meals import MEALS_PATH, MealsProvider, parse_meals
-from mycu.core.transport import FixtureTransport
+from mycu.core.providers.meals import (
+    BALANCE_PATH,
+    MEALS_PATH,
+    MealsProvider,
+    MealsTarget,
+    balance_path,
+    parse_balance,
+    parse_target,
+)
+from mycu.core.transport import FixtureTransport, Response
 
 
 @pytest.fixture
-def page(fixtures_dir: Path) -> str:
-    return (fixtures_dir / "cedarinfo_meals.html").read_text()
+def balance(fixtures_dir: Path) -> dict:
+    return json.loads((fixtures_dir / "cedarinfo_meals_getbalancejson.json").read_text())
 
 
 @pytest.fixture
-def plan(page: str) -> MealPlan:
-    return parse_meals(page)
+def plan(balance: dict) -> MealPlan:
+    return parse_balance(json.dumps(balance))
+
+
+def _with_balances(balance: dict, *tenders: dict, **fields) -> str:
+    return json.dumps({**balance, "Balances": list(tenders), **fields})
+
+
+def _tender(name: str, kind: str, amount, currency: bool) -> dict:
+    return {"Name": name, "Type": kind, "Amount": amount, "IsCurrency": currency}
 
 
 # ---------------------------------------------------------------------------
-# The three figures
+# The figures
 # ---------------------------------------------------------------------------
 
-def test_meals_remaining_this_week(plan) -> None:
-    assert plan.meals_remaining == 19
+def test_meals_remaining(plan) -> None:
+    assert plan.meals_remaining == 16
 
 
-def test_the_two_dollar_balances_are_kept_distinct(plan) -> None:
-    """Conflating them would misreport money.
+def test_flex_dollars_are_the_plans_expiring_balance(plan) -> None:
+    """The new page's "Flex Dollars" is the old "Meal Plan Dining Dollars".
 
-    "Meal Plan Dining Dollars" expire at the end of term; "Voluntary Flex
-    Dollars" are purchased separately and do not. They are different balances
-    that happen to sit in near-identical sentences.
+    Same account, five days apart: $112.08 before, $102.34 after two flex
+    purchases of $3.74 and $6.00. It expires at term end, so it is
+    ``dining_dollars`` (Temporary Flex), not the purchased kind.
     """
-    assert plan.dining_dollars == 112.08
-    assert plan.flex_dollars == 0.00
-    assert plan.dining_dollars != plan.flex_dollars
+    assert plan.dining_dollars == 102.34
+    assert isinstance(plan.dining_dollars, float)
 
 
-def test_a_zero_balance_is_zero_not_missing(plan) -> None:
-    # 0.00 and "not reported" must not collapse into each other.
-    assert plan.flex_dollars == 0.0
-    assert plan.flex_dollars is not None
+def test_an_absent_voluntary_balance_is_not_reported_rather_than_zero(plan) -> None:
+    """The endpoint lists no voluntary tender; "$0.00" would be a guess."""
+    assert plan.flex_dollars is None
+    assert MealPlan.money(plan.flex_dollars) == ""
 
 
-def test_the_second_strong_tag_is_not_mistaken_for_an_amount(plan) -> None:
-    """Regression guard for the trap in the real markup.
-
-    The Voluntary Flex paragraph reads: "You have <strong>$0.00</strong>
-    remaining … These dollars <strong>do not</strong> expire". Reading any
-    <strong> rather than the first would eventually yield the string "do not".
-    """
-    assert plan.flex_dollars == 0.00
-    assert isinstance(plan.flex_dollars, float)
+def test_meal_exchanges_are_not_mistaken_for_meals_or_money(plan) -> None:
+    # "Meal Exchange" also has an Amount of 16 in the capture; it must not be
+    # what fills either figure, whatever the order.
+    assert plan.dining_dollars != 16.0
 
 
-def test_the_meal_count_is_never_read_as_money(plan) -> None:
-    """19 meals must not become $19.00."""
-    assert plan.dining_dollars != 19.0
-    assert plan.flex_dollars != 19.0
+def test_a_voluntary_balance_is_recognised_by_name(balance) -> None:
+    plan = parse_balance(_with_balances(
+        balance,
+        _tender("Voluntary Flex Dollars", "DEBIT", 25, True),
+        _tender("Flex Dollars", "DEBIT", 80.5, True),
+        _tender("Board Meals", "MEAL", 3, False),
+    ))
+    assert plan.flex_dollars == 25.0
+    assert plan.dining_dollars == 80.5
+    assert plan.meals_remaining == 3
 
 
-def test_name_and_prox_card(plan) -> None:
-    assert plan.student_name == "Sample Student"
-    assert plan.prox_card_id == "0000"
+def test_tenders_are_matched_by_type_not_position(balance) -> None:
+    tenders = list(reversed(balance["Balances"]))
+    plan = parse_balance(_with_balances(balance, *tenders))
+    assert plan.meals_remaining == 16
+    assert plan.dining_dollars == 102.34
+
+
+def test_a_zero_balance_is_zero_not_missing(balance) -> None:
+    plan = parse_balance(_with_balances(balance, _tender("Flex Dollars", "DEBIT", 0, True)))
+    assert plan.dining_dollars == 0.0
+    assert plan.dining_dollars is not None
+
+
+def test_a_null_amount_is_not_reported(balance) -> None:
+    plan = parse_balance(_with_balances(
+        balance,
+        _tender("Flex Dollars", "DEBIT", None, True),
+        _tender("Board Meals", "MEAL", 4, False),
+    ))
+    assert plan.dining_dollars is None
+    assert plan.meals_remaining == 4
+
+
+# ---------------------------------------------------------------------------
+# Plan name and cycle
+#
+# Read off PlanName rather than assumed. Weekly plans and per-term block plans
+# both exist, and telling a block-plan holder their meals reset on Sunday would
+# be a wrong statement about their own account.
+# ---------------------------------------------------------------------------
+
+def test_the_real_plan_is_weekly(plan) -> None:
+    assert plan.plan_name == "21 Meals"
+    assert plan.period == "week"
+    assert plan.period_text == "this week"
+    assert plan.plan_description == "21 Meals per week"
+
+
+def test_a_block_plan_is_per_term(balance) -> None:
+    plan = parse_balance(_with_balances(
+        balance, _tender("Board Meals", "MEAL", 90, False), PlanName="Block 120",
+    ))
+    assert plan.period == "term"
+    assert plan.plan_description == "Block 120"
+
+
+def test_an_unrecognised_plan_name_says_nothing_about_the_cycle(balance) -> None:
+    plan = parse_balance(_with_balances(
+        balance, _tender("Board Meals", "MEAL", 7, False), PlanName="Commuter Special",
+    ))
+    assert plan.period == ""
+    assert plan.period_text == ""
+    assert plan.plan_description == "Commuter Special"
+    assert plan.meals_remaining == 7        # still parsed; only the cycle is unknown
+
+
+def test_no_plan_name_falls_back_to_the_cycle_or_nothing() -> None:
+    assert MealPlan(period="week").plan_description == "Weekly meal plan"
+    assert MealPlan().plan_description == ""
+
+
+# ---------------------------------------------------------------------------
+# Answers that are not balances
+# ---------------------------------------------------------------------------
+
+def test_no_plan_on_file_is_an_empty_plan_not_an_error(balance) -> None:
+    plan = parse_balance(json.dumps({**balance, "Found": False, "Balances": []}))
+    assert not plan.has_any
+
+
+def test_no_id_card_is_an_empty_plan_not_an_error() -> None:
+    plan = parse_balance(json.dumps({"Status": "no_card", "Message": "No card", "Found": False}))
+    assert not plan.has_any
+
+
+def test_a_server_error_is_reported_with_its_message() -> None:
+    with pytest.raises(ParseError, match="database unavailable"):
+        parse_balance(json.dumps({"Status": "error", "Message": "database unavailable"}))
+
+
+@pytest.mark.parametrize("body", ["", "   ", "<html>login</html>", "[]"])
+def test_a_non_answer_raises(body: str) -> None:
+    with pytest.raises(ParseError):
+        parse_balance(body)
+
+
+def test_a_reshaped_response_raises_rather_than_showing_blanks(balance) -> None:
+    reshaped = {k: v for k, v in balance.items() if k != "Balances"}
+    with pytest.raises(ParseError, match="Balances"):
+        parse_balance(json.dumps({**reshaped, "Tenders": balance["Balances"]}))
+
+
+def test_unrecognised_tenders_raise_and_name_themselves(balance) -> None:
+    with pytest.raises(ParseError, match="Swipes"):
+        parse_balance(_with_balances(balance, _tender("Swipes", "SWIPE", 4, False)))
+
+
+# ---------------------------------------------------------------------------
+# The page: only who to look up
+# ---------------------------------------------------------------------------
+
+def test_the_target_is_read_off_the_real_page(fixtures_dir: Path) -> None:
+    target = parse_target((fixtures_dir / "cedarinfo_meals.html").read_text())
+    assert target == MealsTarget(person_id="0000000", card="")
+
+
+def test_a_page_without_a_target_raises() -> None:
+    with pytest.raises(ParseError, match="data-target-id"):
+        parse_target("<html><body><p>You have <strong>19</strong> meals.</p></body></html>")
+
+
+def test_the_balance_url_sends_only_what_the_page_sends() -> None:
+    # The recorded request was ?id=… alone: the empty card is left off.
+    assert balance_path(MealsTarget("0000000", "")) == f"{BALANCE_PATH}?id=0000000"
+    assert balance_path(MealsTarget("", "12345")) == f"{BALANCE_PATH}?card=12345"
+    assert balance_path(MealsTarget()) == BALANCE_PATH
+
+
+# ---------------------------------------------------------------------------
+# The provider
+# ---------------------------------------------------------------------------
+
+def test_provider_path_is_on_selfservice() -> None:
+    # Not Transact: same origin and same sign-in as chapel.
+    assert MealsProvider.path == MEALS_PATH == "/Cedarinfo/Meals"
+    assert BALANCE_PATH.startswith("/CedarInfo/Meals/")
+
+
+def test_provider_end_to_end_over_the_fixtures(fixtures_dir: Path) -> None:
+    plan = MealsProvider(FixtureTransport(fixtures_dir)).fetch()
+    assert plan.meals_remaining == 16
+    assert plan.dining_dollars == 102.34
+    assert plan.flex_dollars is None
+    assert plan.plan_description == "21 Meals per week"
+
+
+class _RecordingTransport:
+    """Serves the fixtures and remembers what was asked for, in order."""
+
+    def __init__(self, fixtures_dir: Path, login_on: str = "") -> None:
+        self.inner = FixtureTransport(fixtures_dir)
+        self.login_on = login_on
+        self.paths: list[str] = []
+
+    def get(self, path: str) -> Response:
+        self.paths.append(path)
+        if self.login_on and self.login_on in path:
+            return Response(status=200, url="https://login.microsoftonline.com/x/saml2",
+                            body="<html>SAMLRequest</html>", headers={})
+        return self.inner.get(path)
+
+
+def test_provider_asks_for_the_page_then_the_id_it_names(fixtures_dir: Path) -> None:
+    transport = _RecordingTransport(fixtures_dir)
+    MealsProvider(transport).fetch()
+    assert transport.paths == [MEALS_PATH, f"{BALANCE_PATH}?id=0000000"]
+
+
+@pytest.mark.parametrize("expires_on", [MEALS_PATH, BALANCE_PATH])
+def test_an_expired_session_on_either_request_is_reported_as_one(
+    fixtures_dir: Path, expires_on: str,
+) -> None:
+    with pytest.raises(SessionExpired):
+        MealsProvider(_RecordingTransport(fixtures_dir, login_on=expires_on)).fetch()
 
 
 # ---------------------------------------------------------------------------
@@ -95,158 +277,3 @@ def test_has_any() -> None:
     assert not MealPlan().has_any
     assert MealPlan(meals_remaining=0).has_any
     assert MealPlan(flex_dollars=0.0).has_any
-
-
-# ---------------------------------------------------------------------------
-# Robustness
-# ---------------------------------------------------------------------------
-
-def test_paragraphs_are_matched_by_phrase_not_position() -> None:
-    """Reordering upstream must not shift the values."""
-    html = """
-    <div>
-      <p>You have <strong>$5.00</strong> remaining in purchased Voluntary Flex Dollars.
-         These dollars <strong>do not</strong> expire.</p>
-      <p>You have <strong>3</strong> meal(s) remaining in your meal plan for the current week.</p>
-      <p>You have <strong>$40.00</strong> remaining in Meal Plan Dining Dollars.</p>
-    </div>
-    """
-    plan = parse_meals(html)
-    assert plan.meals_remaining == 3
-    assert plan.dining_dollars == 40.00
-    assert plan.flex_dollars == 5.00
-
-
-def test_dining_is_not_matched_by_the_flex_paragraph() -> None:
-    """Both sentences end in "Dollars"; only one is dining."""
-    html = """
-    <div><p>You have <strong>$7.00</strong> remaining in purchased Voluntary Flex Dollars.</p></div>
-    """
-    plan = parse_meals(html)
-    assert plan.flex_dollars == 7.00
-    assert plan.dining_dollars is None
-
-
-def test_a_missing_figure_is_none_not_zero() -> None:
-    html = "<div><p>You have <strong>4</strong> meal(s) remaining this week.</p></div>"
-    plan = parse_meals(html)
-    assert plan.meals_remaining == 4
-    assert plan.dining_dollars is None
-    assert plan.flex_dollars is None
-
-
-def test_a_page_with_no_meal_plan_section_raises() -> None:
-    with pytest.raises(ParseError, match="discover meals"):
-        parse_meals("<html><body><p>Some unrelated page.</p></body></html>")
-
-
-def test_an_empty_body_raises() -> None:
-    with pytest.raises(ParseError):
-        parse_meals("")
-
-
-def test_a_page_with_no_paragraphs_raises() -> None:
-    with pytest.raises(ParseError):
-        parse_meals("<html><body><div>nothing</div></body></html>")
-
-
-def test_amounts_with_thousands_separators_parse() -> None:
-    html = "<div><p>You have <strong>$1,234.56</strong> remaining in Meal Plan Dining Dollars.</p></div>"
-    assert parse_meals(html).dining_dollars == 1234.56
-
-
-def test_an_amount_without_a_strong_tag_still_parses() -> None:
-    """Belt and braces if the markup loses its emphasis tags."""
-    html = "<div><p>You have $22.50 remaining in Meal Plan Dining Dollars.</p></div>"
-    assert parse_meals(html).dining_dollars == 22.50
-
-
-def test_unclosed_paragraphs_do_not_merge_into_one() -> None:
-    """Cedarville's markup is hand-written; a missing </p> must not fuse lines.
-
-    If the three sentences collapsed into a single "paragraph", the first
-    <strong> rule would return 3 for every figure and the dining/flex
-    distinction would be lost. Note the inline <span> before the next <p>:
-    the paragraph is not the innermost open element at that point.
-    """
-    html = """
-    <fieldset>
-      <p>You have <strong>3</strong> meal(s) remaining <span>this week</span>
-      <p>You have <strong>$40.00</strong> remaining in Meal Plan Dining Dollars.
-      <p>You have <strong>$5.00</strong> remaining in purchased Voluntary Flex Dollars.
-    </fieldset>
-    """
-    plan = parse_meals(html)
-    assert plan.meals_remaining == 3
-    assert plan.dining_dollars == 40.00
-    assert plan.flex_dollars == 5.00
-
-
-def test_script_contents_are_not_read_as_page_text() -> None:
-    """The live page is ~35 KB and full of analytics tags."""
-    html = """
-    <div>
-      <script>var meals = "You have $999.99 remaining in Meal Plan Dining Dollars.";</script>
-      <p>You have <strong>$12.00</strong> remaining in Meal Plan Dining Dollars.</p>
-    </div>
-    """
-    assert parse_meals(html).dining_dollars == 12.00
-
-
-# ---------------------------------------------------------------------------
-# The provider
-# ---------------------------------------------------------------------------
-
-def test_provider_path_is_on_selfservice() -> None:
-    # Not Transact: same origin and same sign-in as chapel.
-    assert MealsProvider.path == MEALS_PATH == "/Cedarinfo/Meals"
-
-
-def test_provider_end_to_end_over_the_fixture(fixtures_dir: Path) -> None:
-    plan = MealsProvider(FixtureTransport(fixtures_dir)).fetch()
-    assert plan.meals_remaining == 19
-    assert plan.dining_dollars == 112.08
-    assert plan.flex_dollars == 0.00
-
-
-# ---------------------------------------------------------------------------
-# Which cycle the meal count runs on
-#
-# Read off the page rather than assumed. Weekly plans and per-term block plans
-# both exist, and telling a block-plan holder their meals reset on Sunday would
-# be a wrong statement about their own account.
-# ---------------------------------------------------------------------------
-
-def test_the_real_page_reports_a_weekly_cycle(fixtures_dir: Path) -> None:
-    plan = parse_meals((fixtures_dir / "cedarinfo_meals.html").read_text())
-    assert plan.period == "week"
-    assert plan.period_text == "this week"
-    assert plan.plan_description == "Weekly meal plan"
-
-
-def test_a_term_plan_is_recognised_as_one() -> None:
-    html = "<p>You have <strong>50</strong> meal(s) remaining in your meal plan for the current semester.</p>"
-    assert parse_meals(html).period == "term"
-
-
-def test_the_dollar_paragraphs_do_not_decide_the_cycle() -> None:
-    """Every page says "end of the current term" — about the money, not the meals.
-
-    Reading the period off the page as a whole would therefore call every plan
-    a term plan, including the weekly one in the committed capture.
-    """
-    html = """
-    <p>You have <strong>19</strong> meal(s) remaining in your meal plan for the current week.</p>
-    <p>You have <strong>$112.08</strong> remaining in Meal Plan Dining Dollars.
-       These dollars expire at the end of the current term, so use them!</p>
-    """
-    assert parse_meals(html).period == "week"
-
-
-def test_an_unrecognised_wording_says_nothing_rather_than_guessing() -> None:
-    html = "<p>You have <strong>7</strong> meals remaining in your meal plan.</p>"
-    plan = parse_meals(html)
-    assert plan.period == ""
-    assert plan.period_text == ""
-    assert plan.plan_description == ""
-    assert plan.meals_remaining == 7        # still parsed; only the cycle is unknown

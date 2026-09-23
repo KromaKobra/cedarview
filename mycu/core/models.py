@@ -291,27 +291,28 @@ class UpcomingChapel:
 # ---------------------------------------------------------------------------
 # Meal plan
 #
-# Verified against the real page (selfservice.cedarville.edu/Cedarinfo/Meals,
-# 2026-09-17). Server-rendered: no table, no JSON — the numbers are prose in
-# <strong> tags. Real capture (trimmed, scrubbed) in tests/fixtures/.
+# Verified against the real endpoint (selfservice.cedarville.edu/CedarInfo/
+# Meals/GetBalanceJson, recaptured 2026-09-22 after the page became a Vue app).
+# Real capture (trimmed, scrubbed) in tests/fixtures/.
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True, slots=True)
 class MealPlan:
-    """The three balances the meal-plan page reports.
+    """The balances the meal-plan page reports.
 
     .. important::
        **There are two different dollar balances**, and conflating them would
        misreport money:
 
-       * :attr:`dining_dollars` — "Meal Plan Dining Dollars". Part of the meal
-         plan, and they **expire at the end of the term**.
-       * :attr:`flex_dollars` — "purchased Voluntary Flex Dollars". Bought
-         separately, and they **do not expire**.
+       * :attr:`dining_dollars` — the plan's own dollars. The page called them
+         "Meal Plan Dining Dollars" until September 2026 and now calls them
+         "Flex Dollars". They **expire at the end of the term** (the app's
+         "Temporary Flex").
+       * :attr:`flex_dollars` — purchased "Voluntary Flex Dollars", bought
+         separately, which **do not expire** ("Permanent Flex").
 
-       "Flex dollars" colloquially often means the first one, but on this page
-       it is unambiguously the second. Both are surfaced, each labelled with its
-       own expiry, rather than picking one and hoping.
+       Both are surfaced, each labelled with its own expiry, rather than
+       picking one and hoping.
 
     Every field is optional: a student with no meal plan, or a page that changes
     shape, must render as "not reported" rather than as a confident zero.
@@ -320,13 +321,14 @@ class MealPlan:
     meals_remaining: int | None = None
     dining_dollars: float | None = None
     flex_dollars: float | None = None
-    student_name: str = ""
-    prox_card_id: str = ""
+
+    #: The plan as Self-Service names it — "21 Meals", "Block 120" — or ``""``.
+    plan_name: str = ""
 
     #: Which cycle :attr:`meals_remaining` counts down — ``"week"`` or
-    #: ``"term"``, and ``""`` when the page did not say. Read off the sentence
-    #: ("…for the current week"), never assumed: block plans are per-term and
-    #: telling a term-plan holder their meals reset on Sunday would be wrong.
+    #: ``"term"``, and ``""`` when unknown. Read off :attr:`plan_name`, never
+    #: assumed: block plans are per-term and telling a term-plan holder their
+    #: meals reset on Sunday would be wrong.
     period: str = ""
 
     #: How long :attr:`meals_remaining` lasts, in words — "this week" /
@@ -336,11 +338,13 @@ class MealPlan:
     def period_text(self) -> str:
         return f"this {self.period}" if self.period else ""
 
-    #: "Weekly meal plan" / "Semester meal plan" / "" — the closest thing to a
-    #: plan *name* the page supports. The actual plan name ("14 Meals per week")
-    #: is not on the meal-plan page; see docs/data-sources.md.
+    #: "21 Meals per week" / "Block 120" / "Weekly meal plan" / "" — the plan's
+    #: name when Self-Service gave one, with the cycle spelled out when the name
+    #: alone does not say it.
     @property
     def plan_description(self) -> str:
+        if self.plan_name:
+            return f"{self.plan_name} per week" if self.period == "week" else self.plan_name
         return {"week": "Weekly meal plan", "term": "Semester meal plan"}.get(
             self.period, ""
         )

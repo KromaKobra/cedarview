@@ -46,34 +46,48 @@ class DesktopBackend:
     def after_app(self, app: object) -> None:
         """Nothing to do — QtWebEngine is already up."""
 
-    def _default_profile(self):
-        from PySide6.QtWebEngineCore import QWebEngineProfile
-
-        if self._profile is None:
-            self._profile = QWebEngineProfile.defaultProfile()
-        return self._profile
-
     def configure_profile(self, storage_dir: Path) -> None:
         """Persist cookies under ``storage_dir`` so the login survives restarts.
 
-        Without this the default profile is off-the-record and every launch
-        starts at the Microsoft sign-in page — which works, but is miserable.
+        This has to be a profile of our own. In Qt 6 the default profile is
+        off-the-record, and an off-the-record profile silently ignores
+        ``setPersistentStoragePath`` and forces ``NoPersistentCookies`` — so
+        configuring the default one looks right and persists nothing. Every
+        launch would then start at the Microsoft sign-in page and trigger a
+        fresh MFA prompt.
+
+        The profile is handed to QML as ``webProfile`` (see :meth:`qml_profile`)
+        and bound by ``WebSurfaceDesktop.qml``. Must run after
+        ``QGuiApplication`` exists and before the QML engine loads.
         """
-        from PySide6.QtWebEngineCore import QWebEngineProfile
+        from PySide6.QtWebEngineQuick import QQuickWebEngineProfile
 
         storage_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
 
-        profile = self._default_profile()
+        # Order matters: setting the storage name resets the paths to their
+        # defaults, and it does not by itself clear the off-the-record flag.
+        profile = QQuickWebEngineProfile()
+        profile.setStorageName("mycu")
+        profile.setOffTheRecord(False)
         profile.setPersistentStoragePath(str(storage_dir))
         profile.setCachePath(str(storage_dir / "cache"))
         profile.setPersistentCookiesPolicy(
-            QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies
+            QQuickWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies
         )
+        self._profile = profile
         log.info("web profile persisted at %s", storage_dir)
 
+    def qml_profile(self) -> object | None:
+        return self._profile
+
+    def shutdown(self) -> None:
+        """Drop the profile. Only safe after every view using it is destroyed."""
+        self._profile = None
+
     def clear_cookies(self) -> None:
-        profile = self._default_profile()
-        profile.cookieStore().deleteAllCookies()
+        if self._profile is None:
+            return
+        self._profile.cookieStore().deleteAllCookies()
         log.info("desktop cookies cleared")
 
     def user_agent_note(self) -> str:

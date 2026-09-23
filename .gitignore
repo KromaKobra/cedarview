@@ -43,7 +43,7 @@ android-build/
 
 # Written by scripts/make-icon-layers every time the icon is regenerated. It is
 # a look-at-it-and-decide check, not an asset.
-assets/_preview.png
+assetignore/
 
 # Release signing material, in case it is ever kept beside the project rather
 # than in ~/keys. Committing it would hand anyone the ability to publish an

@@ -1,0 +1,57 @@
+{
+  "Status": "ok",
+  "Message": null,
+  "Found": true,
+  "PlanName": "21 Meals",
+  "Balances": [
+    {
+      "Name": "Board Meals",
+      "Type": "MEAL",
+      "Amount": 16,
+      "IsCurrency": false
+    },
+    {
+      "Name": "Flex Dollars",
+      "Type": "DEBIT",
+      "Amount": 102.34,
+      "IsCurrency": true
+    },
+    {
+      "Name": "Meal Exchange",
+      "Type": "EXCHANGE",
+      "Amount": 16,
+      "IsCurrency": false
+    }
+  ],
+  "RecentTransactions": [
+    {
+      "Date": "2026-01-02T19:05:00",
+      "Activity": "Board meal",
+      "MealPeriod": "Dinner",
+      "Amount": null,
+      "IsDeposit": false
+    },
+    {
+      "Date": "2026-01-02T12:25:00",
+      "Activity": "Board meal",
+      "MealPeriod": "Lunch",
+      "Amount": null,
+      "IsDeposit": false
+    },
+    {
+      "Date": "2026-01-01T17:45:00",
+      "Activity": "Meal exchange",
+      "MealPeriod": "Dinner",
+      "Amount": null,
+      "IsDeposit": false
+    },
+    {
+      "Date": "2026-01-01T19:30:00",
+      "Activity": "Flex purchase",
+      "MealPeriod": "Dinner",
+      "Amount": 3.74,
+      "IsDeposit": false
+    }
+  ],
+  "Admin": null
+}
