@@ -1,1212 +1,332 @@
 #!/usr/bin/env bash
 # Android build driver.
 #
-#   nix develop                  # then:
-#   mycu-android-build           # the FHS env — REQUIRED
-#   ./scripts/build-apk          # this script
+#   nix develop --command cedarview-android-build -c ./scripts/build-apk [flags]
 #
-# or in one shot:
-#
-#   nix develop --command mycu-android-build -c ./scripts/build-apk
+# (`cedarview-android-build` is the FHS shell from flake.nix; everything the
+# Android build runs — the NDK's clang, Gradle's JVM, the SDK tools and the
+# host Qt tools — is a prebuilt Linux binary that expects one.)
 #
 # Flags:
-#   --install    adb install -r the APK onto the connected device afterwards
-#   --clean      discard the staging tree and the buildozer state first
-#   --release    a signed release APK, for GitHub Releases (needs P4A_RELEASE_*)
-#   --aab        a signed release App Bundle, for Google Play (implies --release)
+#   --install        adb install -r the result onto the connected device afterwards
+#   --clean          throw away build-android/ first
+#   --release        a release APK signed with your key, for GitHub Releases
+#   --aab            a release App Bundle signed with your key, for Google Play
+#                    (implies --release)
+#   --out-dir DIR    where --release/--aab copy their artifact (default: the
+#                    repo root). Use a scratch directory for any build signed
+#                    with a throwaway key — see "Signing" below.
 #
-# The first build after changing the target API, minSdk or the 16 KB link
-# flags must be a --clean one: python-for-android caches compiled recipes and
-# will otherwise ship libraries built under the old settings. The 16 KB gate at
-# the end fails such a build rather than letting it through.
+# What it does, in order:
+#
+#   1. Re-runs itself with a clean environment (see "Why env -i").
+#   2. Checks the SDK, the NDK and the signing variables.
+#   3. Fetches the Qt Android kit into .qt/ with aqtinstall, once.
+#   4. Configures CMakeLists.txt with the kit's qt-cmake into build-android/,
+#      and builds the `apk` or `aab` target — androiddeployqt and Gradle.
+#   5. Runs the gates over the artifact that will actually ship: signature,
+#      16 KB alignment, the manifest (identity, API levels, back-gesture
+#      opt-out, INTERNET as the only permission, not debuggable), and for a
+#      bundle the download size Play will measure.
+#   6. Copies a --release/--aab artifact to the output directory, and installs.
+#
+# There is no Python in the APK any more. The app is C++ (src/) and QML (qml/),
+# and the APK holds Qt's libraries and libcedarview. This script used to be
+# ~1,400 lines of buildozer, python-for-android and shiboken workarounds; none
+# of them apply now. See docs/android.md for the history, if you need it.
 #
 # ---------------------------------------------------------------------------
-# Why this builds from a COPY of the project (android-build/)
+# Signing
 # ---------------------------------------------------------------------------
 #
-# NOTE ON THE NAME: it is `android-build/`, not `.android-build/`, and that
-# matters. buildozer's _copy_application_sources() filters hidden directories
-# with
+# Every artifact is signed, because an unsigned APK installs nowhere:
 #
-#     if True in [x.startswith('.') for x in root.split(sep)]: continue
+#   default     ~/.android/debug.keystore (created if missing) — the same key
+#               Gradle has always used for debug builds, so `adb install -r`
+#               replaces an earlier debug install instead of refusing it.
+#   --release   your release key, from
+#   --aab         QT_ANDROID_KEYSTORE_PATH       (alias P4A_RELEASE_KEYSTORE)
+#                 QT_ANDROID_KEYSTORE_ALIAS      (alias P4A_RELEASE_KEYALIAS)
+#                 QT_ANDROID_KEYSTORE_STORE_PASS (alias P4A_RELEASE_KEYSTORE_PASSWD)
+#                 QT_ANDROID_KEYSTORE_KEY_PASS   (alias P4A_RELEASE_KEYALIAS_PASSWD)
+#               The P4A_RELEASE_* names are what this project used before the
+#               move to C++, so an existing setup keeps working unchanged.
 #
-# which tests the **absolute** path, not the path relative to source.dir. A
-# staging directory called `.android-build` therefore makes every single file
-# look hidden, buildozer copies nothing at all, and the build dies much later
-# and very confusingly with:
-#
-#     BUILD FAILURE: No main.py(c) found in your app directory.
-#
-# Do not rename this to a dotted directory, and do not put the project under
-# one either.
-#
-# pyside6-android-deploy decides which Qt modules to bundle by scanning every
-# .py and .qml file under the project directory. Two files in this repo are
-# desktop-only and name QtWebEngine:
-#
-#     mycu/platform/desktop.py          from PySide6.QtWebEngineQuick import …
-#     mycu/ui/qml/WebSurfaceDesktop.qml import QtWebEngine
-#
-# QtWebEngine does not exist on Android, so if the scanner sees either of them
-# the build dies with:
-#
-#     FileNotFoundError: libQt6WebEngineCore_arm64-v8a.so not found inside the wheel
-#
-# Pinning `modules` in pysidedeploy.spec does NOT help, and it is worth
-# recording why, because it looks like it should. Two bugs in the 6.11 tool:
-#
-#   1. deploy_lib/config.py, end of Config.__init__, runs `self.modules = []`.
-#      That is the property SETTER, which writes an empty `modules` back into
-#      the parsed config — before AndroidConfig reads it. A pinned value is
-#      therefore always discarded and the scan always runs.
-#
-#   2. deploy_lib/android/android_config.py reads ndk_path under
-#      `elif not existing_config_file:` — inverted, so supplying a spec that
-#      already contains ndk_path makes it read None and crash with
-#      `TypeError: unsupported operand type(s) for /: 'NoneType' and 'str'`.
-#
-# Both are sidestepped by building in a staging tree that simply does not
-# contain the desktop files, and letting the tool generate its own spec there
-# from scratch. Nothing in your working tree is moved or modified, which also
-# means an interrupted build cannot leave the repo in a half-state.
-#
-# Desktop behaviour is unaffected: mycu.platform.current_backend() imports the
-# desktop backend by name and only when not on Android, so the copy that goes
-# into the APK never needs those two files.
+# The first --aab you upload to Google Play fixes your upload key for good. An
+# AAB signed with any other key — a throwaway one used to test this script, say
+# — must never end up where it could be uploaded, which is why --out-dir
+# exists: point a test build at a scratch directory, never the repo root.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-VENV="$ROOT/.venv-android"
-WHEELS="$ROOT/.android-wheels"
-STAGE="$ROOT/android-build"
+step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
+die()  { printf '\033[31merror:\033[0m %s\n' "$1" >&2; exit 1; }
+warn() { printf '\033[33mwarning:\033[0m %s\n' "$1"; }
 
-PYSIDE_VERSION="6.11.0"          # must match the desktop Qt in flake.nix
-ARCH="aarch64"                   # the phone is arm64-v8a
+# --- Why env -i --------------------------------------------------------------
+#
+# The FHS shell is entered from the nix devShell, and inherits all of it: the
+# desktop Qt's directories on PATH, NIXPKGS_CMAKE_PREFIX_PATH, CMAKE_*_PATH,
+# QT_PLUGIN_PATH, NIX_CFLAGS_COMPILE. CMake's package search walks PATH, so
+# find_package(Qt6) inside the Android toolchain then finds the *desktop* Qt
+# and dies in Qt6CoreConfigExtras.cmake with a wall of include() errors. The
+# fix is not to unset a list of variables (the next nixpkgs adds another) but
+# to start from nothing and add back what the build needs.
 
-# The launcher icon, pinned in phase 1a. Absolute on purpose: buildozer
-# resolves icon.filename relative to its own root ($STAGE), not the project
-# root, so a relative path silently resolves to the wrong place.
-#
-# Note this is NOT the header logo in the app — that is mycu/ui/qml/icon.png,
-# loaded by Main.qml. They are separate files with separate delivery paths: the
-# logo rides in private.tar and can be pushed onto a device, the launcher icon
-# is a compiled Android resource and cannot. Changing one does not change the
-# other; keep them visually related by hand.
-#
-# p4a copies this file verbatim into res/mipmap/icon.png — no resize, no format
-# conversion, no density variants — so it wants to be a large square PNG with
-# alpha. See docs/iterating-and-shipping.md §2.
-ICON="$ROOT/assets/appicon.png"
+[[ -n "${CEDARVIEW_ANDROID_FHS:-}" ]] || die \
+  "not inside the Android FHS shell. Run it as
+       nix develop --command cedarview-android-build -c ./scripts/build-apk
+   The NDK, Gradle and the host Qt tools are prebuilt Linux binaries that need
+   an FHS layout; the plain devShell cannot provide one. See docs/android.md."
 
-# The adaptive (Oreo and later) pair. ICON above stays as the legacy fallback
-# for API < 26, and is what p4a copies to res/mipmap/icon.png.
-#
-# Both must be set or p4a prints "Received an --icon_fg or an --icon_bg
-# argument, but not both. Ignoring." and silently falls back to the legacy
-# path, which is the thing these exist to escape.
-#
-# Regenerate with scripts/make-icon-layers.
-ICON_FG="$ROOT/assets/appicon_foreground.png"
-ICON_BG="$ROOT/assets/appicon_background.png"
-QT_DL="https://download.qt.io/official_releases/QtForPython"
-WHEEL_PYSIDE="$WHEELS/pyside6-${PYSIDE_VERSION}-${PYSIDE_VERSION}-cp311-cp311-android_${ARCH}.whl"
-WHEEL_SHIBOKEN="$WHEELS/shiboken6-${PYSIDE_VERSION}-${PYSIDE_VERSION}-cp311-cp311-android_${ARCH}.whl"
+if [[ -z "${CEDARVIEW_CLEAN_ENV:-}" ]]; then
+  keep=()
+  for v in JAVA_HOME ANDROID_SDK_ROOT ANDROID_NDK_ROOT \
+           QT_ANDROID_KEYSTORE_PATH QT_ANDROID_KEYSTORE_ALIAS \
+           QT_ANDROID_KEYSTORE_STORE_PASS QT_ANDROID_KEYSTORE_KEY_PASS \
+           P4A_RELEASE_KEYSTORE P4A_RELEASE_KEYALIAS \
+           P4A_RELEASE_KEYSTORE_PASSWD P4A_RELEASE_KEYALIAS_PASSWD \
+           ANDROID_SERIAL; do
+    [[ -n "${!v:-}" ]] && keep+=("$v=${!v}")
+  done
+  exec env -i HOME="$HOME" USER="${USER:-}" TERM="${TERM:-dumb}" LANG="${LANG:-C.UTF-8}" \
+    PATH=/usr/bin:/bin CEDARVIEW_ANDROID_FHS=1 CEDARVIEW_CLEAN_ENV=1 "${keep[@]}" \
+    bash "${BASH_SOURCE[0]}" "$@"
+fi
 
-# The python-for-android checkout. buildozer clones it here on a cold build;
-# after that it is reused in place via p4a.source_dir — see pin_p4a_source_dir.
-P4A_DIR="$STAGE/.buildozer/android/platform/python-for-android"
+# --- Flags -------------------------------------------------------------------
 
 DO_INSTALL=0
 DO_CLEAN=0
 DO_RELEASE=0
 DO_AAB=0
-for arg in "$@"; do
-  case "$arg" in
+OUT_DIR="$ROOT"
+while (( $# )); do
+  case "$1" in
     --install) DO_INSTALL=1 ;;
     --clean)   DO_CLEAN=1 ;;
     --release) DO_RELEASE=1 ;;
     --aab)     DO_AAB=1; DO_RELEASE=1 ;;
-    *) printf 'unknown flag: %s\n' "$arg" >&2; exit 2 ;;
+    --out-dir) shift; [[ $# -gt 0 ]] || die "--out-dir needs a directory"; OUT_DIR="$1" ;;
+    *) die "unknown flag: $1" ;;
   esac
+  shift
 done
+mkdir -p "$OUT_DIR"
+OUT_DIR="$(cd "$OUT_DIR" && pwd)"
 
-step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
-die()  { printf '\033[31merror:\033[0m %s\n' "$1" >&2; exit 1; }
+# --- Pins --------------------------------------------------------------------
 
-# --- Preconditions ----------------------------------------------------------
+# The Qt release. It must be the one the desktop devShell uses (flake.nix /
+# flake.lock), so the QML that is tested on the desktop is the QML that ships.
+QT_VERSION="6.11.1"
+AQT_VERSION="3.3.0"
+QT_DIR="$ROOT/.qt"
+QT_ANDROID="$QT_DIR/$QT_VERSION/android_arm64_v8a"
+QT_HOST="$QT_DIR/$QT_VERSION/gcc_64"
+
+# Qt 6.11's official Android binaries are built with NDK r27c; the app must be
+# built with the same one.
+NDK_REVISION_PREFIX="27.2."
+
+# What the gates below expect of the built manifest. They are set in
+# CMakeLists.txt; restated here because the point of a gate is to check the
+# result against an independent statement of intent.
+APP_ID="com.kromakobra.cedarview"
+TARGET_SDK=36
+MIN_SDK=28
+
+BUILD="$ROOT/build-android"
+
+APP_VERSION="$(sed -n 's/^project(CedarView VERSION \([0-9.]*\).*/\1/p' CMakeLists.txt)"
+[[ -n "$APP_VERSION" ]] || die "could not read the version from project() in CMakeLists.txt"
+
+# --- Preconditions -----------------------------------------------------------
 
 step "Checking preconditions"
 
-[[ -n "${BUILDOZER_HOME:-}" ]] || die \
-  "not inside the Android FHS shell. Run 'nix develop --command mycu-android-build'
-   first (or 'nix run .#android-shell'). buildozer and python-for-android need
-   an FHS layout; the plain devShell cannot provide one. See docs/android.md."
-
 command -v java >/dev/null || die "no JDK on PATH (expected inside the FHS env)"
+[[ -n "${JAVA_HOME:-}" ]] || die "JAVA_HOME is not set (flake.nix's FHS profile sets it)"
+command -v cmake >/dev/null && command -v ninja >/dev/null || die "cmake and ninja are needed (FHS env)"
 
-# python-for-android's CPython build, and the only Android wheels Qt publishes,
-# are both 3.11; pyside6-android-deploy refuses to run on anything newer.
-PYVER="$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')"
-[[ "$PYVER" == "3.11" ]] || die \
-  "python3 in the FHS env is $PYVER, need 3.11. pyside6-android-deploy refuses
-   to start on newer ('Android deployment requires Python version 3.11 or
-   lower'), and Qt only ships cp311 Android wheels. Fix the androidFhs
-   targetPkgs in flake.nix."
-
-[[ -f "$ICON" ]] || die \
-  "launcher icon not found at $ICON. Phase 1a pins it into buildozer.spec and
-   the build would otherwise ship PySide's stock icon without saying so."
-
-# The app's identity: the applicationId, and the Play Store listing's permanent
-# key. Google Play never lets it change after the first upload, and to Android a
-# new one is a *different app* — it installs beside the old one with an empty
-# data directory rather than over it.
-#
-# It was org.mycu.mycu through v0.1.0 (GitHub only). It became
-# com.kromakobra.cedarview before the first Play upload, which is the last
-# moment that was cheap: anyone on the v0.1.0 APK uninstalls once. See §3.7 in
-# docs/iterating-and-shipping.md.
-#
-# The two halves go in by different routes. deploy_lib/android/buildozer.py
-# writes package.name from `--name` (and package.domain as "org.<name>", which
-# phase 1a then overrides). The p4a dist name follows package.name too.
-APP_PACKAGE_NAME="cedarview"
-APP_PACKAGE_DOMAIN="com.kromakobra"
-APP_ID="$APP_PACKAGE_DOMAIN.$APP_PACKAGE_NAME"
-
-# The launcher label — the name under the icon on the home screen.
-#
-# Pinned in phase 1a, not taken from `--name`: deploy_lib/android/buildozer.py
-# writes the SAME value to two keys,
-#
-#     self.set_value("app", "title",        pysidedeploy_config.title)
-#     self.set_value("app", "package.name", pysidedeploy_config.title)
-#
-# and the package name wants to be lower-case while the label does not.
-APP_TITLE="CedarView"
-
-# Target and minimum Android API.
-#
-# ANDROID_API is targetSdk and compileSdk both (p4a's build.tmpl.gradle uses one
-# value for the two). Google Play has required 36 for new apps and updates
-# since 2026-08-31; buildozer's own default is 31, which is what every build
-# before this one shipped. Raise it each year when Play does — check
-# https://developer.android.com/google/play/requirements/target-sdk.
-#
-# ANDROID_MINAPI is Qt 6.11's floor: "Android 9 (API 28) to 16 (API 36)" per
-# doc.qt.io/qt-6/android.html. It was buildozer's default of 21, which would let
-# Play offer the app to Android 5–8 phones it cannot run on. buildozer passes
-# the same value as --ndk-api, so changing it needs a --clean build.
-ANDROID_API=36
-ANDROID_MINAPI=28
-
-# The app version, read from the source rather than left at buildozer's default.
-#
-# buildozer's own default.spec says `version = 0.1` and nothing connects it to
-# this project, so every build — including every release — carried versionCode
-# 10211. Android derives the upgrade ordering from that number, so two releases
-# that share it are not an upgrade pair. Phase 1a pins it from __version__.
-APP_VERSION="$(python3 -c "
-import re, pathlib
-src = pathlib.Path('$ROOT/mycu/__init__.py').read_text()
-print(re.search(r'__version__\s*=\s*[\"\']([^\"\']+)', src).group(1))
-")"
-[[ -n "$APP_VERSION" ]] || die "could not read __version__ from mycu/__init__.py"
+# The SDK and NDK the Python build downloaded are reused as they are.
+SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/.buildozer/android/platform/android-sdk}"
+NDK_ROOT="${ANDROID_NDK_ROOT:-$HOME/.pyside6_android_deploy/android-ndk/android-ndk-r27c}"
+[[ -d "$SDK_ROOT/platforms/android-$TARGET_SDK" ]] || die \
+  "the Android SDK at $SDK_ROOT has no platforms/android-$TARGET_SDK.
+   Set ANDROID_SDK_ROOT, or install it with sdkmanager \"platforms;android-$TARGET_SDK\"."
+BUILD_TOOLS="$(find "$SDK_ROOT/build-tools" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -1)"
+[[ -n "$BUILD_TOOLS" ]] || die "no build-tools under $SDK_ROOT/build-tools"
+NDK_REV="$(sed -n 's/^Pkg.Revision *= *//p' "$NDK_ROOT/source.properties" 2>/dev/null || true)"
+[[ "$NDK_REV" == "$NDK_REVISION_PREFIX"* ]] || die \
+  "the NDK at $NDK_ROOT is '${NDK_REV:-missing}', but Qt $QT_VERSION for Android is built
+   with r27c ($NDK_REVISION_PREFIX*). Set ANDROID_NDK_ROOT to an r27c install."
+echo "SDK $SDK_ROOT (build-tools $(basename "$BUILD_TOOLS")), NDK $NDK_REV"
 
 if (( DO_RELEASE )); then
-  # p4a signs the APK itself, from these four. buildozer checks all four and
-  # silently drops --sign if any is missing, which yields an UNSIGNED release
-  # APK that no phone will install — so check here, where it can be explained.
-  for v in P4A_RELEASE_KEYSTORE P4A_RELEASE_KEYSTORE_PASSWD \
-           P4A_RELEASE_KEYALIAS P4A_RELEASE_KEYALIAS_PASSWD; do
+  : "${QT_ANDROID_KEYSTORE_PATH:=${P4A_RELEASE_KEYSTORE:-}}"
+  : "${QT_ANDROID_KEYSTORE_ALIAS:=${P4A_RELEASE_KEYALIAS:-}}"
+  : "${QT_ANDROID_KEYSTORE_STORE_PASS:=${P4A_RELEASE_KEYSTORE_PASSWD:-}}"
+  : "${QT_ANDROID_KEYSTORE_KEY_PASS:=${P4A_RELEASE_KEYALIAS_PASSWD:-}}"
+  for v in QT_ANDROID_KEYSTORE_PATH QT_ANDROID_KEYSTORE_ALIAS \
+           QT_ANDROID_KEYSTORE_STORE_PASS QT_ANDROID_KEYSTORE_KEY_PASS; do
     [[ -n "${!v:-}" ]] || die \
-      "--release needs \$$v set.
-   All four of P4A_RELEASE_{KEYSTORE,KEYSTORE_PASSWD,KEYALIAS,KEYALIAS_PASSWD}
-   are required; buildozer drops --sign without saying so if any is missing.
-   See docs/iterating-and-shipping.md §3.3 for generating the keystore."
+      "--release needs \$$v set (or its P4A_RELEASE_* alias).
+   See the 'Signing' notes at the top of this script, and
+   docs/iterating-and-shipping.md for generating the keystore."
   done
-  [[ -f "${P4A_RELEASE_KEYSTORE}" ]] || die \
-    "keystore not found: $P4A_RELEASE_KEYSTORE"
+  [[ -f "$QT_ANDROID_KEYSTORE_PATH" ]] || die "keystore not found: $QT_ANDROID_KEYSTORE_PATH"
+else
+  # The debug key. Gradle creates this on the first debug build of anything;
+  # create it the same way if this machine has never had one.
+  DEBUG_KEYSTORE="$HOME/.android/debug.keystore"
+  if [[ ! -f "$DEBUG_KEYSTORE" ]]; then
+    mkdir -p "$HOME/.android"
+    keytool -genkeypair -keystore "$DEBUG_KEYSTORE" -storepass android -keypass android \
+      -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 10000 \
+      -dname "CN=Android Debug,O=Android,C=US" >/dev/null
+  fi
+  QT_ANDROID_KEYSTORE_PATH="$DEBUG_KEYSTORE"
+  QT_ANDROID_KEYSTORE_ALIAS=androiddebugkey
+  QT_ANDROID_KEYSTORE_STORE_PASS=android
+  QT_ANDROID_KEYSTORE_KEY_PASS=android
 fi
+export QT_ANDROID_KEYSTORE_PATH QT_ANDROID_KEYSTORE_ALIAS \
+       QT_ANDROID_KEYSTORE_STORE_PASS QT_ANDROID_KEYSTORE_KEY_PASS
 
 if (( DO_AAB )); then
   command -v bundletool >/dev/null || die \
-    "--aab needs bundletool on PATH, to read the bundle's manifest and to turn
-   it into installable APKs. It is in flake.nix's FHS env; re-enter the shell."
+    "--aab needs bundletool on PATH, to read the bundle's manifest and to turn it into
+   installable APKs. It is in flake.nix's FHS env; re-enter the shell."
 fi
 
-# The host shiboken6 generator, for the 16 KB rebuild of libshiboken in
-# scripts/android/recipes/shiboken6. Exported by flake.nix's FHS profile.
-[[ -d "${SHIBOKEN6_HOST_PATH:-}/lib/cmake/Shiboken6Tools" ]] || die \
-  "SHIBOKEN6_HOST_PATH is not set to a host shiboken6 generator.
-   flake.nix's FHS shell exports it; re-enter it with
-   'nix develop --command mycu-android-build'."
-GEN_VERSION="$("$SHIBOKEN6_HOST_PATH/bin/shiboken6" --version 2>/dev/null | head -1)"
-[[ "$GEN_VERSION" == *"v$PYSIDE_VERSION"* ]] || die \
-  "the host shiboken6 generator is '$GEN_VERSION', but the wheels are
-   $PYSIDE_VERSION. The generated Shiboken module must come from the same
-   release as libshiboken; bump nixpkgs or PYSIDE_VERSION so they agree."
-
-for f in "$ICON_FG" "$ICON_BG"; do
-  [[ -f "$f" ]] || die \
-    "adaptive icon layer missing: $f
-   Both layers are required — p4a ignores a lone one and falls back to the
-   legacy icon. Regenerate with:
-       QT_QPA_PLATFORM=offscreen python scripts/make-icon-layers assets"
-done
-
-if command -v adb >/dev/null; then
-  if ! adb devices | tail -n +2 | grep -q '\sdevice$'; then
-    printf '\033[33mwarning:\033[0m no authorised device visible to adb.\n'
-    printf '         The APK will still build. If the phone shows as\n'
-    printf '         "unauthorized", unlock it and accept the RSA prompt.\n'
+if (( DO_INSTALL )); then
+  if ! command -v adb >/dev/null; then
+    warn "adb not on PATH; --install unavailable."
+    DO_INSTALL=0
+  elif ! adb devices | tail -n +2 | grep -q $'\tdevice$'; then
+    warn "no authorised device visible to adb. The build will still run. If the
+         phone shows as \"unauthorized\", unlock it and accept the RSA prompt."
     DO_INSTALL=0
   fi
-else
-  printf '\033[33mwarning:\033[0m adb not on PATH; --install unavailable.\n'
-  DO_INSTALL=0
 fi
-
 echo "ok"
 
 if (( DO_CLEAN )); then
   step "Cleaning"
-  rm -rf "$STAGE" "$ROOT/.buildozer" "$ROOT/deployment"
+  rm -rf "$BUILD"
 fi
 
-# --- Toolchain --------------------------------------------------------------
-
-if [[ ! -x "$VENV/bin/pyside6-android-deploy" ]]; then
-  step "Creating the Android build venv (downloads ~700 MB)"
-  rm -rf "$VENV"
-  python3 -m venv "$VENV"
-  # shellcheck disable=SC1091
-  source "$VENV/bin/activate"
-  pip install --upgrade pip
-  pip install "pyside6==${PYSIDE_VERSION}" --no-cache-dir
-  # The deploy tool's own extras (jinja2, pkginfo, tqdm, packaging==24.1). They
-  # are not dependencies of the pyside6 wheel, and without them the tool exits
-  # with a bare "The following packages are required but not installed".
-  pip install -r "$VENV/lib/python3.11/site-packages/PySide6/scripts/requirements-android.txt"
-else
-  # shellcheck disable=SC1091
-  source "$VENV/bin/activate"
-fi
-
-command -v pyside6-android-deploy >/dev/null || die \
-  "pyside6-android-deploy is still not on PATH after installing the wheel."
-
-# --- Android wheels ---------------------------------------------------------
+# --- Toolchain ---------------------------------------------------------------
 #
-# These are the Qt-for-Android builds of PySide6/shiboken6. They are NOT on
-# PyPI — only on download.qt.io — and they are what actually ends up in the
-# APK. The x86_64 variants exist too, for an emulator.
+# Two Qt kits, both from download.qt.io via aqtinstall, into the gitignored
+# .qt/: the Android one (with QtWebView, which the login and the transport
+# need), and a desktop one of the same version, whose host tools (moc, rcc,
+# qmlcachegen, androiddeployqt) the Android build runs. aqtinstall is a host
+# tool in a venv under .qt/ and never goes near the APK.
 
-if [[ ! -f "$WHEEL_PYSIDE" || ! -f "$WHEEL_SHIBOKEN" ]]; then
-  step "Downloading the PySide6 Android wheels (~80 MB)"
-  mkdir -p "$WHEELS"
-  [[ -f "$WHEEL_PYSIDE"   ]] || curl -fL --retry 3 -o "$WHEEL_PYSIDE" \
-    "$QT_DL/pyside6/$(basename "$WHEEL_PYSIDE")"
-  [[ -f "$WHEEL_SHIBOKEN" ]] || curl -fL --retry 3 -o "$WHEEL_SHIBOKEN" \
-    "$QT_DL/shiboken6/$(basename "$WHEEL_SHIBOKEN")"
-fi
-
-# Cheap guard against a truncated or HTML-error download, which otherwise
-# surfaces much later as an incomprehensible zipfile error.
-python3 - "$WHEEL_PYSIDE" "$WHEEL_SHIBOKEN" <<'PY'
-import sys, zipfile
-for path in sys.argv[1:]:
-    if not zipfile.is_zipfile(path):
-        sys.exit(f"error: {path} is not a valid wheel — delete it and re-run")
-    if "PySide6/QtWebView.abi3.so" in zipfile.ZipFile(path).namelist():
-        print("QtWebView present in the PySide6 Android wheel")
-PY
-
-# --- Staging tree -----------------------------------------------------------
-
-step "Staging the project without the desktop-only files"
-
-# Only the sources we manage are replaced. $STAGE/.buildozer holds the
-# python-for-android build tree — a cross-compiled CPython, libffi, OpenSSL and
-# the Qt libs, tens of minutes of work — so wiping it on every run would make
-# each build as slow as the first. `--clean` is the way to discard it.
-mkdir -p "$STAGE"
-rm -rf "$STAGE/mycu" "$STAGE/main.py" "$STAGE/pyproject.toml"
-
-cp "$ROOT/main.py" "$ROOT/pyproject.toml" "$STAGE/"
-cp -r "$ROOT/mycu" "$STAGE/mycu"
-
-# The two files that would drag QtWebEngine into the module scan. See the long
-# comment at the top of this script.
-rm -f "$STAGE/mycu/platform/desktop.py"
-rm -f "$STAGE/mycu/ui/qml/WebSurfaceDesktop.qml"
-find "$STAGE" -name '__pycache__' -type d -prune -exec rm -rf {} +
-
-# Fail loudly rather than produce an APK with no login, if either file is ever
-# renamed and this script is not updated with it.
-#
-# Only real import statements matter: the Python scanner looks for PySide6
-# imports and qmlimportscanner parses QML `import` lines. The word QtWebEngine
-# appears all over this codebase's prose — every docstring explaining why
-# Android uses QtWebView instead — and none of that affects the build, so the
-# pattern is anchored to import syntax rather than matching the bare word.
-WEBENGINE_IMPORT='^[[:space:]]*(import[[:space:]]+QtWebEngine|from[[:space:]]+PySide6\.QtWebEngine|import[[:space:]]+PySide6\.QtWebEngine)'
-#
-# .buildozer is excluded, and not only because it is the build tree rather than
-# the project: the shiboken6 recipe (phase 1f) unpacks the whole pyside-setup
-# source there, examples and all, and those examples import QtWebEngine. The
-# deploy tool's scan never sees that tree either — --init runs with .buildozer
-# moved aside (see "Carry .buildozer across --init").
-GUARD_ARGS=(-rE --include='*.py' --include='*.qml' --exclude-dir=.buildozer --exclude-dir=.buildozer-keep)
-if grep "${GUARD_ARGS[@]}" -l "$WEBENGINE_IMPORT" "$STAGE" >/dev/null 2>&1; then
-  grep "${GUARD_ARGS[@]}" -n "$WEBENGINE_IMPORT" "$STAGE" >&2
-  die "QtWebEngine is still IMPORTED in the staging tree (above). The module
-   scan will fail on libQt6WebEngineCore_${ARCH}.so. Update the prune list."
-fi
-
-# --- Android SDK licences ---------------------------------------------------
-#
-# buildozer downloads the SDK on first run and then stops dead on Google's
-# licence prompt, because its stdin is not a terminal:
-#
-#     Accept? (y/N): Skipping following packages as the license is not accepted
-#
-# …and the build fails several minutes later with a bare non-zero exit from
-# `buildozer android debug`, which does not mention licences at all.
-#
-# Note the SDK goes to ~/.buildozer, NOT to $BUILDOZER_HOME — buildozer 1.5.0
-# ignores that variable for the global directory, despite what the comment in
-# flake.nix used to claim. Acceptance is recorded in $SDK/licenses/ and
-# persists, so this is a one-off on a given machine.
-
-SDK_ROOT="${ANDROID_SDK_ROOT:-$HOME/.buildozer/android/platform/android-sdk}"
-if [[ -x "$SDK_ROOT/tools/bin/sdkmanager" && ! -f "$SDK_ROOT/licenses/android-sdk-license" ]]; then
-  step "Accepting the Android SDK licences"
-  yes | "$SDK_ROOT/tools/bin/sdkmanager" --licenses --sdk_root="$SDK_ROOT" >/dev/null 2>&1 || true
-  [[ -f "$SDK_ROOT/licenses/android-sdk-license" ]] \
-    && echo "accepted; recorded in $SDK_ROOT/licenses/" \
-    || printf '\033[33mwarning:\033[0m licence acceptance did not stick; the build may stop at the prompt.\n'
-fi
-
-# --- Build ------------------------------------------------------------------
-
-step "Building (python-for-android compiles CPython for $ARCH; this is slow)"
-
-cd "$STAGE"
-
-# Phase 1 — generate the config, then stop.
-#
-# No pysidedeploy.spec exists here on purpose: letting the tool create its own
-# is what keeps it on the code path where ndk_path and modules are handled
-# correctly (see the header). `--init` returns straight after writing
-# pysidedeploy.spec and buildozer.spec, and --keep-deployment-files stops the
-# `finally:` block deleting the generated recipes and jars on the way out.
-rm -f pysidedeploy.spec buildozer.spec
-
-# --- Carry .buildozer across --init ----------------------------------------
-#
-# `--init` deletes it. All of it. Every time.
-#
-#     cleanup(config=config, is_android=True)        android_deploy.py:99
-#         shutil.rmtree(project_dir / ".buildozer")  deploy_util.py:51
-#
-# That call sits ABOVE the `if init: return`, so it runs on every invocation,
-# and `--keep-deployment-files` does not cover it — that flag only guards the
-# second cleanup() in the `finally:` block further down. Two different cleanups;
-# the flag guards the one that does not matter here.
-#
-# What gets destroyed is not a cache in any cheap sense: the python-for-android
-# checkout, the cross-compiled CPython, OpenSSL and sqlite3, and the dist. So
-# "warm" rebuilds were not warm, and — the reason this was finally noticed —
-# every patch phases 1c/1d/1e apply to the p4a checkout was being deleted a
-# moment later, which made three separate fixes look like they had silently
-# failed.
-#
-# Moving it aside is enough: the deletion is a plain rmtree of that one path,
-# with no bookkeeping elsewhere that needs to agree.
-KEEP="$STAGE/.buildozer-keep"
-
-# A previous run that died between the move and the restore left the only copy
-# at $KEEP. Recover it rather than deleting it — that tree is tens of minutes
-# of cross-compilation.
-if [[ -d "$KEEP" && ! -d "$STAGE/.buildozer" ]]; then
-  mv "$KEEP" "$STAGE/.buildozer"
-  step "Recovered .buildozer left behind by an interrupted run"
-fi
-rm -rf "$KEEP"
-
-if [[ -d "$STAGE/.buildozer" ]]; then
-  mv "$STAGE/.buildozer" "$KEEP"
-  step "Moved .buildozer aside so --init cannot delete it ($(du -sh "$KEEP" | cut -f1))"
-fi
-
-# `|| INIT_RC=$?`, not a bare call: under `set -e` a non-zero exit here would
-# terminate the script before the restore below, stranding the preserved tree.
-INIT_RC=0
-pyside6-android-deploy --init --keep-deployment-files \
-  --name "$APP_PACKAGE_NAME" \
-  --wheel-pyside "$WHEEL_PYSIDE" \
-  --wheel-shiboken "$WHEEL_SHIBOKEN" || INIT_RC=$?
-
-if [[ -d "$KEEP" ]]; then
-  # --init may have created a fresh empty one; the preserved tree wins.
-  rm -rf "$STAGE/.buildozer"
-  mv "$KEEP" "$STAGE/.buildozer"
-  step "Restored .buildozer"
-fi
-
-(( INIT_RC == 0 )) || die "pyside6-android-deploy --init exited $INIT_RC"
-[[ -f buildozer.spec ]] || die "--init did not produce a buildozer.spec"
-
-# Phase 1a — pin the permissions.
-#
-# THIS IS WHY THE BUILD IS SPLIT IN TWO. pyside6-android-deploy sets
-# android.permissions to the UNION of every permission any bundled Qt module
-# declares in its dependency XML — not what the app uses. On this project that
-# came out as:
-#
-#     ACCESS_NETWORK_STATE, WRITE_EXTERNAL_STORAGE, INTERNET, ACCESS_FINE_LOCATION
-#
-# An app that reads your own chapel attendance has no business asking for your
-# location or for external storage. The app makes HTTPS requests and nothing
-# else, so the manifest says INTERNET and nothing else.
-#
-# Re-pinned on every build because phase 1 rewrites buildozer.spec each time.
-#
-# The p4a pin is the second edit, and it is not optional either:
-#
-# pyside6-android-deploy writes `p4a.branch = develop`, and python-for-android
-# moved its python3 recipe to **CPython 3.14** in commit e1bd249 (2025-10-28).
-# Qt's Android wheels are built against **3.11** — and while nearly everything
-# in them is named `*.abi3.so`, which suggests the stable ABI makes the version
-# irrelevant, `libshiboken6.abi3.so` carries a hard DT_NEEDED on
-# `libpython3.11.so`. The APK builds and installs perfectly happily, then dies
-# on launch:
-#
-#     dlopen failed: library "libpython3.11.so" not found:
-#       needed by .../lib/arm64/libshiboken6.abi3.so
-#     java.lang.UnsatisfiedLinkError ... qtMainLoopThread
-#
-# Check it yourself rather than trusting the abi3 suffix:
-#
-#     python3 -c "import re,zipfile; print(sorted(set(re.findall(
-#       rb'libpython[0-9.]*\.so',
-#       zipfile.ZipFile('$WHEEL_SHIBOKEN').read('shiboken6/libshiboken6.abi3.so')))))"
-#
-# P4A_COMMIT is the commit immediately before the 3.14 bump, so the qt
-# bootstrap stays current while CPython stays 3.11.13. Revisit when Qt ships
-# Android wheels for a newer CPython.
-P4A_COMMIT="3762c88c56e3443efb8eba2a02a2604b680240fd"   # 2025-10-26, python3 3.11.13
-
-RELEASE_ARTIFACT=apk
-(( DO_AAB )) && RELEASE_ARTIFACT=aab
-
-step "Pinning identity, target API, permissions, the p4a revision, and the launcher icon"
-python3 - buildozer.spec "$P4A_COMMIT" "$ICON" "$ICON_FG" "$ICON_BG" "$APP_VERSION" "$APP_TITLE" \
-          "$APP_PACKAGE_NAME" "$APP_PACKAGE_DOMAIN" "$ANDROID_API" "$ANDROID_MINAPI" \
-          "$RELEASE_ARTIFACT" <<'PY'
-import re, sys
-(path, p4a_commit, icon, icon_fg, icon_bg, app_version, app_title,
- package_name, package_domain, android_api, android_minapi,
- release_artifact) = sys.argv[1:13]
-text = open(path).read()
-
-
-def set_app_key(key, value):
-    """Set `key = value` in [app], replacing an existing live line if any.
-
-    A new key is anchored after the `title` line, which is inside [app].
-    Appending to the end of the file instead puts it under the LAST section —
-    [buildozer] — where `config.getdefault('app', key, ...)` cannot see it, so
-    buildozer silently falls back to its default. An ini key in the wrong
-    section is not an error to configparser; it is simply a different key.
-    The generated spec has most of these only as `#key = ...` comments, which
-    the anchored regex deliberately does not match.
-    """
-    global text
-    pattern = rf'^{re.escape(key)}\s*=.*$'
-    before = re.search(pattern, text, re.M)
-    if before:
-        text = re.sub(pattern, lambda m: f'{key} = {value}', text, flags=re.M)
-    else:
-        text, n = re.subn(r'^(title\s*=.*)$', lambda m: m.group(1) + f'\n{key} = {value}',
-                          text, count=1, flags=re.M)
-        if n != 1:
-            sys.exit(f"error: could not anchor {key} inside [app]")
-    print("was:", before.group(0) if before else "(absent)")
-    print(f"now: {key} = {value}")
-
-# p4a.source_dir is not set here but by pin_p4a_source_dir(), which runs as
-# soon as the checkout exists — see "Phase 1c" below, which now creates it
-# before anything is built.
-
-# --- The launcher label ---------------------------------------------------
-#
-# The deploy tool wrote `title` from --name, which is the lower-case package
-# name; the label the user sees is set separately.
-before = re.search(r'^title\s*=.*$', text, re.M)
-text, n = re.subn(r'^title\s*=.*$', f'title = {app_title}', text, flags=re.M)
-if n != 1:
-    sys.exit(f"error: expected exactly one title line, found {n}")
-print("was:", before.group(0) if before else "(absent)")
-print(f"now: title = {app_title}")
-
-# --- The identity ----------------------------------------------------------
-#
-# package.name came from --name. package.domain the tool derives as
-# "org.<name>"; it is pinned here. Together they are the applicationId, which
-# Play never lets change — see APP_PACKAGE_DOMAIN in the header.
-set_app_key('package.name', package_name)
-set_app_key('package.domain', package_domain)
-
-# --- Target and minimum API -----------------------------------------------
-#
-# See ANDROID_API / ANDROID_MINAPI above. accept_sdk_license lets buildozer
-# install platforms;android-<api> on the first build at a new level instead of
-# stopping at Google's licence prompt with no terminal to answer it.
-set_app_key('android.api', android_api)
-set_app_key('android.minapi', android_minapi)
-set_app_key('android.accept_sdk_license', 'True')
-
-
-# --- Version, and therefore versionCode ----------------------------------
-#
-# p4a computes versionCode as "10" + min_sdk + version_code, where version_code
-# is the dotted version folded into an integer (build.py:424). Leaving this at
-# buildozer's stock 0.1 meant every build was versionCode 10211, so no two
-# releases were ever an upgrade pair. Bump __version__ to ship an update.
-text, n = re.subn(r'^version\s*=.*$', f'version = {app_version}', text, flags=re.M)
-if n != 1:
-    sys.exit(f"error: expected exactly one version line, found {n}")
-print(f"now: version = {app_version}")
-
-# A release build defaults to an .aab (buildozer/target.py:142). That is what
-# Google Play takes (--aab), but it cannot be sideloaded, and anyone installing
-# from a GitHub release needs an .apk (--release). Always pinned explicitly, so
-# the artifact never depends on buildozer's default.
-set_app_key('android.release_artifact', release_artifact)
-
-before = re.search(r'^android\.permissions\s*=.*$', text, re.M)
-text, n = re.subn(r'^android\.permissions\s*=.*$',
-                  'android.permissions = android.permission.INTERNET', text, flags=re.M)
-if n != 1:
-    sys.exit(f"error: expected exactly one android.permissions line, found {n}")
-print("was:", before.group(0) if before else "(absent)")
-print("now: android.permissions = android.permission.INTERNET")
-
-# p4a.commit may or may not already be present; set it either way.
-if re.search(r'^p4a\.commit\s*=.*$', text, re.M):
-    text = re.sub(r'^p4a\.commit\s*=.*$', f'p4a.commit = {p4a_commit}', text, flags=re.M)
-elif re.search(r'^p4a\.branch\s*=.*$', text, re.M):
-    text = re.sub(r'^(p4a\.branch\s*=.*)$', rf'\1\np4a.commit = {p4a_commit}', text, flags=re.M)
-else:
-    sys.exit("error: no p4a.branch line to anchor p4a.commit to")
-
-# --- The Qt library load order -------------------------------------------
-#
-# THIS ONE DECIDES WHETHER THE APK BOOTS AT ALL, and it is not a matter of
-# taste. p4a renders `--qt-libs` verbatim into res/values/libs.xml, and
-# QtLoader dlopens the entries in that order at startup. libQt6Core's
-# JNI_OnLoad is what stores the JavaVM pointer that every other Qt library's
-# JNI_OnLoad reads back via QJniEnvironment::getJniEnv(). Put Core anywhere
-# but first and the first library that touches JNI dereferences a null env:
-#
-#     F libc: Fatal signal 11 (SIGSEGV), code 1 (SEGV_MAPERR), fault addr 0x0
-#             in tid NNNNN (qtMainLoopThrea)
-#     #00 QJniEnvironment::getJniEnv()+48   libQt6Core_arm64-v8a.so
-#     #02 JNI_OnLoad+68                     libQt6Quick_arm64-v8a.so
-#
-# It dies on the Qt loader thread before the interpreter starts, so there is
-# no Python traceback and nothing in the app's own logs — the only evidence
-# is the native tombstone in logcat.
-#
-# The order is not ours to start with. pyside6-android-deploy builds it as
-#
-#     self.modules = list(set(modls))     # android_config.py:125
-#
-# and a set of str iterates in an order that depends on the interpreter's PEP
-# 456 hash seed, which is randomised per process. So the load order — and
-# therefore whether the build boots — is redrawn on every single build. It
-# came up with Core early for months and then, on 2026-09-18, came up
-# `QuickControls2,Network,Gui,Core,...` and produced an APK that crashed on
-# launch with no source change behind it.
-#
-# Pinning `modules` in pysidedeploy.spec cannot fix this (see the header:
-# Config.__init__ blanks it before AndroidConfig reads it). Rewriting the
-# rendered argument here can.
-#
-# We keep WHAT the scan found and pin only the ORDER, dependencies before
-# dependents. Anything unrecognised sorts to the end rather than being
-# dropped, so a module added by a future scan still ships — just not first.
-QT_LIB_ORDER = ["Core", "Gui", "Network", "OpenGL", "Qml", "Quick",
-                "QuickControls2", "WebView"]
-
-found = re.search(r'--qt-libs=(\S+)', text)
-if not found:
-    sys.exit("error: no --qt-libs in p4a.extra_args; did the bootstrap change?")
-
-libs = found.group(1).split(',')
-if "Core" not in libs:
-    sys.exit(f"error: Qt Core missing from --qt-libs ({libs}); refusing to build")
-
-ranked = sorted(libs, key=lambda m: (QT_LIB_ORDER.index(m) if m in QT_LIB_ORDER
-                                     else len(QT_LIB_ORDER), m))
-if ranked[0] != "Core":
-    sys.exit(f"error: Core did not sort first ({ranked}); the pin is broken")
-
-unknown = [m for m in libs if m not in QT_LIB_ORDER]
-if unknown:
-    print(f"note: unranked Qt modules placed last: {unknown}")
-
-print("was: --qt-libs=" + found.group(1))
-print("now: --qt-libs=" + ",".join(ranked))
-text = text.replace(found.group(0), "--qt-libs=" + ",".join(ranked))
-
-# The launcher icon, for the same reason as the permissions: phase 1 wrote this
-# file from scratch, and what it wrote is PySide's stock pyside_icon.jpg — the
-# tool has no --icon flag, and it takes the value from the pysidedeploy.spec it
-# has just generated itself, so there is no route in except from out here.
-before = re.search(r'^icon\.filename\s*=.*$', text, re.M)
-text, n = re.subn(r'^icon\.filename\s*=.*$', f'icon.filename = {icon}', text, flags=re.M)
-if n != 1:
-    sys.exit(f"error: expected exactly one icon.filename line, found {n}")
-print("was:", before.group(0) if before else "(absent)")
-print(f"now: icon.filename = {icon}")
-
-# The adaptive pair. Unlike icon.filename these keys are not in the generated
-# spec at all — pysidedeploy.spec has a single `icon` field and no route for
-# them — so they are inserted rather than substituted, anchored after
-# icon.filename so they land in the [app] section and not wherever the file
-# happens to end.
-adaptive = (f'icon.adaptive_foreground.filename = {icon_fg}\n'
-            f'icon.adaptive_background.filename = {icon_bg}')
-text = re.sub(r'^icon\.adaptive_(foreground|background)\.filename\s*=.*$\n?',
-              '', text, flags=re.M)                      # idempotent
-anchored, n = re.subn(r'^(icon\.filename\s*=.*)$', lambda m: m.group(1) + '\n' + adaptive,
-                      text, count=1, flags=re.M)
-if n != 1:
-    sys.exit("error: could not anchor the adaptive icon keys to icon.filename")
-text = anchored
-print(f"now: icon.adaptive_foreground.filename = {icon_fg}")
-print(f"now: icon.adaptive_background.filename = {icon_bg}")
-
-open(path, 'w').write(text)
-print(f"now: p4a.commit = {p4a_commit}  (CPython 3.11.13)")
-
-# Keep the generated pysidedeploy.spec honest too. It is copied back over the
-# project's own copy at the end of the build as "the record of what went into
-# the APK", and a record still naming the stock icon would be a lie.
-side = 'pysidedeploy.spec'
-try:
-    spec = open(side).read()
-except FileNotFoundError:
-    print(f"note: no {side} to update")
-else:
-    spec, n = re.subn(r'^icon\s*=.*$', f'icon = {icon}', spec, flags=re.M)
-    if n == 1:
-        open(side, 'w').write(spec)
-        print(f"now: {side} icon = {icon}")
-    else:
-        print(f"note: {n} icon lines in {side}; left alone")
-PY
-
-# Phase 1b — put ACLOCAL_PATH back for python-for-android's subprocesses.
-#
-# p4a builds each recipe's environment from scratch in
-# `pythonforandroid/archs.py`: it copies PATH and the HTTP proxy variables and
-# nothing else. ACLOCAL_PATH does not survive, and on NixOS that is fatal for
-# the libffi recipe, which runs `autoreconf -vif`.
-#
-# The reason it matters here and not on Ubuntu: aclocal's default macro
-# directory is compiled in as automake's own prefix — a /nix/store path that
-# contains no libtool macros. The FHS env exposes them at /usr/share/aclocal
-# instead, and points ACLOCAL_PATH there. Strip that variable and aclocal
-# silently omits libtool.m4 from aclocal.m4, so libffi's AC_PROG_LIBTOOL
-# survives unexpanded into `configure` and autoconf rejects it:
-#
-#     configure.ac:41: error: possibly undefined macro: AC_PROG_LIBTOOL
-#
-# PATH *is* preserved, so a shim early on PATH restores the variable for every
-# aclocal the build runs, without patching p4a.
-step "Installing an aclocal shim for python-for-android's scrubbed env"
-SHIM="$STAGE/.autotools-shim"
-rm -rf "$SHIM"; mkdir -p "$SHIM"
-for tool in aclocal libtoolize; do
-  real="$(command -v "$tool" || true)"
-  [[ -n "$real" ]] || die "$tool not found in the FHS env"
-  cat > "$SHIM/$tool" <<EOF
-#!/bin/sh
-export ACLOCAL_PATH="/usr/share/aclocal\${ACLOCAL_PATH:+:\$ACLOCAL_PATH}"
-exec "$real" "\$@"
-EOF
-  chmod +x "$SHIM/$tool"
-done
-export PATH="$SHIM:$PATH"
-echo "shimmed: $(command -v aclocal)"
-
-# Phase 1c — get the python-for-android checkout in place BEFORE building.
-#
-# buildozer would clone it on the first build, but by then it is too late:
-# every patch below edits that checkout, and python-for-android caches what it
-# compiles. A cold build used to clone, compile everything unpatched, fail, and
-# retry — which was harmless while the patches only touched packaging, and is
-# not now that phase 1d changes how every native library is LINKED. A retry
-# would reuse CPython, OpenSSL and friends from the unpatched first pass and
-# ship them 4 KB-aligned. So the clone happens here, the patches go in, and
-# buildozer runs exactly once.
-#
-# Pinning p4a.source_dir at the checkout (pin_p4a_source_dir, below) is what
-# stops buildozer's per-build `git reset --hard <p4a.commit>`
-# (targets/android.py:701) from reverting the edits to tracked files.
-ensure_p4a_checkout() {
-  if [[ ! -d "$P4A_DIR/.git" ]]; then
-    step "Cloning python-for-android at $P4A_COMMIT"
-    rm -rf "$P4A_DIR"
-    mkdir -p "$(dirname "$P4A_DIR")"
-    git clone --quiet https://github.com/kivy/python-for-android.git "$P4A_DIR"
-    git -C "$P4A_DIR" -c advice.detachedHead=false checkout --quiet "$P4A_COMMIT"
+if [[ ! -f "$QT_ANDROID/bin/qt-cmake" || ! -f "$QT_ANDROID/lib/cmake/Qt6WebView/Qt6WebViewConfig.cmake" \
+      || ! -x "$QT_HOST/bin/androiddeployqt" ]]; then
+  step "Fetching Qt $QT_VERSION for Android (once; about 2 GB)"
+  mkdir -p "$QT_DIR"
+  if [[ ! -x "$QT_DIR/aqt-venv/bin/aqt" ]]; then
+    python3 -m venv "$QT_DIR/aqt-venv"
+    "$QT_DIR/aqt-venv/bin/pip" install --quiet "aqtinstall==$AQT_VERSION"
   fi
-}
-ensure_p4a_checkout
+  # Run from inside .qt/, because aqt drops its aqtinstall.log in the current
+  # directory.
+  (
+    cd "$QT_DIR"
+    aqt-venv/bin/aqt install-qt linux desktop "$QT_VERSION" linux_gcc_64 --outputdir .
+    # From Qt 6.8 on, the Android kits are published under the `all_os` host.
+    aqt-venv/bin/aqt install-qt all_os android "$QT_VERSION" android_arm64_v8a -m qtwebview --outputdir .
+  )
+fi
 
-# Phase 1c, continued — create the directory python-for-android forgets to.
-#
-# p4a's adaptive-icon branch writes the descriptor without creating its parent:
-#
-#     with open(join(res_dir, 'mipmap-anydpi-v26/icon.xml'), "w") as fd:
-#
-# and the qt bootstrap template ships only `drawable/` and `mipmap/`. Every
-# other res write in that file goes through `ensure_dir()` — lines 246, 294,
-# 310, 351, 384, 412, 527, 533 — so this one is simply a missed call, and it
-# fires the moment both --icon-fg and --icon-bg are passed.
-#
-# The failure is nasty out of proportion to the cause. p4a copies the two layer
-# PNGs, then dies on FileNotFoundError *before* rendering values/libs.xml and
-# values/strings.xml, so the dist is left half-written: new icons present, no
-# libs.xml at all, no APK. Anything else fixed in the same build — the Qt load
-# order, for one — silently never ships.
-#
-# Patched in the bootstrap template rather than the dist, because p4a recreates
-# the dist from the template on every build.
-P4A_QT_BUILD="$P4A_DIR/pythonforandroid/bootstraps/qt/build"
-P4A_QT_RES="$P4A_QT_BUILD/src/main/res"
+# --- Configure and build -----------------------------------------------------
 
-mkdir -p "$P4A_QT_RES/mipmap-anydpi-v26"
-# p4a copies the template with a plain tree copy, and an empty directory does
-# not always survive it; the keep-file guarantees it does.
-: > "$P4A_QT_RES/mipmap-anydpi-v26/.gitkeep"
-step "Patched p4a's qt bootstrap: res/mipmap-anydpi-v26 exists"
+step "Configuring"
+SIGN_APK=ON
+SIGN_AAB=OFF
+TARGET=apk
+if (( DO_AAB )); then SIGN_APK=OFF; SIGN_AAB=ON; TARGET=aab; fi
 
-# Phase 1d — link every native library for 16 KB pages.
-#
-# Google Play rejects an upload if any 64-bit .so has an ELF LOAD segment
-# aligned to less than 16 KB (Android 15's page-size requirement, enforced for
-# new apps and updates since November 2025). On a 16 KB-page device such a
-# library does not load at all. Qt's own libraries are fine. What was not, in
-# the last APK built without this phase:
-#
-#   lib/arm64-v8a/                libpython3.11, libssl, libcrypto, libffi,
-#                                 libsqlite3, libmain  — p4a builds these
-#                                 libshiboken6.abi3    — Qt's wheel; phase 1f
-#   _python_bundle (libpybundle)  66 stdlib extension modules, and
-#                                 shiboken6/Shiboken.abi3 — phase 1f
-#
-# NDK r27c links for 4 KB by default (r28 flips it). The NDK itself stays at
-# r27c because that is what Qt 6.11 was built with and what the PySide6 recipe
-# copies libc++_shared.so from — and that one is already 16 KB-aligned. So the
-# flag goes in wherever p4a links:
-#
-#   archs.py common_ldflags    every autotools/configure recipe: CPython and its
-#                              extension modules, libffi, OpenSSL
-#   ndk-build command lines    NDKRecipe (sqlite3) and genericndkbuild (libmain)
-#
-# The ndk-build ones take APP_SUPPORT_FLEXIBLE_PAGE_SIZES=true — NDK r27's own
-# switch, which adds -z max-page-size=16384 for 64-bit ABIs — on the COMMAND
-# LINE. It cannot go in the environment: ndk-build clears every APP_* variable
-# before reading Application.mk (build/core/add-application.mk:29), and only a
-# command-line variable outranks that in make.
-#
-# These are edits to tracked files in the checkout; see phase 1c for why they
-# survive. The 16 KB gate after the build checks the result rather than
-# trusting this.
-#
-# This phase used to be a lint.xml suppressing ExpiredTargetSdkVersion, back
-# when the app targeted API 31 and was never going to Play. At API 36 there is
-# nothing to suppress, and lintVitalRelease stays fully armed. The stale file is
-# removed so an old checkout does not keep the exemption.
-rm -f "$P4A_QT_BUILD/lint.xml"
+# -Wno-deprecated: the NDK's own toolchain files still ask for CMake < 3.5,
+# which CMake 4 warns about on every configure; nothing here can fix that.
+"$QT_ANDROID/bin/qt-cmake" -S "$ROOT" -B "$BUILD" -G Ninja -Wno-deprecated \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DQT_HOST_PATH="$QT_HOST" \
+  -DANDROID_SDK_ROOT="$SDK_ROOT" \
+  -DANDROID_NDK_ROOT="$NDK_ROOT" \
+  -DANDROID_SUPPORT_FLEXIBLE_PAGE_SIZES=ON \
+  -DQT_ANDROID_SIGN_APK="$SIGN_APK" \
+  -DQT_ANDROID_SIGN_AAB="$SIGN_AAB" \
+  >/dev/null
 
-# Phase 1g — keep the back key working at targetSdk 36.
-#
-# At targetSdk 36, Android 16 turns on predictive back by default, and with it
-# stops calling onBackPressed and stops dispatching KEYCODE_BACK to the
-# activity. Qt 6.11's Android layer has no OnBackInvokedCallback support
-# (checked: nothing in Qt6Android.jar references it), so back would bypass Qt
-# entirely. android:enableOnBackInvokedCallback="false" on <application> keeps
-# the key event flowing exactly as it did at targetSdk 31.
-#
-# It goes into p4a's qt manifest template (patch_p4a_checkout, below) rather
-# than through buildozer's android.extra_manifest_application_arguments, which
-# looks like the intended route and is broken in buildozer 1.5.0: it escapes
-# the file's quotes for a shell (targets/android.py:893) and then passes p4a an
-# argument list, not a shell command, so the backslashes and wrapping quotes
-# land in the manifest verbatim and gradle's manifest merger rejects it:
-#
-#     "android:enableOnBackInvokedCallback=\"false\" "
-#     MergeFailureException: Error parsing .../AndroidManifest.xml
-#
-# The manifest gate after the build confirms the attribute arrived.
-
-# Phase 1e — give PySide's Qt bindings a "lib" prefix, or release builds die.
-#
-# THE BUG THIS FIXES, because it is not guessable from the symptom:
-#
-#     E QtLoader: Can't find '.../lib/arm64/QtCore.abi3.so'
-#     E QtLoader: Loading Qt native libraries failed
-#     I org.mycu.mycu: System.exit called, status: -1
-#
-# A release APK installs fine and then exits instantly, with no Python
-# traceback and no native crash. The same APK content works in debug.
-#
-# Android's installer does not extract every .so from lib/<abi>/. In
-# NativeLibraryHelper the "must be named lib*.so" filter is applied *only when
-# the app is not debuggable* — debuggable apps get everything, so that gdbserver
-# and friends can be shipped. Measured on this project: the debug install has
-# 165 files in lib/arm64, the release install 157, and the eight missing ones
-# are exactly PySide's bindings — QtCore.abi3.so, QtGui.abi3.so and so on, none
-# of which starts with "lib".
-#
-# So `android:debuggable` was load-bearing by accident. Removing it — which is
-# the entire point of a release build — takes the bindings with it. The same
-# holds for an App Bundle installed from Play: p4a packages native libraries
-# with useLegacyPackaging, so they are extracted at install time through the
-# same filter.
-#
-# QtLoader reads those names from res/values/libs.xml, rendered from
-# libs.tmpl.xml, which hardcodes the bare spelling. Both that template and the
-# recipe that stages the files have to agree on a new name, so both are patched
-# here. Renaming the file does not change its SONAME, which stays
-# QtCore.abi3.so, so the later `import PySide6.QtCore` still resolves.
-step "Patching python-for-android: 16 KB page links, back-key opt-out, lib-prefixed Qt bindings"
-
-# Tell buildozer to use the checkout in place. That is what stops
-# `git reset --hard <p4a.commit>` (targets/android.py:701) reverting the edits
-# below on every build.
-pin_p4a_source_dir() {
-  python3 - "$STAGE/buildozer.spec" "$P4A_DIR" <<'PY'
-import re, sys
-path, p4a_dir = sys.argv[1], sys.argv[2]
-text = open(path).read()
-if re.search(r'^p4a\.source_dir\s*=', text, re.M):
-    text = re.sub(r'^p4a\.source_dir\s*=.*$', f'p4a.source_dir = {p4a_dir}',
-                  text, flags=re.M)
-else:
-    text, n = re.subn(r'^(title\s*=.*)$',
-                      lambda m: m.group(1) + f'\np4a.source_dir = {p4a_dir}',
-                      text, count=1, flags=re.M)
-    if n != 1:
-        sys.exit("error: could not anchor p4a.source_dir inside [app]")
-open(path, 'w').write(text)
-print(f"  p4a.source_dir = {p4a_dir}")
-PY
-}
-
-patch_p4a_checkout() {
-  local head_now
-  head_now="$(git -C "$P4A_DIR" rev-parse HEAD 2>/dev/null || true)"
-  if [[ "$head_now" != "$P4A_COMMIT" ]]; then
-    die "the python-for-android checkout is at ${head_now:-(unknown)}, not the
-   pinned $P4A_COMMIT. p4a.source_dir stops buildozer managing it, so nothing
-   corrects this automatically. Fix with:
-       git -C $P4A_DIR fetch --all && git -C $P4A_DIR reset --hard $P4A_COMMIT
-   then re-run with --clean — the patches are re-applied on every build."
-  fi
-
-  python3 - "$P4A_DIR" <<'PY'
-import re, sys
-from pathlib import Path
-p4a_dir = Path(sys.argv[1]) / "pythonforandroid"
-
-# Each edit: (file, the unpatched text, the patched text). Idempotent — an
-# already-patched file is recognised and left alone; a file matching neither
-# means p4a changed under us, and that has to stop the build.
-PAGE = "APP_SUPPORT_FLEXIBLE_PAGE_SIZES=true"
-EDITS = [
-    # Phase 1d: autotools/configure recipes.
-    ("archs.py",
-     "    common_ldflags = ['-L{ctx_libs_dir}']\n",
-     "    common_ldflags = ['-L{ctx_libs_dir}', '-Wl,-z,max-page-size=16384']\n"),
-    # Phase 1d: NDKRecipe (sqlite3).
-    ("recipe.py",
-     "                'APP_ABI=' + arch.arch,\n",
-     "                'APP_ABI=' + arch.arch,\n"
-     f"                '{PAGE}',\n"),
-    # Phase 1d: genericndkbuild, which builds the qt bootstrap's libmain.
-    ("recipes/genericndkbuild/__init__.py",
-     '"ndk-build")), "V=1", _env=env)',
-     f'"ndk-build")), "V=1", "{PAGE}", _env=env)'),
-    # Phase 1g: the back-gesture opt-out on <application>.
-    ("bootstraps/qt/build/templates/AndroidManifest.tmpl.xml",
-     '                 android:hardwareAccelerated="true"\n',
-     '                 android:hardwareAccelerated="true"\n'
-     '                 android:enableOnBackInvokedCallback="false"\n'),
-]
-for rel, old, new in EDITS:
-    f = p4a_dir / rel
-    text = f.read_text()
-    if new in text:
-        print(f"  {rel}: already patched")
-    elif text.count(old) == 1:
-        f.write_text(text.replace(old, new))
-        print(f"  {rel}: patched")
-    else:
-        sys.exit(f"error: {rel} matches neither the patched nor the unpatched "
-                 f"form; did python-for-android change?")
-
-# Phase 1e: QtLoader's list of libraries.
-tmpl = p4a_dir / "bootstraps/qt/build/templates/libs.tmpl.xml"
-text = tmpl.read_text()
-before = text
-text = re.sub(r'(<item>\{\{ arch \}\};)(Qt\{\{ qt_lib \}\}\.abi3\.so)', r'\1lib\2', text)
-if text != before:
-    tmpl.write_text(text)
-    print(f"  {tmpl.name}: patched")
-elif "libQt{{ qt_lib }}.abi3.so" in text:
-    print(f"  {tmpl.name}: already patched")
-else:
-    sys.exit(f"error: no bare Qt binding entry found in {tmpl}; did p4a change?")
-PY
-  pin_p4a_source_dir
-}
-patch_p4a_checkout
-
-# The recipe is regenerated by --init every build and lives outside the
-# checkout, so this always runs and always has something to do.
-python3 - "$STAGE/deployment/recipes/PySide6/__init__.py" <<'PY'
-import re
-import sys
-from pathlib import Path
-
-recipe = Path(sys.argv[1])
-
-# The recipe copies the bindings into the libs dir. Renaming them here is half
-# the fix; patch_p4a_checkout() renames them in QtLoader's list, the other half.
-src = recipe.read_text()
-patched, n = re.subn(r'(get_libs_dir\(arch\.arch\)\)\s*/\s*")(Qt[A-Za-z0-9]+\.abi3\.so")',
-                     r'\1lib\2', src)
-if n:
-    recipe.write_text(patched)
-    print(f"  patched {recipe.name}: {n} copy targets renamed")
-else:
-    already = len(re.findall(r'/ "libQt[A-Za-z0-9]+\.abi3\.so"', src))
-    if already:
-        print(f"  {recipe.name} already patched ({already} targets)")
-    else:
-        sys.exit(f"error: no bare Qt binding copy targets in {recipe}")
-PY
-
-# Phase 1f — replace the generated shiboken6 recipe with one that rebuilds it.
-#
-# Qt's shiboken6 Android wheel — every 6.11 release — ships libshiboken6 and
-# the Shiboken module linked for 4 KB pages, and a relink needs the objects.
-# scripts/android/recipes/shiboken6 builds both from the matching pyside-setup
-# source with the same NDK and flags, checks the result is ABI-identical to
-# Qt's, and installs the wheel with those two files swapped. Its docstring has
-# the details. The generated recipe is overwritten on every --init, so this
-# always runs.
-step "Installing the 16 KB shiboken6 recipe"
-python3 - "$ROOT/scripts/android/recipes/shiboken6/__init__.py" \
-          "$STAGE/deployment/recipes/shiboken6/__init__.py" \
-          "$WHEEL_SHIBOKEN" "$PYSIDE_VERSION" <<'PY'
-import sys
-from pathlib import Path
-src, dest, wheel, version = sys.argv[1:5]
-text = Path(src).read_text()
-for placeholder, value in (("@WHEEL_SHIBOKEN@", wheel), ("@PYSIDE_VERSION@", version)):
-    if placeholder not in text:
-        sys.exit(f"error: {placeholder} missing from {src}")
-    text = text.replace(placeholder, value)
-Path(dest).write_text(text)
-print(f"  {dest}")
-PY
-
-# Phase 2 — the actual build. This is what pyside6-android-deploy would have
-# run itself; invoking it directly is what lets the edits above take effect.
-step "Running buildozer"
-# Deliberately not `set -e`-fatal on its own. With no TTY attached buildozer
-# finishes the packaging, prints "# Android packaging done!", and *then* exits
-# non-zero after failing to restore terminal state ("stty: 'standard input':
-# Inappropriate ioctl for device"). Trusting its exit code alone throws away a
-# perfectly good APK. The presence of the APK is the real success test, and it
-# is checked immediately below, so a genuine failure is still caught.
-# A marker to date the APK against. Anything older than this is left over from
-# an earlier build and must not be shipped — see the staleness check below.
-STAMP="$STAGE/.build-started"
+step "Building the $TARGET"
+# The artifact's presence, and its age, are the success test — not just the
+# exit code. Anything older than this stamp is left over from an earlier build
+# and must not be shipped: that once installed a known-crashing APK from forty
+# minutes before and reported success.
+STAMP="$BUILD/.build-started"
 : > "$STAMP"
+# The apk target is tracked by this one output file, so with no code change
+# ninja calls it up to date and androiddeployqt never runs — no fresh APK, and,
+# worse, no re-signing when you switch between the debug key and --release.
+# Removing it makes packaging and signing run every time; that is ~10 seconds.
+# (The aab target has no such file and always runs.)
+rm -f "$BUILD/android-build/cedarview.apk"
+cmake --build "$BUILD" --target "$TARGET"
 
-# --- Why SOURCE_DATE_EPOCH is unset for this command ------------------------
-#
-# It is what makes `adb install -r` actually replace the app's code.
-#
-# The bootstrap does not re-extract assets/private.tar on every launch. It
-# compares a stamp baked into the APK against files/app/private.version and
-# extracts only when they differ (PythonUtil.unpackAsset). The stamp is
-#
-#     sha1("{version} {numeric_version} {timestamp}")        build.py:595
-#
-# and all three parts are constants here:
-#
-#     version         0.1        from the generated buildozer.spec
-#     numeric_version 10211      "10" + min_sdk(21) + version_code(1)
-#     timestamp       315532800  SOURCE_DATE_EPOCH — 1980-01-01
-#
-# That last one is the problem. Nix's stdenv exports SOURCE_DATE_EPOCH for
-# reproducible builds, `nix develop` inherits it, and build.py prefers it over
-# the wall clock. So the stamp is the same hash on every build forever:
-#
-#     sha1("0.1 10211 315532800") = 463cf0e3c4f3e09a34aa591298bf7001fae14d04
-#
-# — which is exactly what was found in files/app/private.version on the device.
-# Install a new APK and the bootstrap compares equal, skips extraction, and
-# runs the OLD code out of files/app. New Python, new QML, new everything:
-# ignored, silently, with the new APK sitting right there.
-#
-# Unsetting it restores the wall clock, so every build gets a distinct stamp
-# and every install refreshes the code by itself.
-#
-# This does NOT sign you out. unpackAsset deletes files/app only; the session
-# lives in files/mycu/session.json, which is untouched. That makes this
-# strictly better than the `pm clear` this project used to recommend, which
-# wipes everything including the login.
-#
-# The cost is that the APK is no longer bit-reproducible. Nothing here depends
-# on that, and neither Google Play nor GitHub Releases asks for it.
-BUILD_MODE=debug
-(( DO_RELEASE )) && BUILD_MODE=release
-
-BUILDOZER_RC=0
-env -u SOURCE_DATE_EPOCH python3 -m buildozer android "$BUILD_MODE" || BUILDOZER_RC=$?
-
-cd "$ROOT"
-
-ARTIFACT_EXT=apk
-(( DO_AAB )) && ARTIFACT_EXT=aab
-
-# buildozer reports "available in the bin directory" but actually leaves the
-# file in its working directory, so look in both.
-#
-# `-newer $STAMP` is the important part and it is load-bearing. The exit code
-# cannot be trusted (see the note above), so the presence of an artifact is
-# used as the success test — but "an APK exists" is true even when this build
-# produced nothing, because the previous build's APK is still sitting there. On
-# 2026-09-18 that shipped a known-crashing APK from a build forty minutes
-# earlier, reinstalled it, and reported success: two real fixes appeared to
-# have done nothing, and the evidence that the build had failed was forty
-# thousand lines up the scrollback.
-ARTIFACT="$(find "$STAGE" -maxdepth 2 -name "*.$ARTIFACT_EXT" -newer "$STAMP" -print 2>/dev/null | sort | tail -1)"
-if [[ -z "$ARTIFACT" ]]; then
-  STALE="$(find "$STAGE" -maxdepth 2 -name "*.$ARTIFACT_EXT" -print 2>/dev/null | sort | tail -1)"
-  die "buildozer exited $BUILDOZER_RC and produced no .$ARTIFACT_EXT in this run.
-   ${STALE:+An older one is present at $STALE — it is NOT this build and has
-   not been installed. }Scroll up for the real error; a Python traceback from
-   python-for-android is the usual cause."
+# The release variant only: the aab target builds a debug bundle beside it,
+# unsigned, which must never be the one picked up.
+if (( DO_AAB )); then
+  ARTIFACT="$(find "$BUILD/android-build/build/outputs/bundle/release" -name '*.aab' -newer "$STAMP" 2>/dev/null | sort | tail -1)"
+else
+  ARTIFACT="$(find "$BUILD/android-build/build/outputs/apk/release" -name '*-signed.apk' -newer "$STAMP" 2>/dev/null | sort | tail -1)"
 fi
-if (( BUILDOZER_RC != 0 )); then
-  printf '\033[33mnote:\033[0m buildozer exited %d but produced a fresh .%s; continuing.\n' \
-    "$BUILDOZER_RC" "$ARTIFACT_EXT"
-fi
+[[ -n "$ARTIFACT" ]] || die "the build produced no signed .$TARGET in this run. Scroll up for the error."
 
 # Release artifacts get their own name and keep the version in it. A release
 # APK and a debug APK are signed with different keys and will not install over
-# one another, so having both land on mycu.apk is a way to publish the wrong
-# file exactly once.
+# one another, so giving them one name is a way to publish the wrong file.
 if (( DO_AAB )); then
-  OUT="$ROOT/cedarview-${APP_VERSION}.aab"
+  OUT="$OUT_DIR/cedarview-${APP_VERSION}.aab"
 elif (( DO_RELEASE )); then
-  OUT="$ROOT/cedarview-${APP_VERSION}-arm64-v8a.apk"
+  OUT="$OUT_DIR/cedarview-${APP_VERSION}-arm64-v8a.apk"
 else
-  OUT="$ROOT/mycu.apk"
+  OUT="$BUILD/cedarview-${APP_VERSION}-arm64-v8a-debug.apk"
 fi
-
 cp "$ARTIFACT" "$OUT"
 step "Built $(du -h "$OUT" | cut -f1) -> $OUT"
 
-# Every check below reads $OUT — the file that will actually be shipped. They
-# used to read $ROOT/mycu.apk unconditionally, which in a --release build is
-# the stale DEBUG APK from some earlier run: the release artifact itself was
-# never checked.
+# --- Gates -------------------------------------------------------------------
+#
+# Every check reads $OUT, the file that will actually ship.
 
-if (( DO_RELEASE )); then
-  # An unsigned release build installs nowhere and Play rejects it, and
-  # buildozer only warns. Check the artifact itself rather than trusting that
-  # the env vars were honoured.
-  #
-  # The evidence differs by format. An .aab is signed the jarsigner way, so it
-  # carries a META-INF/*.RSA block. An APK at minSdk >= 24 does NOT: Gradle
-  # then signs with APK Signature Scheme v2 only, which lives in the zip's
-  # signing block rather than in META-INF — so the META-INF test this used to
-  # use reports a correctly signed APK as unsigned. apksigner reads the real
-  # thing.
-  if (( DO_AAB )); then
-    unzip -l "$OUT" 2>/dev/null | grep -qiE 'META-INF/.*\.(RSA|DSA|EC)$' && SIGNED=1 || SIGNED=0
-  else
-    APKSIGNER="$(find "$SDK_ROOT/build-tools" -name apksigner -type f 2>/dev/null | sort -V | tail -1)"
-    [[ -n "$APKSIGNER" ]] || die "apksigner not found under $SDK_ROOT/build-tools; cannot verify the signature."
-    "$APKSIGNER" verify "$OUT" >/dev/null 2>&1 && SIGNED=1 || SIGNED=0
-  fi
-  if (( SIGNED )); then
-    echo "signature verified"
-  else
-    die "the release build is UNSIGNED; no device will install it and Play
-   will not accept it. buildozer drops --sign silently when any P4A_RELEASE_*
-   variable is missing. Do not publish $OUT."
-  fi
+step "Checking the signature"
+# An .aab is signed the jarsigner way, so it carries a META-INF/*.RSA (or .EC)
+# block. An APK at minSdk >= 24 carries APK Signature Scheme v2+, which lives
+# in the zip's signing block, not META-INF — apksigner reads the real thing.
+if (( DO_AAB )); then
+  # Not `grep -q`: it stops reading at the first match, unzip dies of SIGPIPE,
+  # and under pipefail a signed bundle then reads as unsigned.
+  unzip -Z1 "$OUT" 2>/dev/null | grep -iE '^META-INF/[^/]+\.(RSA|DSA|EC)$' >/dev/null \
+    || die "the bundle is UNSIGNED; Play will not accept it. Do not upload $OUT."
+else
+  "$BUILD_TOOLS/apksigner" verify "$OUT" >/dev/null \
+    || die "the APK is not validly signed; no device will install it. Do not publish $OUT."
 fi
+echo "ok"
 
-# Verify that the CPython bundled in the APK is the one shiboken actually links
-# against. Getting this wrong produces an APK that builds, installs and then
-# dies instantly on launch with an UnsatisfiedLinkError that never reaches
-# Python, so it is worth one second of zipfile reading here.
-step "Checking the bundled libpython matches shiboken's DT_NEEDED"
-python3 - "$OUT" "$WHEEL_SHIBOKEN" <<'PY'
-import re, sys, zipfile
-
-apk, shiboken_wheel = sys.argv[1], sys.argv[2]
-
-blob = zipfile.ZipFile(shiboken_wheel).read('shiboken6/libshiboken6.abi3.so')
-needed = sorted({m.decode() for m in re.findall(rb'libpython[0-9.]+\.so', blob)})
-if not needed:
-    print("shiboken links no libpython explicitly; nothing to check")
-    raise SystemExit(0)
-
-bundled = sorted({n.rsplit('/', 1)[-1]
-                  for n in zipfile.ZipFile(apk).namelist()
-                  if re.search(r'libpython[0-9.]+\.so$', n)})
-print("shiboken needs:", ", ".join(needed))
-print("apk bundles:   ", ", ".join(bundled) or "(none)")
-
-missing = [n for n in needed if n not in bundled]
-if missing:
-    raise SystemExit(
-        f"error: the APK does not bundle {missing}. It will install and then "
-        f"crash at startup with UnsatisfiedLinkError. Fix P4A_COMMIT in this "
-        f"script so python-for-android builds the matching CPython."
-    )
-print("ok")
-PY
-
-# Every native library must be 16 KB-aligned — Play refuses the upload
-# otherwise, and a 16 KB-page device refuses to load the library. See phases 1d
-# and 1f for how they get that way; this checks the result, including the .so
-# files python-for-android hides inside libpybundle.so (a gzipped tarball of the
-# Python bundle, unpacked on first launch), which Play's own check does not
-# look inside but the device's loader very much does.
+# Play refuses the upload otherwise, and a 16 KB-page phone refuses to load a
+# 4 KB-aligned library.
 step "Checking every native library is 16 KB-aligned"
 python3 - "$OUT" <<'PY'
-import io, struct, sys, tarfile, zipfile
+import struct, sys, zipfile
 
 PAGE = 0x4000
 
@@ -1229,52 +349,47 @@ with zipfile.ZipFile(sys.argv[1]) as z:
         if not name.endswith('.so') or '/lib/' not in f'/{name}':
             continue
         blob = z.read(name)
-        if blob[:4] == b'\x7fELF':
-            checked += 1
-            if min_load_align(blob) < PAGE:
-                bad.append(name)
-        elif name.endswith('/libpybundle.so'):
-            with tarfile.open(fileobj=io.BytesIO(blob)) as tar:
-                for m in tar.getmembers():
-                    if not m.isfile() or '.so' not in m.name:
-                        continue
-                    inner = tar.extractfile(m).read()
-                    if inner[:4] != b'\x7fELF':
-                        continue
-                    checked += 1
-                    if min_load_align(inner) < PAGE:
-                        bad.append(f'{name} -> {m.name}')
+        if blob[:4] != b'\x7fELF':
+            continue
+        checked += 1
+        if min_load_align(blob) < PAGE:
+            bad.append(name)
 
 print(f"{checked} ELF files checked")
+if not checked:
+    raise SystemExit("error: no native libraries found — the package layout has changed?")
 if bad:
     print("\n".join(f"  4 KB-aligned: {b}" for b in bad))
     raise SystemExit(
         f"error: {len(bad)} native libraries are not 16 KB-aligned. Google Play "
-        f"rejects the upload, and 16 KB-page phones cannot load them. If these "
-        f"were built by python-for-android, the build reused libraries compiled "
-        f"before phase 1d's link flags: rebuild with --clean.")
+        f"rejects the upload, and 16 KB-page phones cannot load them.")
 print("ok")
 PY
+if (( ! DO_AAB )); then
+  # The ELF segments are only half of it: an uncompressed library must also
+  # start on a 16 KB boundary inside the zip, or it cannot be mapped in place.
+  "$BUILD_TOOLS/zipalign" -c -P 16 -v 4 "$OUT" >/dev/null \
+    || die "the APK's native libraries are not 16 KB-aligned in the zip (zipalign -c -P 16)."
+  echo "zip alignment ok"
+fi
 
-# Verify the shipped manifest, not the spec we edited: the identity, the API
-# levels Play checks, the back-gesture opt-out, that a release is not
-# debuggable, and that INTERNET is the only permission. A permission creeping
-# back in is exactly the kind of thing that should fail the build rather than
-# be noticed later in the app's settings page.
+# The shipped manifest, not the one in android/: the identity, the API levels
+# Play checks, the back-gesture opt-out, that it is not debuggable, and that
+# INTERNET is the only permission. A permission creeping back in is exactly
+# the kind of thing that should fail the build rather than be noticed later in
+# the app's settings page.
 step "Checking the built manifest"
 if (( DO_AAB )); then
   MANIFEST_DUMP="$(bundletool dump manifest --bundle "$OUT")"
   MANIFEST_KIND=xml
 else
-  AAPT="$(find "$SDK_ROOT/build-tools" -name 'aapt' -type f 2>/dev/null | sort -V | tail -1)"
-  [[ -n "$AAPT" ]] || die "aapt not found under $SDK_ROOT/build-tools; cannot verify the manifest."
-  MANIFEST_DUMP="$("$AAPT" dump xmltree "$OUT" AndroidManifest.xml)"
+  MANIFEST_DUMP="$("$BUILD_TOOLS/aapt" dump xmltree "$OUT" AndroidManifest.xml)"
   MANIFEST_KIND=aapt
 fi
 MANIFEST_DUMP="$MANIFEST_DUMP" \
-python3 - "$MANIFEST_KIND" "$APP_ID" "$ANDROID_API" "$ANDROID_MINAPI" "$DO_RELEASE" <<'PY'
+python3 - "$MANIFEST_KIND" "$APP_ID" "$TARGET_SDK" "$MIN_SDK" <<'PY'
 import os, re, sys
-kind, app_id, api, minapi, release = sys.argv[1:6]
+kind, app_id, api, minapi = sys.argv[1:5]
 dump = os.environ["MANIFEST_DUMP"]
 
 if kind == "xml":
@@ -1314,100 +429,65 @@ expected = {
     "package": app_id,
     "minSdk": minapi,
     "targetSdk": api,
+    "debuggable": False,
     "backCallback": "false",
     "permissions": ["android.permission.INTERNET"],
 }
-if release == "1":
-    expected["debuggable"] = False
 
 for key in got:
     print(f"  {key:13} {got[key]}")
 wrong = {k: (got.get(k), v) for k, v in expected.items() if got.get(k) != v}
 if wrong:
-    raise SystemExit("error: the built manifest is not what phase 1a pinned:\n" + "\n".join(
+    raise SystemExit("error: the built manifest is not what android/AndroidManifest.xml and "
+                     "CMakeLists.txt intend:\n" + "\n".join(
         f"  {k}: got {g!r}, expected {e!r}" for k, (g, e) in wrong.items()))
 print("ok")
 PY
 
 # An App Bundle is not installable as-is: Play turns it into split APKs per
-# device. bundletool does the same thing locally, which gives both the size Play
-# will measure and something that installs exactly the way a Play download
-# would — the thing to test on the phone before uploading.
+# device. bundletool does the same thing locally, which gives both the size
+# Play will measure and something that installs exactly the way a Play
+# download would — the thing to test on the phone before uploading.
 if (( DO_AAB )); then
-  APKS="$ROOT/cedarview-${APP_VERSION}.apks"
+  APKS="$OUT_DIR/cedarview-${APP_VERSION}.apks"
   step "Generating the APK set Play would serve, and its download size"
   bundletool build-apks --overwrite \
     --bundle="$OUT" --output="$APKS" \
-    --ks="$P4A_RELEASE_KEYSTORE" \
-    --ks-pass="file:"<(printf '%s' "$P4A_RELEASE_KEYSTORE_PASSWD") \
-    --ks-key-alias="$P4A_RELEASE_KEYALIAS" \
-    --key-pass="file:"<(printf '%s' "$P4A_RELEASE_KEYALIAS_PASSWD")
+    --ks="$QT_ANDROID_KEYSTORE_PATH" \
+    --ks-pass="file:"<(printf '%s' "$QT_ANDROID_KEYSTORE_STORE_PASS") \
+    --ks-key-alias="$QT_ANDROID_KEYSTORE_ALIAS" \
+    --key-pass="file:"<(printf '%s' "$QT_ANDROID_KEYSTORE_KEY_PASS")
   SIZE_CSV="$(bundletool get-size total --apks="$APKS")"
   echo "$SIZE_CSV"
   # MIN,MAX in bytes, compressed download size. Play's cap on the compressed
-  # download of an app's base module is 200 MB.
-  # bundletool ends its lines with \r\n, hence the tr.
+  # download of an app's base module is 200 MB. bundletool ends its lines
+  # with \r\n, hence the tr.
   MAX_BYTES="$(tail -1 <<<"$SIZE_CSV" | cut -d, -f2 | tr -dc '0-9')"
   if [[ "$MAX_BYTES" =~ ^[0-9]+$ ]]; then
     printf 'largest download: %d MB (Play cap: 200 MB)\n' $(( MAX_BYTES / 1000000 ))
     (( MAX_BYTES <= 200000000 )) || die "the download is over Play's 200 MB cap."
   else
-    printf '\033[33mwarning:\033[0m could not read the size from bundletool; check it by hand.\n'
+    warn "could not read the size from bundletool; check it by hand."
   fi
 fi
 
-# The generated spec is the record of what actually went into the APK — module
-# list, plugins, permissions. Keep a copy next to the APK for inspection.
-[[ -f "$STAGE/pysidedeploy.spec" ]] && cp "$STAGE/pysidedeploy.spec" "$ROOT/pysidedeploy.spec"
-
-# --- Install ----------------------------------------------------------------
+# --- Install -----------------------------------------------------------------
 
 if (( DO_INSTALL && DO_AAB )); then
   # Installs the split APKs for this particular phone, as Play would.
   step "Installing the bundle's APK set"
   bundletool install-apks --apks="$APKS"
-  cat <<EOF
-
-Installed $APP_ID from the bundle. Watch it start:
-
-    adb logcat -c && adb logcat | grep -iE 'python|qml|mycu|Extracting'
-EOF
 elif (( DO_INSTALL )); then
-  # The stamp currently on the device, read before installing. If the new APK
-  # carries the same one the bootstrap will skip extraction and keep running
-  # the old code — the failure this whole dance exists to prevent — so it is
-  # worth the half second to be able to say so afterwards.
-  OLD_STAMP="$(adb shell run-as "$APP_ID" cat files/app/private.version 2>/dev/null | tr -d '\r' || true)"
-
   step "Installing"
   adb install -r "$OUT"
-  # The stamp is only rewritten once the app has launched and extracted, so
-  # this reports what to expect rather than what happened.
-  # private_version is the only 40-hex string in the resource table — checked
-  # with `strings | sort -u`, one value, equal to the device's. Cheaper and
-  # more portable than shelling out to aapt, which is not always on PATH here.
-  NEW_STAMP="$(unzip -p "$OUT" resources.arsc 2>/dev/null \
-               | strings 2>/dev/null | grep -oE '\b[0-9a-f]{40}\b' | head -1 || true)"
-  if [[ -n "$OLD_STAMP" && -n "$NEW_STAMP" && "$OLD_STAMP" == "$NEW_STAMP" ]]; then
-    printf '\033[31mwarning:\033[0m the APK carries the same data stamp as the\n'
-    printf '         copy already on the device (%s).\n' "$OLD_STAMP"
-    printf '         files/app will NOT be re-extracted and the app will keep\n'
-    printf '         running its old code. Force it with:\n\n'
-    printf '             adb shell pm clear %s   # also signs you out\n\n' "$APP_ID"
-  else
-    printf 'data stamp %s -> %s; files/app will be re-extracted on first launch.\n' \
-      "${OLD_STAMP:-(none)}" "${NEW_STAMP:-(unreadable)}"
-  fi
+fi
 
-  cat <<'EOF'
+if (( DO_INSTALL )); then
+  cat <<EOF
 
-Now watch it start. "Extracting private assets." is the line that confirms the
-new code actually landed:
+Installed $APP_ID. Watch it start:
 
-    adb logcat -c && adb logcat | grep -iE 'python|qml|mycu|Extracting'
-
-Things flagged for on-device verification are marked '# VERIFY:' in the source
-and listed in docs/android.md.
+    adb logcat -c && adb logcat | grep -iE 'mycu|qml|cedarview'
 EOF
 elif (( DO_AAB )); then
   cat <<EOF
@@ -1422,6 +502,6 @@ else
 Install it with:
 
     adb install -r $OUT
-    adb logcat -c && adb logcat | grep -iE 'python|qml|mycu'
+    adb logcat -c && adb logcat | grep -iE 'mycu|qml|cedarview'
 EOF
 fi

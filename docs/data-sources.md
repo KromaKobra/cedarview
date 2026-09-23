@@ -126,7 +126,7 @@ GET https://mediaserve.cedarville.edu/ChapelMedia/api/v2/chapels/upcoming?page=P
 ```
 
 **Unauthenticated.** Full shape and the data's quirks (empty `Speakers`, titles
-that repeat the speaker) are in `mycu/core/providers/chapel_schedule.py`.
+that repeat the speaker) are in `src/core/providers/chapel_schedule.h`.
 Verified 2026-09-22:
 
 - `count` is **capped at 30** — `count=100` answers `RequestedCount: 30`. The

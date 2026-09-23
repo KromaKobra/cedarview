@@ -78,7 +78,9 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+# devkit.py sits beside this script: the helpers the dev scripts share, now
+# that the app itself is C++ and has no Python package to import them from.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 CAPTURES = ROOT / "docs" / "captures"
 
@@ -612,7 +614,7 @@ def records_to_har(records: list[dict], navigations: list[dict]) -> dict:
 
     return {"log": {
         "version": "1.2",
-        "creator": {"name": "mycu scripts/discover", "version": "1"},
+        "creator": {"name": "CedarView scripts/discover", "version": "1"},
         "pages": [],
         "entries": entries,
         "_navigations": navigations,
@@ -816,46 +818,29 @@ def main() -> int:
         # Read by Chromium at startup, so it has to be set before before_app().
         os.environ["QTWEBENGINE_REMOTE_DEBUGGING"] = f"127.0.0.1:{args.devtools}"
 
-    from mycu.platform import current_backend
+    import devkit
 
-    backend = current_backend()
+    backend = devkit.DesktopWeb()
     backend.before_app()
 
-    from PySide6.QtCore import QObject, QTimer, QUrl
+    from PySide6.QtCore import QObject, QTimer
     from PySide6.QtGui import QGuiApplication
     from PySide6.QtQml import QQmlApplicationEngine
 
-    from mycu.core.errors import MycuError
-    from mycu.core.session import SessionStore
-    from mycu.ui.tasks import run_in_background
-    from mycu.ui.transport_webview import WebViewTransport
+    from devkit import MycuError, WebViewTransport, run_in_background
 
     app = QGuiApplication(sys.argv[:1])
-    app.setApplicationName("myCU discover")
+    app.setApplicationName("CedarView discover")
 
-    store = SessionStore()
-    store.ensure_dirs()
-    backend.configure_profile(store.profile_dir())
+    devkit.state_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
+    backend.configure_profile(devkit.profile_dir())
 
     # Before the first navigation, or the page that matters loads unrecorded.
     if not install_recorder(backend):
         print(f"warning: no network recorder on the {backend.name} backend; "
               "RECORDED TRAFFIC will be empty")
 
-    qml_dir = ROOT / "mycu" / "ui" / "qml"
-    wrapper = qml_dir / "_discover_window.qml"
-    wrapper.write_text(f"""
-import QtQuick
-import QtQuick.Controls
-import QtQuick.Layouts
-import "{qml_dir.as_uri()}" as Surfaces
-
-ApplicationWindow {{
-    id: win
-    visible: true
-    width: 1100; height: 900
-    title: "myCU discover — {args.target}"
-
+    toolbar = f"""
     signal captureRequested()
     property bool capturing: false
 
@@ -878,17 +863,12 @@ ApplicationWindow {{
             }}
         }}
     }}
-
-    Surfaces.{Path(backend.surface_qml).stem} {{
-        objectName: "surface"
-        anchors.fill: parent
-    }}
-}}
-""", encoding="utf-8")
-
+"""
     engine = QQmlApplicationEngine()
-    engine.load(QUrl.fromLocalFile(str(wrapper)))
-    wrapper.unlink(missing_ok=True)
+    engine.loadData(devkit.surface_window_qml(
+        backend.surface_qml, title=f"CedarView discover — {args.target}",
+        width=1100, height=900, header=toolbar,
+    ).encode())
     if not engine.rootObjects():
         print("the web surface failed to load — are you inside `nix develop`?")
         return 1

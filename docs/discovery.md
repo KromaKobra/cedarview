@@ -1,5 +1,12 @@
 # M0 — Discovery
 
+> **Historical, and done.** Discovery settled every question below; the
+> answers are in `docs/data-sources.md`. This was written when the app was
+> Python, so the file paths in the "not confirmed" list name the Python modules
+> of the time — the code is now in `src/`. The procedure at the end
+> ("Promoting the capture into a fixture") is still how a new capture becomes a
+> fixture, and is kept current.
+
 **This is the only milestone that cannot be done for you**, because it needs an
 authenticated session. Everything in the repo downstream of it is written,
 tested and waiting; it is all currently validated against *synthetic* fixtures,
@@ -22,7 +29,7 @@ GET https://selfservice.cedarville.edu/CedarInfo/ChapelAttendance
 ```
 
 So: one host, one SAML session, and `RelayState` carries the return path. That
-is the entire basis of the login design in `mycu/ui/login.py`, and it holds.
+is the entire basis of the login design in `src/ui/login.cpp`, and it holds.
 
 ## What is *not* confirmed
 
@@ -141,17 +148,17 @@ the record:
 2. Save it over `tests/fixtures/cedarinfo_chapelskip.html`, or as
    `cedarinfo_chapelskip.json` if it is JSON. The `.json` extension wins if both
    exist, which is how the app switches payload types with no code change.
-3. `pytest` — the expected values in `tests/test_chapel_provider.py` will now be
-   wrong. **That is the useful part.** Each failure is a place your assumptions
-   and reality diverged. Update the assertions to the truth.
-4. Trim `chapel.py` to match: delete the branch you do not need, and replace the
-   candidate-key tuples with the real names. The tolerant matching exists to
-   survive this one unknown; once it is known, precision is better.
+3. `ctest --test-dir build --output-on-failure` — the expected values in
+   `tests/tst_chapel_provider.cpp` will now be wrong. **That is the useful
+   part.** Each failure is a place your assumptions and reality diverged.
+   Update the assertions to the truth.
+4. Make `src/core/providers/chapel.cpp` match the real shape. Tolerant matching
+   exists to survive an unknown; once it is known, precision is better.
 
 ## Then
 
 ```bash
-python -m mycu          # log in, see your own chapel record
+./build/cedarview       # log in, see your own chapel record
 ```
 
 That is M1 done, and it is genuinely useful on its own — before any Android

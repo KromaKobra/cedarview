@@ -11,13 +11,14 @@ the QML contract, the polling loop and the cross-thread handoff are all
 correct, and the only thing left that can go wrong with real data is
 authentication and parsing.
 
-It is a script rather than a test because the suite forbids sockets outright
-(``tests/conftest.py``) — and that rule is worth more than folding this in.
+The app's own transport is C++ now, and ``tests/tst_webview_transport.cpp``
+runs this same round trip against it under ctest. This script exercises the
+Python copy in ``scripts/devkit.py`` that ``discover`` and ``check-live`` use,
+so a change to one of those is checked the same way.
 
     nix develop --command python scripts/smoke-transport
 
-Exits 0 on success. Add ``--android`` on-device to run the same checks against
-QtWebView instead of QtWebEngine.
+Exits 0 on success.
 """
 
 from __future__ import annotations
@@ -28,7 +29,7 @@ import sys
 import threading
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 BODY = {"records": [{"date": "2026-09-16", "status": "absent"}], "note": "x" * 300_000}
 
@@ -61,65 +62,40 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    android = "--android" in sys.argv
-
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     port = server.server_address[1]
     threading.Thread(target=server.serve_forever, daemon=True).start()
     origin = f"http://127.0.0.1:{port}"
     print(f"local server on {origin}\n")
 
-    from mycu.platform import current_backend
+    import devkit
 
-    backend = current_backend()
-    if not android:
-        backend.before_app()
+    backend = devkit.DesktopWeb()
+    backend.before_app()
 
-    from PySide6.QtCore import QTimer, QUrl
+    from PySide6.QtCore import QObject, QTimer
     from PySide6.QtGui import QGuiApplication
     from PySide6.QtQml import QQmlApplicationEngine
 
     app = QGuiApplication(sys.argv[:1])
-    if android:
-        backend.after_app(app)
 
-    from mycu.core.errors import TransportError
-    from mycu.ui.tasks import run_in_background
-    from mycu.ui.transport_webview import WebViewTransport
+    from devkit import TransportError, WebViewTransport, run_in_background
 
-    qml_dir = Path(__file__).resolve().parents[1] / "mycu" / "ui" / "qml"
-    surface_file = qml_dir / backend.surface_qml
-
-    # Wrap the surface in a throwaway window so it has a scene to live in.
-    wrapper = qml_dir.parent / "_smoke_window.qml"
-    wrapper.write_text(
-        "import QtQuick\n"
-        "import QtQuick.Window\n"
-        f'import "{qml_dir.as_uri()}" as Surfaces\n'
-        "Window {\n"
-        "    width: 800; height: 600; visible: true\n"
-        # Found via objectName rather than a property alias: PySide6 has no
-        # converter for a bare QML type, but findChild returns it as a QObject,
-        # which is all the transport ever needs it to be.
-        f'    Surfaces.{surface_file.stem} {{ objectName: "surface"; anchors.fill: parent }}\n'
-        "}\n",
-        encoding="utf-8",
-    )
-
+    # The app's own surface, in a throwaway window so it has a scene to live
+    # in. Found via objectName: findChild returns it as a QObject, which is all
+    # the transport ever needs it to be.
     engine = QQmlApplicationEngine()
-    engine.load(QUrl.fromLocalFile(str(wrapper)))
+    engine.loadData(devkit.surface_window_qml(
+        backend.surface_qml, title="smoke-transport", width=800, height=600,
+    ).encode())
     if not engine.rootObjects():
         print("FAIL: the QML surface did not load at all")
-        wrapper.unlink(missing_ok=True)
         return 1
-
-    from PySide6.QtCore import QObject
 
     window = engine.rootObjects()[0]
     surface = window.findChild(QObject, "surface")
     check("QML surface loads", surface is not None)
     if surface is None:
-        wrapper.unlink(missing_ok=True)
         return 1
 
     transport = WebViewTransport()
@@ -165,7 +141,6 @@ def main() -> int:
     QTimer.singleShot(200, start)
     QTimer.singleShot(25_000, app.quit)   # hard stop
     app.exec()
-    wrapper.unlink(missing_ok=True)
     server.shutdown()
 
     print()

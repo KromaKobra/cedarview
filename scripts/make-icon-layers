@@ -69,7 +69,7 @@ def background() -> QImage:
 
 
 def foreground() -> QImage:
-    tree = QImage(str(ROOT / "mycu/ui/qml/icon.png")).convertToFormat(QImage.Format_ARGB32)
+    tree = QImage(str(ROOT / "qml/icon.png")).convertToFormat(QImage.Format_ARGB32)
 
     # Trim the tree's own transparent margin first, so TREE_FRACTION means the
     # tree and not the tree plus whatever padding the file happened to carry.

@@ -2,72 +2,90 @@
 
 ```bash
 nix develop
-pytest                                  # 215 tests, ~2s, no network, no display
-python scripts/smoke-transport          # real QtWebEngine, loopback server
-python -m mycu --demo                   # the whole app against fixtures
-python scripts/check-live               # one real authenticated request
+cmake -B build -G Ninja && cmake --build build
+ctest --test-dir build --output-on-failure     # 14 suites, ~5s, no network, no display
+./build/cedarview --demo                       # the whole app against fixtures
+python scripts/smoke-transport                 # the dev scripts' transport, real QtWebEngine
+python scripts/check-live                      # the real chapel requests, once
 ```
 
 ## The two guarantees
 
-**No test can reach the network.** `tests/conftest.py` monkeypatches every
-socket entry point to raise. A test that quietly hit
-`selfservice.cedarville.edu` would pass on your laptop, fail everywhere else,
-and — worse — make the suite's result depend on whether you happen to be logged
-in. Opt out with `@pytest.mark.allow_network`; nothing currently does, and
-`scripts/check-live` is a script precisely so it does not have to.
+**No test can reach the network.** Every suite starts through
+`CEDARVIEW_TEST_MAIN` (`tests/testsupport.h`), which points Qt's application
+proxy at a port nothing listens on, so any Qt Network request fails at once
+instead of quietly reaching `selfservice.cedarville.edu`. No test constructs an
+`HttpTransport` either. A test that hit the network would pass on your laptop,
+fail everywhere else, and — worse — make the suite's result depend on whether
+you happen to be logged in. `scripts/check-live` is a script precisely so it
+does not have to be a test.
 
-**Qt never needs a display.** `QT_QPA_PLATFORM=offscreen` is set before PySide6
-can be imported, so the Qt-touching tests run over SSH and in a build sandbox.
+The one exception is `tst_webview_transport`, which runs a real browser against
+a loopback HTTP server on 127.0.0.1 and nothing else. It leaves the proxy alone
+because Chromium honours it too, and would then refuse even the loopback.
 
-## What each file covers
+**Qt never needs a display.** `QT_QPA_PLATFORM=offscreen` is set before the
+application object exists (and again by ctest), so the Qt-touching suites run
+over SSH and in a build sandbox. The same helper points `MYCU_STATE_DIR` at a
+throwaway directory, so no test can touch your real session.
 
-| File | Covers |
+## What each suite covers
+
+| Suite | Covers |
 |---|---|
-| `test_chapel_provider.py` | Both parser branches, date formats, status vocabulary, dispatch, and that a login page raises `SessionExpired` rather than `ParseError` |
-| `test_transport.py` | URL resolution, expiry detection both ways, `Response`, `FixtureTransport` |
-| `test_session.py` | Persistence, 0600 permissions, corrupt/old files, platform paths |
-| `test_login_flow.py` | The whole auth state machine, driven by URLs alone |
-| `test_viewmodels.py` | List-model roles, error translation, the `-1` sentinel, re-entrancy |
-| `test_platform_selection.py` | Backend choice, lazy imports, and the QML surface contract |
-| `test_core_is_qt_free.py` | The architectural rule, by AST **and** by re-importing with PySide6 blocked at the meta-path |
+| `tst_transport` | URL resolution, expiry detection both ways (host, not substring), `Response`, `FixtureTransport` and its slugs, routing, telling a CORS refusal from a network fault |
+| `tst_session` | Persistence, 0600/0700 permissions, corrupt and old-schema files, reading a file the Python app wrote, the state-dir rules |
+| `tst_calendar` | Term boundaries, days left, the bar, the between-terms answer |
+| `tst_chapel_provider` | The real capture: reported figures used verbatim, the ledger order, the student-ID bootstrap, the four requests, fines failing softly, a login page raising `SessionExpired` |
+| `tst_chapel_schedule_provider` | The real capture, UTC to local, speakerless chapels, paging, "now" and "over" |
+| `tst_dining_provider` | The real capture, slot ordering, allergens, the serving hours and the next sitting |
+| `tst_meals_provider` | The real page and endpoint, which balance is which, plan cycles, activity, the attribute finder |
+| `tst_core_is_gui_free` | The architectural rule: `cedarview_core` links Qt Core only, and no GUI include hides in the sources |
+| `tst_tasks` | Results and typed exceptions crossing threads; a destroyed caller not being called back |
+| `tst_login_flow` | The whole auth state machine, driven by URLs alone |
+| `tst_viewmodels` | List-model roles, error translation, the `-1` sentinel, re-entrancy, the schedule, paging the Chucks tab, activity |
+| `tst_qml_contract` | Every `chapel.x` / `dining.x` / … and every `model.role` in the QML exists in C++ |
+| `tst_surfaces` | The web surfaces' shared interface, their imports, and that each platform builds only its own |
+| `tst_webview_transport` | The in-page fetch end to end: offscreen QtWebEngine, the real surface QML, a loopback server |
 
 ## The tests that exist because something went wrong
 
 Worth keeping, and worth understanding before you "simplify" the code they
 guard:
 
-- `test_json_camel_reads_the_student_name_not_the_term` — a substring match on
-  `"name"` hit `termName` and put the term where the student's name goes. Exact
-  matches now win globally before any fuzzy matching starts.
-- `test_json_camel_does_not_mistake_allowed_for_used` — `"skips"` substring-
-  matched `allowedSkips`, reporting 6 of 6 skips used to someone who had used 3.
-  The generic spellings are deliberately absent from the candidate lists.
-- `test_html_reads_the_official_totals` — a symmetric text window around "used"
-  found the 6 from the *previous sentence* before the 3 that belonged to it.
-  `_scan_number` now looks forward first.
-- `test_sign_out_only_completes_once_we_are_back_on_selfservice` — the logout
-  URL contains `post_logout_redirect_uri`, so matching on `"post_logout"`
-  declared victory the instant we navigated.
-- `test_unknown_status_does_not_count_as_a_skip` — guessing high would make the
-  app frighten you over a status nobody has seen before.
+- `anIdpInAQueryParameterIsNotAnExpiredSession` — a tracking pixel's URL
+  carried `ref=https://login.microsoftonline.com/`, and a substring match
+  declared the session expired. Expiry keys on the host.
+- `theLedgerMustNotBeUsedToComputeSkipsUsed` — the ledger sums to 1, the
+  server says 2, and the server is right; recomputing shows a wrong number.
+- `orderingKeysOnSlotNotOnTheFreeTextMealLabel` — "yogurt bar", a breakfast
+  block, sorted after dinner when the sort keyed on `meal`.
+- `anUnnamedChapelDoesNotPrintItsOwnNameTwice` — "Worship Chapel" above
+  "Worship Chapel", seen on the phone.
+- `signOutOnlyCompletesOnceWeAreBackOnSelfservice` — the logout URL contains
+  `post_logout_redirect_uri`, so matching on it declared victory the instant
+  we navigated.
+- `theAndroidSurfaceTakesItsUrlFromTheLoadRequest` — QtWebView's `url` does
+  not follow redirects, so sign-in could never start on the phone.
+- `theRefreshGestureReachesEverySourceOnTheScreen` — pull-to-refresh called
+  `refresh()`, which on the Dining screen reloads the menu and not the
+  balances.
+- `aDestroyedContextIsNotCalledBack` — a background result delivered to an
+  object that had gone away while the work ran.
 
 ## Manual checks that need a session
 
-Once discovery is done:
-
-1. `python -m mycu` → sign in → attendance renders.
+1. `./build/cedarview` → sign in → the Summary fills in.
 2. Relaunch → no login prompt (the profile persisted).
-3. Overflow menu → Sign out → login surface reappears.
+3. Overflow menu → Sign out → the login surface reappears.
 4. Leave it until Entra expires the session, then refresh → it re-authenticates
    by itself and the data arrives.
 
 ## On Android
 
 ```bash
-adb logcat -c && adb logcat | grep -iE 'python|qml|mycu'
-python scripts/smoke-transport --android
+adb logcat -c && adb logcat | grep -iE 'mycu|qml|cedarview'
 ```
 
-`mycu/ui/app.py` logs to stdout deliberately; python-for-android tags stdout
-with the app name, which makes it greppable.
+The checklist of things only a device can answer is at the end of
+`docs/android.md`.

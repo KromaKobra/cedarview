@@ -1,7 +1,7 @@
 # Fixtures
 
 Every parsing test in this repo runs against a file in this directory. No test
-touches the network (`conftest.py` blocks it outright) and none needs Qt.
+touches the network (`testsupport.h` blocks it) and none needs a display.
 
 ## ⚠️ The files here are SYNTHETIC
 
@@ -16,7 +16,7 @@ value thing you can do next — see `docs/discovery.md`.
 
 | File | What it stands in for |
 |---|---|
-| `cedarinfo_chapelskip.html` | A server-rendered Razor attendance table. Served by `FixtureTransport` and therefore by `python -m mycu --demo`. |
+| `cedarinfo_chapelskip.html` | A server-rendered Razor attendance table. Served by `FixtureTransport` and therefore by `cedarview --demo`. |
 | `samples/chapel_json_pascal.json` | JSON with PascalCase keys — the ASP.NET default. |
 | `samples/chapel_json_camel.json` | JSON with camelCase keys and an ASP.NET wrapper object, exercising the nested-list search. |
 | `samples/chapel_json_bare_list.json` | A bare top-level array, no envelope, no totals. |
@@ -37,7 +37,7 @@ value thing you can do next — see `docs/discovery.md`.
 4. Drop the file in as `cedarinfo_chapelskip.html` (or `.json` — the `.json`
    extension wins if both exist, which is how you switch the app over to a JSON
    payload without touching code).
-5. Run `pytest`. Update the expected values in `tests/test_chapel_provider.py`.
+5. Run `ctest --test-dir build`. Update the expected values in `tests/tst_chapel_provider.cpp`.
 
 `.gitignore` already excludes `docs/captures/` and `*.har` so a raw, unscrubbed
 capture cannot be committed by accident.

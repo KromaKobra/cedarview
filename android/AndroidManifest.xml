@@ -1,0 +1,95 @@
+<?xml version="1.0"?>
+<!--
+  The Qt 6.11 template (src/android/templates/AndroidManifest.xml in the
+  Android kit), customised for CedarView. What changed and why:
+
+  * No package attribute: the applicationId comes from QT_ANDROID_PACKAGE_NAME
+    in CMakeLists.txt (Gradle's namespace; the Android Gradle Plugin ignores
+    a package attribute here and warns about it). It is com.kromakobra.cedarview,
+    the Play Store listing's permanent key: Google Play never lets it change
+    after the first upload, and to Android a new one is a *different app*. It
+    was org.mycu.mycu through v0.1.0 (GitHub only). scripts/build-apk checks
+    the built manifest carries it.
+
+  * Permissions: INTERNET and nothing else, declared here rather than left to
+    the %%INSERT_PERMISSIONS placeholder, which would add whatever every
+    bundled Qt module asks for. A read-only client for your own records has no
+    business with the others. The tools:node="remove" lines strip anything a
+    library manifest merges back in; scripts/build-apk fails the build if the
+    result is ever more than INTERNET.
+
+  * android:enableOnBackInvokedCallback="false": the app handles Back itself
+    (the tab bar and the sign-in surface), so the system's predictive back
+    must not close it from under the user. Qt's template carries the same
+    value; it is pinned here because the gate checks it.
+
+  * The launcher icon is @mipmap/icon: an adaptive icon on API 26+
+    (res/mipmap-anydpi-v26/icon.xml) over two layers, with the flat PNG as the
+    fallback. CMakeLists.txt copies all three PNGs in from assets/ at
+    configure time, so assets/ stays the single source that
+    scripts/make-icon-layers writes.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:installLocation="auto"
+    android:versionCode="-- %%INSERT_VERSION_CODE%% --"
+    android:versionName="-- %%INSERT_VERSION_NAME%% --">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" tools:node="remove" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" tools:node="remove" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" tools:node="remove" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" tools:node="remove" />
+    <!-- androidx.core (in the build for the template's FileProvider) declares
+         and requests this for ContextCompat.registerReceiver(…,
+         RECEIVER_NOT_EXPORTED) on old Android. Nothing in the app or in Qt's
+         Java calls that, so it is dropped rather than shipped unused. -->
+    <permission android:name="${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" tools:node="remove" />
+    <uses-permission android:name="${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" tools:node="remove" />
+
+    <!-- %%INSERT_FEATURES -->
+    <supports-screens
+        android:anyDensity="true"
+        android:largeScreens="true"
+        android:normalScreens="true"
+        android:smallScreens="true" />
+    <application
+        android:name="org.qtproject.qt.android.bindings.QtApplication"
+        android:hardwareAccelerated="true"
+        android:label="CedarView"
+        android:icon="@mipmap/icon"
+        android:enableOnBackInvokedCallback="false"
+        android:allowBackup="true"
+        android:fullBackupOnly="false">
+        <activity
+            android:name="org.qtproject.qt.android.bindings.QtActivity"
+            android:configChanges="orientation|uiMode|screenLayout|screenSize|smallestScreenSize|layoutDirection|locale|fontScale|keyboard|keyboardHidden|navigation|mcc|mnc|density"
+            android:label="CedarView"
+            android:launchMode="singleTop"
+            android:screenOrientation="unspecified"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+          <meta-data
+                android:name="android.app.lib_name"
+                android:value="-- %%INSERT_APP_LIB_NAME%% --" />
+
+          <meta-data
+                android:name="android.app.arguments"
+                android:value="-- %%INSERT_APP_ARGUMENTS%% --" />
+        </activity>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.qtprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/qtprovider_paths"/>
+        </provider>
+    </application>
+</manifest>

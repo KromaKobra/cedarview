@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Make one real authenticated request and report how it differs from the fixture.
+"""Make the real chapel requests once and report how they differ from the fixtures.
 
 Run this when something breaks. It answers the question you will actually have —
 *"did Ellucian change the page, or did I break the app?"* — instead of leaving
@@ -8,103 +8,132 @@ you guessing.
     nix develop --command python scripts/check-live
 
 It opens a window, signs you in if needed (on Microsoft's page, as always),
-fetches `/cedarinfo/chapelskip` once, and prints:
+makes the same requests the app does — the dashboard for the student ID, then
+the summary and the ledger — and prints:
 
-  * the final URL after the redirect chain
-  * whether the payload is JSON or HTML
-  * what the parser made of it
-  * a field-by-field comparison against `tests/fixtures/`
+  * the final URL after the redirect chain, and whether it is still JSON
+  * what came back for every field the app reads
+  * a field-by-field comparison against `tests/fixtures/`: anything missing,
+    anything whose type changed
 
-It also writes the raw body to `docs/captures/` — gitignored, because it will
-contain your name and student ID. That file is your starting point for
+It also writes the raw bodies to `docs/captures/` — gitignored, because they
+contain your name and student ID. Those files are your starting point for
 refreshing the fixtures (`docs/discovery.md`).
 
-Exits 0 if the response still has the shape the fixtures describe, 1 otherwise.
+With `--path`, it fetches just that one path instead, reports it and saves it,
+and compares its top-level JSON keys with the fixture of the same name, if
+there is one.
+
+Exits 0 if the responses still have the shape the fixtures describe, 1 otherwise.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 import time
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-FIXTURES = ROOT / "tests" / "fixtures"
+import devkit  # noqa: E402
+
+ROOT = devkit.ROOT
 CAPTURES = ROOT / "docs" / "captures"
+
+
+def save(name: str, body: str) -> Path:
+    CAPTURES.mkdir(parents=True, exist_ok=True)
+    stripped = body.lstrip()
+    suffix = "json" if stripped[:1] in "{[" else "html"
+    path = CAPTURES / f"{name}-{time.strftime('%Y%m%d-%H%M%S')}.{suffix}"
+    path.write_text(body, encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
+
+def fixture(path: str) -> object | None:
+    for suffix in (".json", ".html"):
+        candidate = devkit.FIXTURES / f"{devkit.fixture_slug(path)}{suffix}"
+        if candidate.exists():
+            text = candidate.read_text(encoding="utf-8")
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return text
+    return None
+
+
+def compare_fields(label: str, live: dict, recorded: dict, fields: dict[str, str]) -> list[str]:
+    """Problems with `live` against the fields the app reads."""
+    problems = []
+    for key, expected in fields.items():
+        if key not in live:
+            if key in recorded:
+                problems.append(f"{label}: '{key}' is gone (the fixture has it)")
+            continue
+        kind = devkit.json_kind(live[key])
+        allowed = expected.split("|")
+        if kind not in allowed:
+            problems.append(f"{label}: '{key}' is now {kind}, the app expects {expected}")
+    new = sorted(set(live) - set(recorded))
+    if new:
+        print(f"  note: {label} has keys the fixture does not: {', '.join(new)}")
+    return problems
+
+
+def report(label: str, response: devkit.Response) -> None:
+    print(f"\n{label}")
+    print(f"  final URL      {response.url}")
+    print(f"  status         {response.status}")
+    print(f"  content-type   {response.headers.get('content-type', '(none)')}")
+    print(f"  size           {len(response.body):,} bytes")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--path", default=None, help="path to fetch (default: the chapel page)")
+    parser.add_argument("--path", default=None,
+                        help="fetch and report only this path (default: the chapel requests)")
     parser.add_argument("--timeout", type=float, default=300.0,
                         help="seconds to wait for you to finish signing in")
     args = parser.parse_args()
 
-    from mycu.core.errors import MycuError
-    from mycu.core.providers.chapel import CHAPEL_PATH, parse_body
-    from mycu.core.session import SessionStore
-    from mycu.core.transport import FixtureTransport
-    from mycu.platform import current_backend
-
-    path = args.path or CHAPEL_PATH
-
-    backend = current_backend()
+    backend = devkit.DesktopWeb()
     backend.before_app()
 
-    from PySide6.QtCore import QObject, QTimer, QUrl
+    from PySide6.QtCore import QObject, QTimer
     from PySide6.QtGui import QGuiApplication
     from PySide6.QtQml import QQmlApplicationEngine
 
-    from mycu.ui.login import LoginController
-    from mycu.ui.tasks import run_in_background
-    from mycu.ui.transport_webview import WebViewTransport
+    from devkit import Login, MycuError, WebViewTransport, run_in_background
 
     app = QGuiApplication(sys.argv[:1])
-    app.setApplicationName("myCU check-live")
+    app.setApplicationName("CedarView check-live")
 
-    store = SessionStore()
-    store.ensure_dirs()
-    backend.configure_profile(store.profile_dir())
-
-    transport = WebViewTransport()
-    login = LoginController(store, backend)
-
-    qml_dir = ROOT / "mycu" / "ui" / "qml"
-    wrapper = qml_dir / "_checklive_window.qml"
-    wrapper.write_text(
-        "import QtQuick\n"
-        "import QtQuick.Window\n"
-        f'import "{qml_dir.as_uri()}" as Surfaces\n'
-        "Window {\n"
-        '    title: "myCU — sign in"\n'
-        "    width: 480; height: 800; visible: true\n"
-        f'    Surfaces.{Path(backend.surface_qml).stem} {{ objectName: "surface"; anchors.fill: parent }}\n'
-        "}\n",
-        encoding="utf-8",
-    )
+    devkit.state_dir().mkdir(parents=True, exist_ok=True, mode=0o700)
+    backend.configure_profile(devkit.profile_dir())
 
     engine = QQmlApplicationEngine()
-    engine.load(QUrl.fromLocalFile(str(wrapper)))
-    wrapper.unlink(missing_ok=True)
+    engine.loadData(devkit.surface_window_qml(
+        backend.surface_qml, title="CedarView — sign in", width=480, height=800,
+    ).encode())
     if not engine.rootObjects():
         print("the web surface failed to load — are you in `nix develop`?")
         return 1
 
     # `window` MUST be kept in a Python variable. Chaining
     # `engine.rootObjects()[0].findChild(...)` drops the only Python reference
-    # to the root object, and shiboken then deletes the underlying C++ object —
-    # the child comes back as a dead wrapper ("Internal C++ object already
-    # deleted", or a QObject mysteriously missing its QML-declared signals).
+    # to the root object, and shiboken then deletes the underlying C++ object.
     window = engine.rootObjects()[0]
     surface = window.findChild(QObject, "surface")
     if surface is None:
         print("could not find the web surface in the loaded QML")
         return 1
 
+    transport = WebViewTransport()
     transport.attach_surface(surface)
+    login = Login()
     surface.currentUrlChanged.connect(
         lambda: login.onUrlChanged(str(surface.property("currentUrl") or ""))
     )
@@ -113,18 +142,48 @@ def main() -> int:
     outcome: dict[str, object] = {}
     started = time.monotonic()
 
-    def fetch_once() -> None:
+    def fetch() -> None:
         try:
-            outcome["response"] = transport.get(path, timeout_s=60)
+            if args.path:
+                outcome["single"] = transport.get(args.path, timeout_s=60)
+                return
+            page = transport.get(devkit.CHAPEL_PATH, timeout_s=60)
+            outcome["page"] = page
+            match = devkit.STUDENT_ID_RE.search(page.body)
+            if not match:
+                outcome["error"] = devkit.ParseError(
+                    "no `studentId = '…'` bootstrap in the dashboard — the page changed")
+                return
+            student = match.group(1)
+            outcome["summary"] = transport.get(
+                f"{devkit.SUMMARY_PATH}?studentId={student}", timeout_s=60)
+            outcome["ledger"] = transport.get(
+                f"{devkit.LEDGER_PATH}?studentId={student}", timeout_s=60)
+        except devkit.TransportError as exc:
+            # The surface reports the Self-Service URL the moment it is asked
+            # to go there, before the redirect to Microsoft has happened, so
+            # the first "signed in" can come too early. A fetch the browser
+            # refused is that case: wait for the sign-in to land back here.
+            if devkit.looks_like_cors_failure(str(exc)):
+                outcome["retry"] = True
+            else:
+                outcome["error"] = exc
         except MycuError as exc:
             outcome["error"] = exc
+
+    def finished(_: object = None) -> None:
+        if outcome.pop("retry", False):
+            outcome["started"] = False
+            print("not signed in yet — finish signing in in the window")
+            return
+        app.quit()
 
     def on_logged_in() -> None:
         if outcome.get("started"):
             return
         outcome["started"] = True
-        print("signed in — fetching…")
-        run_in_background(fetch_once, lambda _: app.quit(), lambda _: app.quit())
+        print("on Self-Service — fetching…")
+        run_in_background(fetch, finished, finished)
 
     login.loggedIn.connect(on_logged_in)
 
@@ -137,75 +196,82 @@ def main() -> int:
     ticker.timeout.connect(deadline)
     ticker.start(2000)
 
-    print(f"opening {path} — sign in if prompted")
-    login.begin(path)
+    start = args.path or devkit.CHAPEL_PATH
+    print(f"opening {start} — sign in if prompted")
+    login.begin(start if start.startswith("/") or "://" in start else "/" + start)
     app.exec()
 
     # ---- Report ---------------------------------------------------------
-    if "error" in outcome:
-        print(f"\nFAILED: {type(outcome['error']).__name__}: {outcome['error']}")
-        return 1
-
-    response = outcome.get("response")
-    if response is None:
-        print("\nno response — sign-in did not complete")
-        return 1
-
     print("\n" + "=" * 68)
-    print(f"final URL      {response.url}")
-    print(f"status         {response.status}")
-    print(f"content-type   {response.headers.get('content-type', '(none)')}")
-    print(f"size           {len(response.body):,} bytes")
-
-    stripped = response.body.lstrip()
-    kind = "JSON" if stripped[:1] in "{[" else "HTML"
-    print(f"payload        {kind}")
-
-    CAPTURES.mkdir(parents=True, exist_ok=True)
-    capture = CAPTURES / f"chapelskip-{time.strftime('%Y%m%d-%H%M%S')}.{kind.lower()}"
-    capture.write_text(response.body, encoding="utf-8")
-    print(f"raw body       {capture.relative_to(ROOT)}  (gitignored — scrub before committing)")
-
-    print("-" * 68)
-    try:
-        live = parse_body(response.body, content_type=response.headers.get("content-type", ""))
-    except Exception as exc:  # noqa: BLE001
-        print(f"PARSE FAILED: {type(exc).__name__}: {exc}")
-        print("\nThe page shape changed. Recapture per docs/discovery.md.")
+    if "error" in outcome:
+        print(f"FAILED: {type(outcome['error']).__name__}: {outcome['error']}")
         return 1
 
-    print(f"records        {len(live.records)}")
-    print(f"term           {live.term or '(not found)'}")
-    print(f"allowed        {live.allowed if live.allowed is not None else '(not found)'}")
-    print(f"used           {live.used}")
-    print(f"student name   {'(found)' if live.student_name else '(not found)'}")
-    if live.records:
-        first = live.records[0]
-        print(f"first record   {first.on or first.raw_date!r} / {first.status.value} / {first.title!r}")
-
-    print("-" * 68)
-    try:
-        fixture = parse_body(FixtureTransport(FIXTURES).get(path).body)
-    except Exception:  # noqa: BLE001
-        print("no comparable fixture — skipping the shape comparison")
+    if args.path:
+        response = outcome.get("single")
+        if response is None:
+            print("no response — sign-in did not complete")
+            return 1
+        report(args.path, response)
+        print(f"  raw body       {save('check-live', response.body).relative_to(ROOT)}  (gitignored)")
+        recorded = fixture(args.path)
+        try:
+            live = response.json()
+        except devkit.ParseError:
+            print("  payload        HTML (no JSON shape to compare)")
+            return 0
+        if isinstance(live, dict) and isinstance(recorded, dict):
+            gone = sorted(set(recorded) - set(live))
+            new = sorted(set(live) - set(recorded))
+            print(f"  keys gone      {', '.join(gone) or '(none)'}")
+            print(f"  keys new       {', '.join(new) or '(none)'}")
+            return 1 if gone else 0
+        print("  no comparable JSON fixture — nothing to compare against")
         return 0
 
-    problems = []
-    if not live.records:
-        problems.append("live response has no records at all")
-    if bool(live.allowed is None) != bool(fixture.allowed is None):
-        problems.append(
-            f"'allowed' {'disappeared' if live.allowed is None else 'appeared'} "
-            "relative to the fixture"
-        )
-    if live.records and all(r.on is None for r in live.records):
-        problems.append("no date in any record parsed — the date format changed")
-    unknown = sum(1 for r in live.records if r.status.value == "unknown")
-    if unknown:
-        problems.append(
-            f"{unknown}/{len(live.records)} records have an unrecognised status — "
-            "add the real vocabulary to AttendanceStatus.parse"
-        )
+    summary, ledger = outcome.get("summary"), outcome.get("ledger")
+    if summary is None or ledger is None:
+        print("no response — sign-in did not complete")
+        return 1
+
+    report("summary", summary)
+    report("ledger", ledger)
+    print(f"\nraw bodies     {save('chapel-summary', summary.body).relative_to(ROOT)}")
+    print(f"               {save('chapel-ledger', ledger.body).relative_to(ROOT)}")
+    print("               (gitignored — they hold your name and ID; scrub before committing)")
+
+    print("-" * 68)
+    try:
+        live_summary = summary.json()
+        live_ledger = ledger.json()
+    except devkit.ParseError as exc:
+        print(f"PARSE FAILED: {exc}")
+        print("\nThe endpoints stopped returning JSON. Recapture per docs/discovery.md.")
+        return 1
+    if not isinstance(live_summary, dict) or not isinstance(live_ledger, list):
+        print("SHAPE CHANGED: the summary is not an object, or the ledger is not a list")
+        return 1
+
+    # What the app would show, read the way it reads it.
+    print(f"skips          used {live_summary.get('SkipsUsed')!r} of "
+          f"{live_summary.get('SkipsTotal')!r}, {live_summary.get('SkipsRemaining')!r} remaining")
+    print(f"term           {live_summary.get('TermName') or live_summary.get('Term') or '(not found)'}")
+    print(f"student name   {'(found)' if live_summary.get('StudentName') else '(not found)'}")
+    print(f"ledger         {len(live_ledger)} entries: "
+          f"{sorted({str(e.get('EntryType')) for e in live_ledger if isinstance(e, dict)})}")
+
+    print("-" * 68)
+    recorded_summary = fixture(devkit.SUMMARY_PATH) or {}
+    recorded_ledger = fixture(devkit.LEDGER_PATH) or []
+    problems = compare_fields("summary", live_summary,
+                              recorded_summary if isinstance(recorded_summary, dict) else {},
+                              devkit.SUMMARY_FIELDS)
+    recorded_row = recorded_ledger[0] if isinstance(recorded_ledger, list) and recorded_ledger else {}
+    for index, row in enumerate(live_ledger):
+        if isinstance(row, dict):
+            problems += compare_fields(f"ledger[{index}]", row, recorded_row, devkit.LEDGER_FIELDS)
+        else:
+            problems.append(f"ledger[{index}] is not an object")
 
     if problems:
         print("SHAPE CHANGED:")
@@ -213,7 +279,7 @@ def main() -> int:
             print(f"  - {problem}")
         return 1
 
-    print("shape matches the fixture. If the app is misbehaving, it isn't Ellucian.")
+    print("shape matches the fixtures. If the app is misbehaving, it isn't Ellucian.")
     return 0
 
 
