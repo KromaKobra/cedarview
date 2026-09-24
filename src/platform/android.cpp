@@ -18,6 +18,11 @@
 // already has the cookie and attaches it automatically — so we let *it* make
 // the request, from inside the logged-in page, and pass the body back through
 // runJavaScript. See src/ui/webviewtransport.h.
+//
+// Since v0.2.1 that is the desktop's story only. On Android the cookie is
+// read from android.webkit.CookieManager instead, and Self-Service goes over
+// plain HTTPS, because QtWebView 6.11's runJavaScript runs its callback on the
+// wrong thread and crashed the app. See android_sessiontransport.h.
 
 #include "backend.h"
 

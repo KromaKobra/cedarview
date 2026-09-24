@@ -11,7 +11,7 @@ cmake_minimum_required(VERSION 3.21)
 
 # The single version source. The APK's versionName and versionCode, the About
 # sheet and `cedarview --version` are all read from here.
-project(CedarView VERSION 0.2.0 LANGUAGES CXX)
+project(CedarView VERSION 0.2.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -46,7 +46,8 @@ target_link_libraries(cedarview_ui PUBLIC cedarview_core Qt6::Core Qt6::Qml)
 qt_add_executable(cedarview src/ui/main.cpp)
 
 if(ANDROID)
-    target_sources(cedarview PRIVATE src/platform/android.cpp)
+    target_sources(cedarview PRIVATE src/platform/android.cpp
+                                     src/platform/android_sessiontransport.h src/platform/android_sessiontransport.cpp)
     target_link_libraries(cedarview PRIVATE Qt6::WebView)
 else()
     target_sources(cedarview PRIVATE src/platform/desktop.cpp)

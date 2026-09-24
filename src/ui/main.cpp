@@ -32,6 +32,10 @@
 #include "ui/viewmodels/semester.h"
 #include "ui/webviewtransport.h"
 
+#ifdef Q_OS_ANDROID
+#  include "platform/android_sessiontransport.h"
+#endif
+
 #include <QCommandLineParser>
 #include <QGuiApplication>
 #include <QLoggingCategory>
@@ -164,7 +168,8 @@ int main(int argc, char **argv)
     // The app talks to three services with different auth, so requests are
     // routed by origin (see TransportRouter):
     //
-    //   selfservice.cedarville.edu   SAML/Entra session   -> the WebView
+    //   selfservice.cedarville.edu   SAML/Entra session   -> the WebView (desktop),
+    //                                                        HTTPS with its cookies (Android)
     //   diningdata.cedarville.edu    none at all          -> plain HTTPS
     //   mediaserve.cedarville.edu    none at all          -> plain HTTPS
     //
@@ -185,6 +190,14 @@ int main(int argc, char **argv)
         auto router = std::make_shared<TransportRouter>(sessionTransport);
         router->route(DINING_BASE, std::make_shared<HttpTransport>())
             .route(CHAPEL_MEDIA_BASE, std::make_shared<HttpTransport>());
+#ifdef Q_OS_ANDROID
+        // Self-Service, too, goes over plain HTTPS on Android, with the
+        // WebView's cookies. The WebView still signs you in, but no script
+        // is run in it: QtWebView 6.11's runJavaScript runs its callback on
+        // the wrong thread and crashes the app. See
+        // platform/android_sessiontransport.h.
+        router->route(BASE_URL, std::make_shared<AndroidSessionTransport>());
+#endif
         transport = router;
         surfaceQml = backend->surfaceQml();
         backend->configureProfile(store.profileDir());

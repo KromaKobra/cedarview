@@ -44,6 +44,7 @@ cedarview/
       backend.h             the interface
       desktop.cpp           QtWebEngine
       android.cpp           QtWebView
+      android_sessiontransport.*  Self-Service over HTTPS with the WebView's cookies
   qml/                      shared verbatim, desktop and Android
     Main.qml                ribbon header, tab stack, bottom bar
     SummaryView.qml         the screen the app opens on
@@ -51,7 +52,7 @@ cedarview/
     Glyph.qml               every icon, drawn on a Canvas — see below
     WebSurface*.qml         the browser, one per platform, plus a stub
     icon.png                the header logo, and the only raster asset
-  android/                  the manifest, the adaptive icon, HttpGet.java
+  android/                  the manifest, the adaptive icon, HttpGet.java (both HTTPS paths)
   tests/                    Qt Test suites under ctest, fixtures, no network
   scripts/                  build-apk, and the desktop dev tools (Python)
 ```
@@ -103,6 +104,30 @@ already has it and attaches it automatically, so we evaluate a `fetch()` inside
 the logged-in page and read the body back out through `runJavaScript`. The only
 APIs involved are `url` and `runJavaScript`, both present on both backends.
 Verified working: 287 KB of response body came back intact.
+
+**Android no longer does this** (since v0.2.1). QtWebView 6.11 calls a
+`runJavaScript` callback from `evaluateJavascript`'s `ValueCallback`, on the
+Android UI thread, and never moves it to Qt's GUI thread
+(`qandroidwebview.cpp` `javaScriptResult()` → `qquickwebview.cpp`
+`QJSValue::call`). So the QML callback in `evalAsync` ran alongside the GUI
+thread's own use of the QML engine, and corrupted it at random. v0.2.0 closed on
+most refreshes, and the tombstones show SIGSEGV in `libQt6Qml` on the Android
+main thread.
+
+The cookie is reachable after all, just not through Qt: `android.webkit.CookieManager`
+is the WebView's own cookie jar, shared by the whole process, HttpOnly cookies
+included. So on Android `main.cpp` routes Self-Service to
+`AndroidSessionTransport` (`src/platform/android_sessiontransport.*`). That calls
+`HttpGet.getWithWebViewCookies()`, which sends the WebView's cookies and User-Agent,
+writes back any cookie the server sets, and follows redirects only within
+Self-Service. A redirect to Microsoft stops there and becomes `SessionExpired`,
+which reopens the sign-in surface just as before. The WebView still does the
+signing in. It just never runs a script.
+
+Do not route Android back through `WebViewTransport` until QtWebView delivers
+`runJavaScript` results on the GUI thread. A bridge that called `evaluateJavascript`
+itself was tried and cannot work: Qt detaches the WebView from the view tree
+whenever the sign-in surface is hidden and keeps no reachable reference to it.
 
 ### Why it polls
 

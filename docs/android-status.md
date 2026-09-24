@@ -74,7 +74,8 @@ account`, Microsoft's page on screen, and after you authenticate, `login: `
 |---|---|
 | Sign-in completes and the Summary fills in | QtWebView is not in the desktop build |
 | Chucks and the Chapel schedule fill in | They come through `HttpGet.java` over JNI, new with the C++ build |
-| A large body survives `runJavaScript` on QtWebView | Verified at 300 KB on QtWebEngine only |
+| Refresh repeatedly without the app closing | **Verified 2026-09-24 on the moto g power 5G (v0.2.1):** 35 refresh-button taps, some 0.3 s apart, plus 12 pull-to-refreshes across all four tabs, all in one process, with nothing in the crash buffer. Self-Service now goes over `HttpGet.getWithWebViewCookies`, not `runJavaScript`; see architecture.md |
+| Session expiry reopens the sign-in surface under the cookie transport | Needs a session that has actually ended |
 | Edge to edge: ribbon under the status bar, tab bar above the gesture handle | Needs real insets |
 | Status-bar icons contrast in both themes | Needs the real system bars |
 | Back gesture behaves at targetSdk 36 | Needs the real system |
@@ -113,6 +114,9 @@ surface, while logcat showed Chromium refusing a fetch *from*
 2. `WebViewTransport::get()` treats a *refused* request as a probable sign-in:
    it asks the page for `window.location.href`, which is always the truth, and
    throws `SessionExpired` if that is a sign-in page.
+   (Desktop only since v0.2.1: Android's Self-Service requests no longer go
+   through the WebView at all. They use `AndroidSessionTransport`, which
+   sees the redirect to Microsoft directly.)
 
 **Android has no OpenSSL default trust store.** Under Python every direct HTTPS
 request failed with `CERTIFICATE_VERIFY_FAILED` until the app went looking for
