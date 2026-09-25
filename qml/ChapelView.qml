@@ -21,134 +21,18 @@ Item {
             width: scroll.width - theme.pageMargin * 2
             spacing: theme.gap
 
-            // Attendance is personal and actionable, so it leads the screen.
-            Card {
-                padding: 0
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    implicitHeight: attendanceContent.implicitHeight + 40
-                    radius: theme.cardRadius
-                    gradient: Gradient {
-                        orientation: Gradient.Horizontal
-                        GradientStop { position: 0.0; color: theme.heroStart }
-                        GradientStop { position: 1.0; color: theme.heroEnd }
-                    }
-
-                    ColumnLayout {
-                        id: attendanceContent
-                        x: 20
-                        y: 20
-                        width: parent.width - 40
-                        spacing: 0
-
-                        RowLayout {
-                            Layout.fillWidth: true
-
-                            Label {
-                                text: "ATTENDANCE"
-                                color: theme.heroAccent
-                                font.pixelSize: 11
-                                font.bold: true
-                                font.letterSpacing: 1.4
-                            }
-
-                            Item { Layout.fillWidth: true }
-
-                            Rectangle {
-                                visible: chapel.loaded
-                                implicitWidth: standingLabel.implicitWidth + 18
-                                implicitHeight: 25
-                                radius: 13
-                                color: chapel.inGoodStanding
-                                       ? theme.heroAccentSoft
-                                       : Qt.rgba(1, 0.42, 0.39, 0.15)
-
-                                Label {
-                                    id: standingLabel
-                                    anchors.centerIn: parent
-                                    text: chapel.inGoodStanding ? "GOOD STANDING" : "NEEDS ATTENTION"
-                                    color: chapel.inGoodStanding ? theme.heroAccent : theme.heroDanger
-                                    font.pixelSize: 9
-                                    font.bold: true
-                                    font.letterSpacing: 0.7
-                                }
-                            }
-                        }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Layout.topMargin: 17
-                            spacing: 10
-
-                            Label {
-                                text: chapel.remaining >= 0 ? chapel.remaining : "—"
-                                color: theme.textOnDark
-                                font.pixelSize: 48
-                                font.bold: true
-                            }
-
-                            ColumnLayout {
-                                Layout.alignment: Qt.AlignBottom
-                                Layout.bottomMargin: 8
-                                spacing: 1
-
-                                Label {
-                                    text: "skips left"
-                                    color: theme.textOnDark
-                                    font.pixelSize: 14
-                                    font.bold: true
-                                }
-                                Label {
-                                    visible: chapel.allowed >= 0
-                                    text: "of " + chapel.allowed + " this semester"
-                                    color: Qt.rgba(0.96, 0.98, 1.0, 0.64)
-                                    font.pixelSize: 11
-                                }
-                            }
-
-                            Item { Layout.fillWidth: true }
-
-                            ColumnLayout {
-                                Layout.alignment: Qt.AlignBottom
-                                Layout.bottomMargin: 8
-                                spacing: 1
-                                Label {
-                                    Layout.alignment: Qt.AlignRight
-                                    text: chapel.used >= 0 ? chapel.used : "—"
-                                    color: theme.heroAccent
-                                    font.pixelSize: 22
-                                    font.bold: true
-                                }
-                                Label {
-                                    text: "used"
-                                    color: Qt.rgba(0.96, 0.98, 1.0, 0.56)
-                                    font.pixelSize: 10
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            Layout.fillWidth: true
-                            Layout.topMargin: 13
-                            height: 7
-                            radius: 4
-                            color: Qt.rgba(1, 1, 1, 0.11)
-
-                            Rectangle {
-                                width: chapel.remaining >= 0 && chapel.allowed > 0
-                                       ? Math.max(parent.height,
-                                                  parent.width * chapel.remainingFraction) : 0
-                                height: parent.height
-                                radius: 4
-                                color: theme.heroAccent
-                                Behavior on width {
-                                    NumberAnimation { duration: 320; easing.type: Easing.OutCubic }
-                                }
-                            }
-                        }
-                    }
-                }
+            // Attendance is personal and actionable, so it leads the screen,
+            // but only as a line: the schedule below is the point of the tab.
+            StatStrip {
+                readonly property bool atRisk: chapel.loaded && !chapel.inGoodStanding
+                stats: [
+                    { value: chapel.remaining >= 0 ? chapel.remaining : "—",
+                      label: chapel.allowed >= 0 ? "skips left of " + chapel.allowed : "skips left",
+                      tone: atRisk ? theme.danger : theme.accent },
+                    { value: chapel.used >= 0 ? chapel.used : "—", label: "used" },
+                    { value: !chapel.loaded ? "—" : (atRisk ? "At risk" : "Good"),
+                      label: "standing", tone: atRisk ? theme.danger : theme.text }
+                ]
             }
 
             Label {

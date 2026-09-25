@@ -22,136 +22,17 @@ Item {
             width: scroll.width - theme.pageMargin * 2
             spacing: theme.gap
 
-            Card {
-                padding: 0
-
-                Rectangle {
-                    Layout.fillWidth: true
-                    implicitHeight: balanceContent.implicitHeight + 40
-                    radius: theme.cardRadius
-                    gradient: Gradient {
-                        orientation: Gradient.Horizontal
-                        GradientStop { position: 0.0; color: theme.heroStart }
-                        GradientStop { position: 1.0; color: theme.heroEnd }
-                    }
-
-                    ColumnLayout {
-                        id: balanceContent
-                        x: 20
-                        y: 20
-                        width: parent.width - 40
-                        spacing: 0
-
-                        Label {
-                            text: dining.planDescription.length > 0
-                                  ? dining.planDescription.toUpperCase() : "YOUR MEAL PLAN"
-                            color: theme.heroAccent
-                            font.pixelSize: 10
-                            font.bold: true
-                            font.letterSpacing: 1.25
-                        }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Layout.topMargin: 13
-                            spacing: 10
-
-                            ColumnLayout {
-                                spacing: 0
-                                Label {
-                                    text: dining.mealsRemaining >= 0 ? dining.mealsRemaining : "—"
-                                    color: theme.textOnDark
-                                    font.pixelSize: 46
-                                    font.bold: true
-                                }
-                                Label {
-                                    text: "meals " + dining.mealsPeriodText
-                                    color: Qt.rgba(0.96, 0.98, 1.0, 0.66)
-                                    font.pixelSize: 11
-                                }
-                            }
-
-                            Item { Layout.fillWidth: true }
-
-                            ColumnLayout {
-                                Layout.preferredWidth: 132
-                                spacing: 8
-
-                                Rectangle {
-                                    Layout.fillWidth: true
-                                    implicitHeight: 52
-                                    radius: 16
-                                    color: Qt.rgba(1, 1, 1, 0.08)
-                                    RowLayout {
-                                        anchors.fill: parent
-                                        anchors.leftMargin: 12
-                                        anchors.rightMargin: 12
-                                        spacing: 8
-                                        Rectangle { width: 7; height: 7; radius: 4; color: theme.violet }
-                                        ColumnLayout {
-                                            Layout.fillWidth: true
-                                            spacing: 0
-                                            Label {
-                                                Layout.fillWidth: true
-                                                text: dining.diningDollars.length > 0 ? dining.diningDollars : "—"
-                                                color: theme.textOnDark
-                                                font.pixelSize: 16
-                                                font.bold: true
-                                                elide: Text.ElideRight
-                                            }
-                                            Label { text: "Temporary flex"; color: theme.faint; font.pixelSize: 9 }
-                                        }
-                                    }
-                                }
-
-                                Rectangle {
-                                    Layout.fillWidth: true
-                                    implicitHeight: 52
-                                    radius: 16
-                                    color: Qt.rgba(1, 1, 1, 0.08)
-                                    RowLayout {
-                                        anchors.fill: parent
-                                        anchors.leftMargin: 12
-                                        anchors.rightMargin: 12
-                                        spacing: 8
-                                        Rectangle { width: 7; height: 7; radius: 4; color: theme.heroAccent }
-                                        ColumnLayout {
-                                            Layout.fillWidth: true
-                                            spacing: 0
-                                            Label {
-                                                Layout.fillWidth: true
-                                                text: dining.flexDollars.length > 0 ? dining.flexDollars : "—"
-                                                color: theme.textOnDark
-                                                font.pixelSize: 16
-                                                font.bold: true
-                                                elide: Text.ElideRight
-                                            }
-                                            Label { text: "Permanent flex"; color: theme.faint; font.pixelSize: 9 }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Layout.topMargin: 18
-                            spacing: 8
-
-                            Rectangle {
-                                Layout.fillWidth: true
-                                height: 1
-                                color: Qt.rgba(1, 1, 1, 0.10)
-                            }
-
-                            Label {
-                                text: "Temporary flex expires · Permanent flex rolls over"
-                                color: Qt.rgba(0.96, 0.98, 1.0, 0.54)
-                                font.pixelSize: 9
-                            }
-                        }
-                    }
-                }
+            // Temporary flex expires; permanent flex rolls over. Tones match
+            // the summary tab's balance tiles, and permanent flex is likewise
+            // only shown when the account has some.
+            StatStrip {
+                stats: [
+                    { value: dining.mealsRemaining >= 0 ? dining.mealsRemaining : "—",
+                      label: "meals " + dining.mealsPeriodText, tone: theme.accent },
+                    { value: dining.diningDollars.length > 0 ? dining.diningDollars : "—",
+                      label: "temp flex", tone: theme.violet },
+                    { value: dining.flexDollars, label: "perm flex", tone: theme.cedar }
+                ].filter(stat => stat.label !== "perm flex" || dining.hasFlexDollars)
             }
 
             ColumnLayout {

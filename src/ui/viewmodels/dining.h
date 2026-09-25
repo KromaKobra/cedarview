@@ -13,6 +13,7 @@
 #include <QSet>
 #include <QTimer>
 
+#include <cmath>
 #include <exception>
 #include <functional>
 #include <optional>
@@ -146,6 +147,9 @@ class DiningViewModel : public QObject
     Q_PROPERTY(QString diningDollars READ diningDollars NOTIFY changed)
     // Voluntary Flex Dollars — purchased separately, these **do not expire**.
     Q_PROPERTY(QString flexDollars READ flexDollars NOTIFY changed)
+    // Whether there is any voluntary flex on the account. Most students never
+    // buy it, so its tile is hidden rather than shown as "—" or "$0.00".
+    Q_PROPERTY(bool hasFlexDollars READ hasFlexDollars NOTIFY changed)
     Q_PROPERTY(bool hasPlan READ hasPlan NOTIFY changed)
     Q_PROPERTY(QString mealsPeriodText READ mealsPeriodText NOTIFY changed)
     Q_PROPERTY(QString planDescription READ planDescription NOTIFY changed)
@@ -203,6 +207,8 @@ public:
     int mealsRemaining() const { return m_plan.mealsRemaining.value_or(-1); }
     QString diningDollars() const { return MealPlan::money(m_plan.diningDollars); }
     QString flexDollars() const { return MealPlan::money(m_plan.flexDollars); }
+    // Anything that would not display as "$0.00".
+    bool hasFlexDollars() const { return m_plan.flexDollars && std::fabs(*m_plan.flexDollars) >= 0.005; }
     bool hasPlan() const { return m_plan.hasAny(); }
 
     // "left this week" / "left this term", or just "left".

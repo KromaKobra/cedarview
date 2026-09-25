@@ -87,6 +87,7 @@ set(CEDARVIEW_QML
     qml/InfoSheet.qml
     qml/MeterBar.qml
     qml/NavButton.qml
+    qml/StatStrip.qml
     qml/SummaryView.qml
     qml/ToggleSwitch.qml
     qml/WebSurfaceStub.qml

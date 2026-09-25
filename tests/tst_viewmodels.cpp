@@ -534,7 +534,30 @@ private slots:
         QCOMPARE(vm->mealsRemaining(), -1);
         QCOMPARE(vm->diningDollars(), QString());
         QCOMPARE(vm->flexDollars(), QString());
+        QCOMPARE(vm->hasFlexDollars(), false);
         QCOMPARE(vm->hasPlan(), false);
+    }
+
+    // The permanent flex tile is hidden unless there is money in it.
+    void permanentFlexIsOnlyShownWhenThereIsSome()
+    {
+        auto vm = diningVm();
+        MealPlan plan;
+        plan.mealsRemaining = 16;
+        vm->onPlanLoaded(plan);
+        QCOMPARE(vm->hasFlexDollars(), false);
+
+        plan.flexDollars = 0.0;
+        vm->onPlanLoaded(plan);
+        QCOMPARE(vm->hasFlexDollars(), false);
+
+        plan.flexDollars = 0.004; // still "$0.00"
+        vm->onPlanLoaded(plan);
+        QCOMPARE(vm->hasFlexDollars(), false);
+
+        plan.flexDollars = 25.0;
+        vm->onPlanLoaded(plan);
+        QCOMPARE(vm->hasFlexDollars(), true);
     }
 
     // Each meal header carries its own sitting's hours, for the day shown.

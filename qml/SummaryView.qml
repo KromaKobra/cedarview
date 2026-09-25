@@ -247,8 +247,10 @@ Item {
                 }
             }
 
-            // Three independent balances. Temporary and permanent flex are
+            // Independent balances. Temporary and permanent flex are
             // deliberately kept separate because they expire differently.
+            // Permanent flex only appears when the account has some; the
+            // other tiles then share its space.
             RowLayout {
                 Layout.fillWidth: true
                 spacing: 8
@@ -259,9 +261,9 @@ Item {
                           note: dining.mealsPeriodText, tone: theme.accent },
                         { label: "TEMP FLEX", value: dining.diningDollars.length > 0 ? dining.diningDollars : "—",
                           note: "Expires", tone: theme.violet },
-                        { label: "PERM FLEX", value: dining.flexDollars.length > 0 ? dining.flexDollars : "—",
+                        { label: "PERM FLEX", value: dining.flexDollars,
                           note: "Rolls over", tone: theme.cedar }
-                    ]
+                    ].filter(tile => tile.label !== "PERM FLEX" || dining.hasFlexDollars)
 
                     Card {
                         required property var modelData
