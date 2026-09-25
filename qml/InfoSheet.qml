@@ -28,15 +28,15 @@ Popup {
     Theme { id: theme }
 
     anchors.centerIn: Overlay.overlay
-    width: Math.min(parent ? parent.width - 48 : 320, 340)
+    width: Math.min(parent ? parent.width - 40 : 320, 352)
     modal: true
     focus: true
-    padding: 20
+    padding: 22
     closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
 
     background: Rectangle {
         color: theme.sheet
-        radius: 18
+        radius: theme.cardRadius
         border.width: 1
         border.color: theme.cardBorder
     }
@@ -52,7 +52,7 @@ Popup {
             Layout.fillWidth: true
             text: sheet.heading
             color: theme.text
-            font.pixelSize: 18
+            font.pixelSize: 20
             font.bold: true
             wrapMode: Text.Wrap
         }
@@ -85,14 +85,15 @@ Popup {
             onClicked: sheet.close()
 
             background: Rectangle {
-                radius: 10
-                color: close.down ? theme.pressedStrong : theme.pressed
+                radius: 12
+                color: close.down ? theme.pressedStrong : theme.cedarSoft
             }
 
             contentItem: Label {
                 text: "Close"
-                color: theme.text
+                color: theme.cedar
                 font.pixelSize: 14
+                font.bold: true
                 horizontalAlignment: Text.AlignHCenter
                 verticalAlignment: Text.AlignVCenter
             }

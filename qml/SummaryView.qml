@@ -1,33 +1,11 @@
-// The summary screen: the things worth knowing before you leave the room.
-//
-//   1. what the next chapel is, and how many skips you still have
-//   2. the two flex balances, which are NOT interchangeable
-//   3. how many meals are left on the plan
-//   4. what Home Cooking is serving at the next sitting
-//   5. how much of the semester is left
-//
-// Binds to the `chapel`, `dining` and `semester` context properties. Both
-// screens' viewmodels feed this one, which is the point of it: the two things a
-// student checks in the morning live on two different services and used to live
-// on two different tabs.
-//
-// Nothing here renders a confident zero. Every figure the app has not actually
-// received is an em dash, because "$0.00" and "0 skips left" are the two most
-// alarming things this app could say, and it must never say either by accident.
-//
-// Each card is also the way in to its tab: tapping one emits `openTab` with the
-// tab's index in Main.qml, and Main.qml switches to it. The semester card has
-// no tab behind it, so it is the one card that does not respond.
-
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
+// The glanceable home screen. It answers the three questions students most
+// often open myCU for: what is next, what can I spend, and what is being served.
 Item {
     id: root
-
-    //: Asks Main.qml to show the tab at `index` — the same indices as its
-    //: SwipeView and bottom bar.
     signal openTab(int index)
 
     Theme { id: theme }
@@ -39,8 +17,6 @@ Item {
         clip: true
         boundsBehavior: Flickable.DragOverBounds
 
-        // Pull to refresh. Works with a mouse on desktop too, which is what
-        // makes it testable without a phone.
         onDragEnded: {
             if (contentY < -80 && !chapel.busy && !dining.busy) {
                 chapel.refreshAll()
@@ -56,427 +32,456 @@ Item {
             width: scroll.width - theme.pageMargin * 2
             spacing: theme.gap
 
-            // ---- Chapel -------------------------------------------------
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.leftMargin: 2
+                Layout.rightMargin: 2
+                Layout.bottomMargin: 2
+                spacing: 8
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 2
+
+                    Label {
+                        text: "YOUR DAY"
+                        color: theme.cedar
+                        font.pixelSize: 11
+                        font.bold: true
+                        font.letterSpacing: 1.5
+                    }
+
+                    Label {
+                        text: "The essentials, without the hunt."
+                        color: theme.muted
+                        font.pixelSize: 13
+                    }
+                }
+
+                Rectangle {
+                    visible: chapel.busy || dining.busy
+                    implicitWidth: 34
+                    implicitHeight: 34
+                    radius: 17
+                    color: theme.cedarSoft
+
+                    BusyIndicator {
+                        anchors.centerIn: parent
+                        running: parent.visible
+                        implicitWidth: 20
+                        implicitHeight: 20
+                    }
+                }
+            }
+
+            // The next commitment is the visual anchor. The date gets a
+            // compact badge while the speaker remains the strongest type.
             Card {
+                padding: 0
                 tappable: true
                 onTapped: root.openTab(1)
 
-                ColumnLayout {
+                Rectangle {
                     Layout.fillWidth: true
-                    spacing: 0
-
-                    RowLayout {
-                        Layout.fillWidth: true
-
-                        Label {
-                            text: "NEXT CHAPEL"
-                            color: theme.muted
-                            font.pixelSize: 11
-                            font.bold: true
-                            font.letterSpacing: 1.2
-                        }
-
-                        Item { Layout.fillWidth: true }
-
-                        // "TOMORROW". The day is the part you act on, so it is
-                        // the part that gets the pill.
-                        Rectangle {
-                            visible: chapel.nextChapelDay.length > 0
-                            radius: height / 2
-                            color: theme.violetSoft
-                            implicitWidth: dayLabel.implicitWidth + 20
-                            implicitHeight: 22
-
-                            Label {
-                                id: dayLabel
-                                anchors.centerIn: parent
-                                text: chapel.nextChapelDay.toUpperCase()
-                                color: theme.violet
-                                font.pixelSize: 10
-                                font.bold: true
-                                font.letterSpacing: 1.0
-                            }
-                        }
-                    }
-
-                    Label {
-                        Layout.fillWidth: true
-                        Layout.topMargin: 10
-                        text: chapel.nextSpeaker.length > 0
-                              ? chapel.nextSpeaker
-                              : "No chapel scheduled"
-                        color: chapel.nextSpeaker.length > 0 ? theme.text : theme.muted
-                        font.pixelSize: 30
-                        font.bold: true
-                        wrapMode: Text.Wrap
-                    }
-
-                    Label {
-                        Layout.fillWidth: true
-                        Layout.topMargin: 6
-                        visible: text.length > 0
-                        // The title is appended only when it says something the
-                        // headline did not — the feed sets Title to the
-                        // speaker's name about half the time.
-                        text: chapel.nextChapelDateText
-                              + (chapel.nextChapelTitle.length > 0
-                                 ? " · " + chapel.nextChapelTitle : "")
-                        color: theme.muted
-                        font.pixelSize: 12
-                        wrapMode: Text.Wrap
+                    implicitHeight: heroContent.implicitHeight + 40
+                    radius: theme.cardRadius
+                    gradient: Gradient {
+                        orientation: Gradient.Horizontal
+                        GradientStop { position: 0.0; color: theme.heroStart }
+                        GradientStop { position: 1.0; color: theme.heroEnd }
                     }
 
                     Rectangle {
-                        Layout.fillWidth: true
-                        Layout.topMargin: 18
-                        Layout.bottomMargin: 16
-                        height: 1
-                        color: theme.divider
-                    }
-
-                    Label {
-                        text: "Chapel skips remaining"
-                        color: theme.muted
-                        font.pixelSize: 12
-                    }
-
-                    // Unknown until a fetch lands, and shown as unknown. An
-                    // unloaded screen that reads "0 of 0" is the app lying in
-                    // the reassuring direction, which is the worse direction.
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.topMargin: 6
-                        spacing: 8
-
-                        Label {
-                            text: chapel.remaining >= 0 ? chapel.remaining : "—"
-                            color: theme.text
-                            font.pixelSize: 32
-                            font.bold: true
-                        }
-
-                        Label {
-                            Layout.alignment: Qt.AlignBottom
-                            Layout.bottomMargin: 5
-                            visible: chapel.allowed >= 0
-                            text: "/ " + chapel.allowed + " this semester"
-                            color: theme.muted
-                            font.pixelSize: 12
-                        }
-
-                        Item { Layout.fillWidth: true }
-
-                        Label {
-                            Layout.alignment: Qt.AlignBottom
-                            Layout.bottomMargin: 5
-                            visible: !chapel.inGoodStanding && chapel.loaded
-                            text: "Not in good standing"
-                            color: theme.danger
-                            font.pixelSize: 11
-                            font.bold: true
-                        }
-                    }
-
-                    // Hidden rather than empty until a fetch lands — see
-                    // MeterBar.qml for why it is unlabelled. This one is the
-                    // remaining share: it empties as skips are spent.
-                    MeterBar {
-                        Layout.topMargin: 14
-                        visible: chapel.remaining >= 0 && chapel.allowed > 0
-                        fraction: chapel.remainingFraction
-                    }
-                }
-            }
-
-            // ---- Meal plan ----------------------------------------------
-            Label {
-                Layout.topMargin: 10
-                Layout.leftMargin: 4
-                text: "MEAL PLAN"
-                color: theme.faint
-                font.pixelSize: 11
-                font.bold: true
-                font.letterSpacing: 1.2
-            }
-
-            // Two balances, side by side and never added together. The plan's
-            // own Flex Dollars expire at the end of the term; purchased
-            // Voluntary Flex Dollars do not. Each keeps its expiry on screen
-            // underneath it, because that is the whole difference between them.
-            RowLayout {
-                Layout.fillWidth: true
-                spacing: theme.gap
-
-                BalanceTile {
-                    caption: "Temporary Flex"
-                    amount: dining.diningDollars
-                    footnote: "Expires this semester"
-                    dotColor: theme.violet
-                    tappable: true
-                    onTapped: root.openTab(2)
-                }
-
-                BalanceTile {
-                    caption: "Permanent Flex"
-                    amount: dining.flexDollars
-                    footnote: "Rolls over"
-                    dotColor: theme.accent
-                    tappable: true
-                    onTapped: root.openTab(2)
-                }
-            }
-
-            Card {
-                tappable: true
-                onTapped: root.openTab(2)
-
-                RowLayout {
-                    Layout.fillWidth: true
-                    spacing: 12
-
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 4
-
-                        Label {
-                            text: "Your plan"
-                            color: theme.muted
-                            font.pixelSize: 11
-                        }
-
-                        Label {
-                            Layout.fillWidth: true
-                            // The plan's name from Self-Service ("21 Meals per
-                            // week"), or just its cycle when no name came back.
-                            text: dining.planDescription.length > 0
-                                  ? dining.planDescription
-                                  : "Meal plan"
-                            color: theme.text
-                            font.pixelSize: 18
-                            font.bold: true
-                            elide: Text.ElideRight
-                        }
+                        anchors.right: parent.right
+                        anchors.top: parent.top
+                        anchors.rightMargin: -44
+                        anchors.topMargin: -64
+                        width: 184
+                        height: 184
+                        radius: 92
+                        color: Qt.rgba(1, 1, 1, 0.045)
                     }
 
                     ColumnLayout {
-                        spacing: 2
-
-                        Label {
-                            Layout.alignment: Qt.AlignRight
-                            text: dining.mealsRemaining >= 0 ? dining.mealsRemaining : "—"
-                            color: theme.accent
-                            font.pixelSize: 28
-                            font.bold: true
-                        }
-
-                        Label {
-                            Layout.alignment: Qt.AlignRight
-                            text: dining.mealsPeriodText
-                            color: theme.faint
-                            font.pixelSize: 10
-                        }
-                    }
-                }
-            }
-
-            // ---- The next sitting ---------------------------------------
-            Card {
-                tappable: true
-                onTapped: root.openTab(3)
-
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 0
-
-                    RowLayout {
-                        Layout.fillWidth: true
-
-                        Label {
-                            text: dining.hasNextMeal
-                                  ? (dining.nextMealWhen + " · " + dining.nextMealLabel).toUpperCase()
-                                  : "UP NEXT"
-                            color: theme.accent
-                            font.pixelSize: 11
-                            font.bold: true
-                            font.letterSpacing: 1.1
-                        }
-
-                        Item { Layout.fillWidth: true }
-
-                        // That sitting's serving window ("10:30am–2:30pm"),
-                        // for the day it is on.
-                        Label {
-                            visible: dining.hasNextMeal
-                            text: dining.nextMealHours
-                            color: theme.muted
-                            font.pixelSize: 11
-                        }
-                    }
-
-                    Label {
-                        Layout.fillWidth: true
-                        Layout.topMargin: 8
-                        text: dining.nextMealVenue
-                        color: theme.text
-                        font.pixelSize: 20
-                        font.bold: true
-                        elide: Text.ElideRight
-                    }
-
-                    Label {
-                        Layout.fillWidth: true
-                        Layout.topMargin: 10
-                        visible: !dining.hasNextMeal
-                        text: dining.busy
-                              ? "Loading the menu…"
-                              : "No menu published for the next sitting yet."
-                        color: theme.muted
-                        font.pixelSize: 13
-                        wrapMode: Text.Wrap
-                    }
-
-                    Repeater {
-                        model: dining.nextMealItems
+                        id: heroContent
+                        x: 20
+                        y: 20
+                        width: parent.width - 40
+                        spacing: 0
 
                         RowLayout {
                             Layout.fillWidth: true
-                            Layout.topMargin: 14
-                            spacing: 12
 
-                            Rectangle {
-                                Layout.alignment: Qt.AlignTop
-                                Layout.topMargin: 6
-                                width: 5
-                                height: 5
-                                radius: 2.5
-                                color: theme.faint
+                            Label {
+                                text: "NEXT CHAPEL"
+                                color: theme.heroAccent
+                                font.pixelSize: 11
+                                font.bold: true
+                                font.letterSpacing: 1.4
                             }
 
-                            // Dish names only. The allergen list is still on the
-                            // model (`allergens`, which the Chucks tab shows)
-                            // but it is not what this card is for: this
-                            // is the glance that tells you whether to walk over
-                            // to The Commons, and a grey second line under every
-                            // item turned four dishes into eight lines of text.
-                            Label {
-                                Layout.fillWidth: true
-                                text: model.text
-                                color: theme.text
-                                font.pixelSize: 14
-                                wrapMode: Text.Wrap
+                            Item { Layout.fillWidth: true }
+
+                            Rectangle {
+                                visible: chapel.nextChapelDay.length > 0
+                                implicitWidth: heroDay.implicitWidth + 20
+                                implicitHeight: 25
+                                radius: 13
+                                color: Qt.rgba(1, 1, 1, 0.10)
+                                border.width: 1
+                                border.color: Qt.rgba(1, 1, 1, 0.12)
+
+                                Label {
+                                    id: heroDay
+                                    anchors.centerIn: parent
+                                    text: chapel.nextChapelDay.toUpperCase()
+                                    color: theme.textOnDark
+                                    font.pixelSize: 10
+                                    font.bold: true
+                                    font.letterSpacing: 1.0
+                                }
+                            }
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
+                            Layout.topMargin: 18
+                            text: chapel.nextSpeaker.length > 0
+                                  ? chapel.nextSpeaker : "No chapel scheduled"
+                            color: theme.textOnDark
+                            font.pixelSize: 30
+                            font.bold: true
+                            wrapMode: Text.Wrap
+                        }
+
+                        Label {
+                            Layout.fillWidth: true
+                            Layout.topMargin: 7
+                            visible: text.length > 0
+                            text: chapel.nextChapelDateText
+                                  + (chapel.nextChapelTitle.length > 0
+                                     ? "  ·  " + chapel.nextChapelTitle : "")
+                            color: Qt.rgba(0.96, 0.98, 1.0, 0.70)
+                            font.pixelSize: 12
+                            wrapMode: Text.Wrap
+                        }
+
+                        Rectangle {
+                            Layout.fillWidth: true
+                            Layout.topMargin: 20
+                            implicitHeight: 60
+                            radius: 17
+                            color: Qt.rgba(0, 0, 0, 0.16)
+
+                            RowLayout {
+                                anchors.fill: parent
+                                anchors.leftMargin: 16
+                                anchors.rightMargin: 14
+                                spacing: 10
+
+                                ColumnLayout {
+                                    spacing: 0
+
+                                    Label {
+                                        text: chapel.remaining >= 0 ? chapel.remaining : "—"
+                                        color: theme.heroAccent
+                                        font.pixelSize: 26
+                                        font.bold: true
+                                    }
+
+                                    Label {
+                                        text: "skips remaining"
+                                        color: Qt.rgba(0.96, 0.98, 1.0, 0.68)
+                                        font.pixelSize: 10
+                                    }
+                                }
+
+                                Item { Layout.fillWidth: true }
+
+                                Label {
+                                    text: chapel.loaded && !chapel.inGoodStanding
+                                          ? "Needs attention" : "View schedule"
+                                    color: chapel.loaded && !chapel.inGoodStanding
+                                           ? theme.heroDanger : theme.textOnDark
+                                    font.pixelSize: 12
+                                    font.bold: true
+                                }
                             }
                         }
                     }
                 }
             }
 
-            // ---- The term itself ----------------------------------------
-            // The only card on this screen with no service behind it — the
-            // term's dates are hand-entered, for the reason src/core/calendar.h
-            // explains. Last of the real cards because it is the slowest-moving
-            // number on the screen: it is here to be seen, not checked.
-            Card {
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 0
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.topMargin: 5
 
-                    RowLayout {
-                        Layout.fillWidth: true
+                Label {
+                    text: "MEAL CARD"
+                    color: theme.faint
+                    font.pixelSize: 11
+                    font.bold: true
+                    font.letterSpacing: 1.4
+                }
 
-                        Label {
-                            text: "SEMESTER"
-                            color: theme.muted
-                            font.pixelSize: 11
-                            font.bold: true
-                            font.letterSpacing: 1.2
-                        }
+                Item { Layout.fillWidth: true }
 
-                        Item { Layout.fillWidth: true }
+                AbstractButton {
+                    id: cardDetails
+                    onClicked: root.openTab(2)
+                    implicitWidth: detailsLabel.implicitWidth + 20
+                    implicitHeight: 28
+                    background: Rectangle {
+                        radius: 14
+                        color: cardDetails.down ? theme.pressedStrong : theme.cedarSoft
+                    }
+                    contentItem: Label {
+                        id: detailsLabel
+                        text: "See activity"
+                        color: theme.cedar
+                        font.pixelSize: 11
+                        font.bold: true
+                        horizontalAlignment: Text.AlignHCenter
+                        verticalAlignment: Text.AlignVCenter
+                    }
+                }
+            }
 
-                        Label {
-                            Layout.alignment: Qt.AlignVCenter
-                            text: semester.inTerm
-                                  ? semester.termName + " · " + semester.endDateText
-                                  : "Between terms"
-                            color: theme.faint
-                            font.pixelSize: 11
+            // Three independent balances. Temporary and permanent flex are
+            // deliberately kept separate because they expire differently.
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+
+                Repeater {
+                    model: [
+                        { label: "MEALS", value: dining.mealsRemaining >= 0 ? dining.mealsRemaining : "—",
+                          note: dining.mealsPeriodText, tone: theme.accent },
+                        { label: "TEMP FLEX", value: dining.diningDollars.length > 0 ? dining.diningDollars : "—",
+                          note: "Expires", tone: theme.violet },
+                        { label: "PERM FLEX", value: dining.flexDollars.length > 0 ? dining.flexDollars : "—",
+                          note: "Rolls over", tone: theme.cedar }
+                    ]
+
+                    Card {
+                        required property var modelData
+                        Layout.preferredWidth: 1
+                        padding: 13
+                        tappable: true
+                        onTapped: root.openTab(2)
+
+                        ColumnLayout {
+                            Layout.fillWidth: true
+                            spacing: 0
+
+                            Rectangle {
+                                width: 8
+                                height: 8
+                                radius: 4
+                                color: modelData.tone
+                            }
+
+                            Label {
+                                Layout.fillWidth: true
+                                Layout.topMargin: 11
+                                text: modelData.value
+                                color: theme.text
+                                font.pixelSize: 17
+                                font.bold: true
+                                elide: Text.ElideRight
+                            }
+
+                            Label {
+                                Layout.fillWidth: true
+                                Layout.topMargin: 4
+                                text: modelData.label
+                                color: theme.muted
+                                font.pixelSize: 9
+                                font.bold: true
+                                font.letterSpacing: 0.7
+                                elide: Text.ElideRight
+                            }
+
+                            Label {
+                                Layout.fillWidth: true
+                                Layout.topMargin: 2
+                                text: modelData.note
+                                color: theme.faint
+                                font.pixelSize: 9
+                                elide: Text.ElideRight
+                            }
                         }
                     }
+                }
+            }
 
-                    // In term: the countdown. Out of term: when the next one
-                    // starts. Never "0 days left" over the summer — the same
-                    // rule the rest of this screen follows.
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.topMargin: 10
-                        visible: semester.inTerm
-                        spacing: 8
+            Label {
+                Layout.topMargin: 7
+                Layout.leftMargin: 2
+                text: "WHAT'S NEXT"
+                color: theme.faint
+                font.pixelSize: 11
+                font.bold: true
+                font.letterSpacing: 1.4
+            }
+
+            Card {
+                padding: 0
+                tappable: true
+                onTapped: root.openTab(3)
+
+                Rectangle {
+                    Layout.fillWidth: true
+                    implicitHeight: mealContent.implicitHeight + 40
+                    radius: theme.cardRadius
+                    gradient: Gradient {
+                        orientation: Gradient.Horizontal
+                        GradientStop { position: 0.0; color: theme.mealStart }
+                        GradientStop { position: 1.0; color: theme.mealEnd }
+                    }
+
+                    ColumnLayout {
+                        id: mealContent
+                        x: 20
+                        y: 20
+                        width: parent.width - 40
+                        spacing: 0
+
+                        RowLayout {
+                            Layout.fillWidth: true
+
+                            Rectangle {
+                                implicitWidth: mealKind.implicitWidth + 18
+                                implicitHeight: 25
+                                radius: 13
+                                color: theme.accentSoft
+
+                                Label {
+                                    id: mealKind
+                                    anchors.centerIn: parent
+                                    text: dining.hasNextMeal
+                                          ? (dining.nextMealWhen + " · " + dining.nextMealLabel).toUpperCase()
+                                          : "UP NEXT"
+                                    color: theme.accent
+                                    font.pixelSize: 9
+                                    font.bold: true
+                                    font.letterSpacing: 0.8
+                                }
+                            }
+
+                            Item { Layout.fillWidth: true }
+
+                            Label {
+                                visible: dining.hasNextMeal
+                                text: dining.nextMealHours
+                                color: theme.muted
+                                font.pixelSize: 11
+                            }
+                        }
 
                         Label {
-                            text: semester.daysLeft >= 0 ? semester.daysLeft : "—"
+                            Layout.fillWidth: true
+                            Layout.topMargin: 13
+                            text: dining.nextMealVenue.length > 0
+                                  ? dining.nextMealVenue : "Home Cooking"
                             color: theme.text
-                            font.pixelSize: 32
+                            font.pixelSize: 22
                             font.bold: true
+                            elide: Text.ElideRight
                         }
 
                         Label {
-                            Layout.alignment: Qt.AlignBottom
-                            Layout.bottomMargin: 5
-                            text: (semester.totalDays >= 0 ? "/ " + semester.totalDays + " " : "")
-                                  + (semester.daysLeft === 1 ? "day left" : "days left")
+                            Layout.fillWidth: true
+                            Layout.topMargin: 10
+                            visible: !dining.hasNextMeal
+                            text: dining.busy ? "Loading the menu…"
+                                              : "No menu has been published yet."
                             color: theme.muted
-                            font.pixelSize: 12
+                            font.pixelSize: 13
+                            wrapMode: Text.Wrap
                         }
 
-                        Item { Layout.fillWidth: true }
+                        Repeater {
+                            model: dining.nextMealItems
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                Layout.topMargin: 11
+                                spacing: 10
+
+                                Rectangle {
+                                    width: 5
+                                    height: 5
+                                    radius: 3
+                                    color: theme.cedar
+                                }
+
+                                Label {
+                                    Layout.fillWidth: true
+                                    text: model.text
+                                    color: theme.text
+                                    font.pixelSize: 13
+                                    wrapMode: Text.Wrap
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            Card {
+                // In term the meter is the whole card, so its squircles sit
+                // close to the card's own rounded corners.
+                padding: semester.inTerm ? 10 : theme.cardPadding
+
+                MeterBar {
+                    visible: semester.inTerm
+                    fraction: semester.elapsedFraction
+                    title: semester.termName + " semester"
+                    startText: Math.round(semester.elapsedFraction * 100) + "%"
+                    startNote: "done"
+                    endText: semester.daysLeft >= 0 ? semester.daysLeft : "—"
+                    endNote: semester.daysLeft === 1 ? "day left" : "days left"
+                }
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    visible: !semester.inTerm
+                    spacing: 3
+
+                    Label {
+                        text: "Between terms"
+                        color: theme.text
+                        font.pixelSize: 14
+                        font.bold: true
                     }
 
                     Label {
                         Layout.fillWidth: true
-                        Layout.topMargin: 10
-                        visible: !semester.inTerm
-                        text: semester.nextTermText.length > 0
-                              ? semester.nextTermText
-                              : "No term in session."
+                        text: semester.nextTermText.length > 0 ? semester.nextTermText
+                                                               : "No term in session"
                         color: theme.muted
-                        font.pixelSize: 16
-                        wrapMode: Text.Wrap
-                    }
-
-                    // Fills as the term runs — completed, not remaining, unlike
-                    // the skip bar above.
-                    MeterBar {
-                        Layout.topMargin: 14
-                        visible: semester.inTerm
-                        fraction: semester.elapsedFraction
+                        font.pixelSize: 11
+                        elide: Text.ElideRight
                     }
                 }
             }
 
-            // ---- Anything that went wrong -------------------------------
-            // Last, not first: a failed chapel fetch should not push the menu
-            // off the screen, and by the time you read this the cards above
-            // are already showing what did load.
             Repeater {
                 model: [chapel.error, dining.error]
 
                 Rectangle {
                     required property string modelData
-
                     Layout.fillWidth: true
                     visible: modelData.length > 0
-                    implicitHeight: visible ? errorText.implicitHeight + 28 : 0
-                    radius: 12
+                    implicitHeight: visible ? errorText.implicitHeight + 30 : 0
+                    radius: 16
                     color: theme.dangerSoft
-                    border.width: 1
-                    border.color: theme.hairline
 
                     Label {
                         id: errorText
-                        anchors.left: parent.left
-                        anchors.right: parent.right
-                        anchors.verticalCenter: parent.verticalCenter
-                        anchors.margins: 14
+                        anchors.fill: parent
+                        anchors.margins: 15
                         text: parent.modelData
                         color: theme.danger
                         font.pixelSize: 12
@@ -485,7 +490,7 @@ Item {
                 }
             }
 
-            Item { Layout.preferredHeight: 4 }
+            Item { Layout.preferredHeight: 8 }
         }
     }
 }

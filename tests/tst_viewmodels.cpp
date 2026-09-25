@@ -537,6 +537,22 @@ private slots:
         QCOMPARE(vm->hasPlan(), false);
     }
 
+    // Each meal header carries its own sitting's hours, for the day shown.
+    void aMealHeaderCarriesThatDaysServingHours()
+    {
+        MenuListModel model;
+        const QList<MenuBlock> blocks{block("Breakfast", "breakfast", {{"Bacon", {}}}),
+                                      block("", "anytime", {{"Salad", {}}})};
+
+        model.replaceFromBlocks(blocks, QDate(2026, 9, 25)); // a Friday
+        QCOMPARE(cell(&model, 0, MenuListModel::HoursRole).toString(), QStringLiteral("7am–9:30am"));
+        QCOMPARE(cell(&model, 1, MenuListModel::HoursRole).toString(), QString());
+        QCOMPARE(cell(&model, 2, MenuListModel::HoursRole).toString(), QString());
+
+        model.replaceFromBlocks(blocks, QDate(2026, 9, 26)); // a Saturday
+        QCOMPARE(cell(&model, 0, MenuListModel::HoursRole).toString(), QStringLiteral("8am–9am"));
+    }
+
     // The card's own header already names the meal; the list must not repeat it.
     void theNextSittingIsExposedWithoutAHeadingRow()
     {

@@ -34,6 +34,8 @@ Rectangle {
     border.width: 1
     border.color: theme.cardBorder
 
+    Behavior on color { ColorAnimation { duration: 180 } }
+
     TapHandler {
         id: tap
         enabled: card.tappable

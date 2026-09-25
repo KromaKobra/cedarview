@@ -16,7 +16,7 @@ namespace mycu {
 
 QHash<int, QByteArray> MenuListModel::roleNames() const
 {
-    return {{TextRole, "text"}, {AllergenRole, "allergens"}, {HeaderRole, "isHeader"}};
+    return {{TextRole, "text"}, {AllergenRole, "allergens"}, {HeaderRole, "isHeader"}, {HoursRole, "hours"}};
 }
 
 int MenuListModel::rowCount(const QModelIndex &parent) const
@@ -36,17 +36,22 @@ QVariant MenuListModel::data(const QModelIndex &index, int role) const
         return row.allergens;
     case HeaderRole:
         return row.isHeader;
+    case HoursRole:
+        return row.hours;
     default:
         return {};
     }
 }
 
-void MenuListModel::replaceFromBlocks(const QList<MenuBlock> &blocks)
+void MenuListModel::replaceFromBlocks(const QList<MenuBlock> &blocks, QDate on)
 {
     beginResetModel();
     m_rows.clear();
     for (const MenuBlock &block : blocks) {
-        m_rows.append({block.heading(), QString(), true});
+        // Empty for all-day stations, which have no window.
+        const std::optional<ServingHours> hours = servingHours(on, block.slot);
+        m_rows.append({block.heading(), QString(), true,
+                       hours ? formatHours(hours->first, hours->second) : QString()});
         for (const MenuItem &item : block.items)
             m_rows.append({item.name, item.allergenText(), false});
     }
@@ -423,7 +428,8 @@ void DiningViewModel::moveTo(int offset, bool backward)
 void DiningViewModel::rebuild(bool backward)
 {
     const auto day = m_byDate.constFind(selectedDate());
-    m_model.replaceFromBlocks(day != m_byDate.cend() ? day->forVenue(HOME_COOKING) : QList<MenuBlock>());
+    m_model.replaceFromBlocks(day != m_byDate.cend() ? day->forVenue(HOME_COOKING) : QList<MenuBlock>(),
+                              selectedDate());
     ensureSelectedLoaded(backward);
     rebuildNextMeal();
     emit changed();

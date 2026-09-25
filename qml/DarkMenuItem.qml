@@ -18,7 +18,7 @@ MenuItem {
 
     Theme { id: theme }
 
-    implicitHeight: 42
+    implicitHeight: 44
 
     contentItem: Label {
         leftPadding: 10
@@ -29,7 +29,7 @@ MenuItem {
     }
 
     background: Rectangle {
-        radius: 9
+        radius: 12
         color: item.highlighted || item.down ? theme.pressed : "transparent"
     }
 }

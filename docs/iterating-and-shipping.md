@@ -40,9 +40,10 @@ overwritten.
 * Font metrics and touch target sizes as they land on the actual phone.
 * Whether a glyph exists in the device's font. This is why every icon in the
   app is drawn on a `Canvas` (`Glyph.qml`) — see `docs/architecture.md`.
-* Fixture staleness. `tests/fixtures/` holds two days of menus dated
-  2026-09-16/17, so "the next sitting" is empty in demo mode once real time
-  moves past them. That is the app being honest, not a bug.
+* Real menus for real dates. `tests/fixtures/` holds two days of menus dated
+  2026-09-16/17; demo mode re-dates them onto whatever days the app asks for
+  (`src/ui/demotransport.h`), so Home Cooking always has something to show,
+  but it is the same two days of food on repeat.
 
 ## 1.2 The real app on the desktop
 

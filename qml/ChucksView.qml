@@ -1,49 +1,29 @@
-// The Chucks tab: Home Cooking's whole day — breakfast, lunch and dinner — for
-// any date, paged a day at a time.
-//
-// Binds to `dining.items` (a flat model of meal headers and dishes) and to the
-// paging state on DiningViewModel. Which days are fetched, and when, is decided
-// there: this file only draws the day it is given. Days are paged with buttons
-// rather than a swipe, because a horizontal swipe already belongs to the
-// SwipeView and means "next tab".
-//
-// There is no end to page to. Which days Cedarville has posted is not known
-// until they are asked for, so every day is reachable and a day with nothing on
-// it says so — `dining.dayEmptyText` carries that message.
-
 import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
 Item {
     id: root
-
     Theme { id: theme }
 
-    // One round arrow. The glyph is wrapped in an Item for the same reason as
-    // the ribbon's refresh button in Main.qml: Control positions its
-    // contentItem at the padding, and an explicitly sized Glyph would sit in
-    // the top-left corner instead of the middle.
     component DayButton: AbstractButton {
         id: dayButton
-
         property string kind
-
         implicitWidth: 44
         implicitHeight: 44
-
         background: Rectangle {
-            radius: width / 2
-            color: dayButton.down ? theme.pressedStrong : theme.pressed
+            radius: 15
+            color: dayButton.down ? theme.pressedStrong : theme.cardAlt
+            border.width: 1
+            border.color: theme.cardBorder
         }
-
         contentItem: Item {
             Glyph {
                 anchors.centerIn: parent
                 kind: dayButton.kind
                 color: theme.text
-                width: 16
-                height: 16
+                width: 15
+                height: 15
             }
         }
     }
@@ -54,13 +34,7 @@ Item {
         contentHeight: column.implicitHeight + theme.pageMargin * 2
         clip: true
         boundsBehavior: Flickable.DragOverBounds
-
-        // Pull to refresh, as on the other tabs.
-        onDragEnded: {
-            if (contentY < -80) {
-                dining.refreshAll()
-            }
-        }
+        onDragEnded: if (contentY < -80) dining.refreshAll()
 
         ColumnLayout {
             id: column
@@ -69,120 +43,138 @@ Item {
             width: scroll.width - theme.pageMargin * 2
             spacing: theme.gap
 
-            // ---- Which day ---------------------------------------------------
             Card {
-                padding: 12
+                padding: 14
 
-                RowLayout {
+                ColumnLayout {
                     Layout.fillWidth: true
-                    spacing: 8
+                    spacing: 10
 
-                    DayButton {
-                        Layout.alignment: Qt.AlignVCenter
-                        kind: "chevronLeft"
-                        onClicked: dining.previousDay()
-                    }
-
-                    ColumnLayout {
+                    RowLayout {
                         Layout.fillWidth: true
-                        spacing: 2
+                        spacing: 10
 
-                        Label {
+                        DayButton { kind: "chevronLeft"; onClicked: dining.previousDay() }
+
+                        ColumnLayout {
                             Layout.fillWidth: true
-                            horizontalAlignment: Text.AlignHCenter
-                            text: dining.dateText
-                            color: theme.text
-                            font.pixelSize: 20
-                            font.bold: true
-                            elide: Text.ElideRight
+                            spacing: 2
+                            Label {
+                                Layout.fillWidth: true
+                                text: dining.dateText
+                                color: theme.text
+                                font.pixelSize: 21
+                                font.bold: true
+                                horizontalAlignment: Text.AlignHCenter
+                                elide: Text.ElideRight
+                            }
+                            Label {
+                                Layout.fillWidth: true
+                                text: dining.dateDetail
+                                color: theme.muted
+                                font.pixelSize: 11
+                                horizontalAlignment: Text.AlignHCenter
+                                elide: Text.ElideRight
+                            }
                         }
 
-                        Label {
-                            Layout.fillWidth: true
-                            horizontalAlignment: Text.AlignHCenter
-                            text: dining.dateDetail
-                            color: theme.muted
-                            font.pixelSize: 12
-                            elide: Text.ElideRight
+                        DayButton { kind: "chevronRight"; onClicked: dining.nextDay() }
+                    }
+
+                    AbstractButton {
+                        id: todayButton
+                        Layout.alignment: Qt.AlignHCenter
+                        visible: !dining.isToday
+                        implicitWidth: todayText.implicitWidth + 26
+                        implicitHeight: visible ? 30 : 0
+                        onClicked: dining.goToToday()
+                        background: Rectangle {
+                            radius: 15
+                            color: todayButton.down ? theme.pressedStrong : theme.cedarSoft
                         }
-                    }
-
-                    DayButton {
-                        Layout.alignment: Qt.AlignVCenter
-                        kind: "chevronRight"
-                        onClicked: dining.nextDay()
-                    }
-                }
-
-                // Only once you have left today: it is the way home after
-                // paging a month into the past, and on today it would be a
-                // button that does nothing.
-                AbstractButton {
-                    id: todayButton
-                    Layout.alignment: Qt.AlignHCenter
-                    Layout.topMargin: 8
-                    visible: !dining.isToday
-                    onClicked: dining.goToToday()
-
-                    implicitWidth: todayLabel.implicitWidth + 28
-                    implicitHeight: 28
-
-                    background: Rectangle {
-                        radius: height / 2
-                        color: todayButton.down ? theme.pressedStrong : theme.accentSoft
-                    }
-
-                    contentItem: Item {
-                        Label {
-                            id: todayLabel
-                            anchors.centerIn: parent
-                            text: "Back to today"
-                            color: theme.accent
-                            font.pixelSize: 12
+                        contentItem: Label {
+                            id: todayText
+                            text: "Return to today"
+                            color: theme.cedar
+                            font.pixelSize: 11
                             font.bold: true
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
                         }
                     }
                 }
             }
 
-            // ---- The day's menu ----------------------------------------------
+            RowLayout {
+                Layout.fillWidth: true
+                Layout.leftMargin: 2
+                Layout.topMargin: 8
+
+                ColumnLayout {
+                    Layout.fillWidth: true
+                    spacing: 2
+                    Label {
+                        text: dining.venue.toUpperCase()
+                        color: theme.faint
+                        font.pixelSize: 11
+                        font.bold: true
+                        font.letterSpacing: 1.4
+                    }
+                    Label {
+                        text: "Breakfast, lunch, and dinner"
+                        color: theme.muted
+                        font.pixelSize: 11
+                    }
+                }
+
+                Rectangle {
+                    visible: dining.dayLoading
+                    width: 34
+                    height: 34
+                    radius: 17
+                    color: theme.cedarSoft
+                    BusyIndicator {
+                        anchors.centerIn: parent
+                        running: parent.visible
+                        implicitWidth: 20
+                        implicitHeight: 20
+                    }
+                }
+            }
+
             Card {
                 ColumnLayout {
                     Layout.fillWidth: true
                     spacing: 0
 
-                    RowLayout {
+                    ColumnLayout {
                         Layout.fillWidth: true
+                        visible: dining.dayEmptyText.length > 0
                         spacing: 8
 
+                        Rectangle {
+                            Layout.alignment: Qt.AlignHCenter
+                            width: 52
+                            height: 52
+                            radius: 18
+                            color: theme.cardAlt
+                            Glyph {
+                                anchors.centerIn: parent
+                                kind: "chucks"
+                                color: theme.faint
+                                width: 23
+                                height: 23
+                            }
+                        }
+
                         Label {
-                            text: dining.venue.toUpperCase()
+                            Layout.fillWidth: true
+                            text: dining.dayEmptyText
                             color: theme.muted
-                            font.pixelSize: 11
-                            font.bold: true
-                            font.letterSpacing: 1.2
+                            font.pixelSize: 13
+                            horizontalAlignment: Text.AlignHCenter
+                            wrapMode: Text.Wrap
                         }
-
-                        Item { Layout.fillWidth: true }
-
-                        BusyIndicator {
-                            Layout.alignment: Qt.AlignVCenter
-                            running: dining.dayLoading
-                            visible: running
-                            implicitWidth: 18
-                            implicitHeight: 18
-                        }
-                    }
-
-                    Label {
-                        Layout.fillWidth: true
-                        Layout.topMargin: 18
-                        Layout.bottomMargin: 4
-                        visible: text.length > 0
-                        text: dining.dayEmptyText
-                        color: theme.muted
-                        font.pixelSize: 13
-                        wrapMode: Text.Wrap
                     }
 
                     Repeater {
@@ -192,66 +184,79 @@ Item {
                             Layout.fillWidth: true
                             spacing: 0
 
-                            // ---- A sitting ------------------------------
-                            // Styled as the summary card's meal label, so
-                            // "BREAKFAST" means the same thing on both screens.
-                            Label {
-                                Layout.fillWidth: true
-                                Layout.topMargin: 20
-                                visible: model.isHeader
-                                text: model.text.toUpperCase()
-                                color: theme.accent
-                                font.pixelSize: 11
-                                font.bold: true
-                                font.letterSpacing: 1.1
-                            }
-
                             Rectangle {
                                 Layout.fillWidth: true
-                                Layout.topMargin: 8
-                                Layout.bottomMargin: 2
+                                Layout.topMargin: model.index === 0 ? 0 : 22
                                 visible: model.isHeader
-                                height: 1
-                                color: theme.divider
+                                implicitHeight: 42
+                                radius: 14
+                                color: theme.cedarSoft
+
+                                RowLayout {
+                                    anchors.fill: parent
+                                    anchors.leftMargin: 13
+                                    anchors.rightMargin: 13
+                                    spacing: 10
+
+                                    Rectangle {
+                                        width: 8
+                                        height: 8
+                                        radius: 4
+                                        color: theme.cedar
+                                    }
+
+                                    Label {
+                                        Layout.fillWidth: true
+                                        text: model.text.toUpperCase()
+                                        color: theme.cedar
+                                        font.pixelSize: 10
+                                        font.bold: true
+                                        font.letterSpacing: 1.0
+                                        elide: Text.ElideRight
+                                    }
+
+                                    Label {
+                                        visible: text.length > 0
+                                        text: model.hours
+                                        color: theme.cedar
+                                        font.pixelSize: 11
+                                        font.bold: true
+                                    }
+                                }
                             }
 
-                            // ---- A dish ---------------------------------
                             RowLayout {
                                 Layout.fillWidth: true
-                                Layout.topMargin: 12
+                                Layout.topMargin: 14
                                 visible: !model.isHeader
                                 spacing: 12
 
                                 Rectangle {
                                     Layout.alignment: Qt.AlignTop
-                                    Layout.topMargin: 6
-                                    width: 5
-                                    height: 5
-                                    radius: 2.5
-                                    color: theme.faint
+                                    Layout.topMargin: 5
+                                    width: 6
+                                    height: 6
+                                    radius: 3
+                                    color: theme.accent
                                 }
 
-                                // Allergens go here and not on the summary
-                                // card: that card is a glance, this is where
-                                // you check what is actually in the food.
                                 ColumnLayout {
                                     Layout.fillWidth: true
-                                    spacing: 2
-
+                                    spacing: 3
                                     Label {
                                         Layout.fillWidth: true
                                         text: model.text
                                         color: theme.text
-                                        font.pixelSize: 14
+                                        font.pixelSize: 13
+                                        font.bold: true
                                         wrapMode: Text.Wrap
                                     }
-
                                     Label {
                                         Layout.fillWidth: true
                                         visible: text.length > 0
                                         text: model.allergens
                                         color: theme.faint
-                                        font.pixelSize: 12
+                                        font.pixelSize: 11
                                         wrapMode: Text.Wrap
                                     }
                                 }
@@ -261,7 +266,7 @@ Item {
                 }
             }
 
-            Item { Layout.preferredHeight: 4 }
+            Item { Layout.preferredHeight: 8 }
         }
     }
 }

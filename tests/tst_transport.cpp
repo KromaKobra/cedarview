@@ -6,7 +6,9 @@
 
 #include "testsupport.h"
 
+#include "core/providers/dining.h"
 #include "core/transport.h"
+#include "ui/demotransport.h"
 #include "ui/webviewtransport.h"
 
 using namespace mycu;
@@ -174,6 +176,42 @@ private slots:
 
         const Response response = FixtureTransport(dir.path()).get("/cedarinfo/chapelskip");
         QCOMPARE(response.json().toObject().value("from").toString(), QStringLiteral("json"));
+    }
+
+    // ---- Demo mode's re-dated menus -------------------------------------------
+
+    void demoMenusCoverTheWindowAskedFor()
+    {
+        RedatedMenusTransport transport(std::make_shared<FixtureTransport>(testing::fixturesDir()));
+        const auto days = DiningProvider::parse(transport.get(DiningProvider(nullptr, 3, QDate(2026, 12, 25)).path()));
+
+        QCOMPARE(days.size(), 3);
+        QCOMPARE(days[0].on, QDate(2026, 12, 25));
+        QCOMPARE(days[2].on, QDate(2026, 12, 27));
+        for (const DayMenu &day : days)
+            QCOMPARE(day.forVenue(HOME_COOKING).size(), 3);
+    }
+
+    void demoMenusDefaultToToday()
+    {
+        auto transport = std::make_shared<RedatedMenusTransport>(
+            std::make_shared<FixtureTransport>(testing::fixturesDir()));
+        const auto days = DiningProvider(transport).fetch();
+        QCOMPARE(days.size(), DEFAULT_DAYS);
+        QCOMPARE(days[0].on, QDate::currentDate());
+        QVERIFY(!homeCookingFor(days).isEmpty());
+    }
+
+    // Paging must not change what a day was showing.
+    void aDemoDayKeepsItsMenuInAnyWindow()
+    {
+        RedatedMenusTransport transport(std::make_shared<FixtureTransport>(testing::fixturesDir()));
+        const QDate on(2026, 10, 1);
+        const auto alone = DiningProvider::parse(transport.get(DiningProvider(nullptr, 1, on).path()));
+        const auto later = DiningProvider::parse(transport.get(DiningProvider(nullptr, 7, on.addDays(-3)).path()));
+        QCOMPARE(later[3].on, on);
+        QCOMPARE(later[3].forVenue(HOME_COOKING)[0].items[0].name,
+                 alone[0].forVenue(HOME_COOKING)[0].items[0].name);
     }
 
     // ---- Expiry detection must key on the host, not the URL string ----------

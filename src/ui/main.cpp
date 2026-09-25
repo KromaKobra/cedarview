@@ -25,6 +25,7 @@
 #include "core/transport.h"
 #include "platform/backend.h"
 #include "ui/bridge.h"
+#include "ui/demotransport.h"
 #include "ui/login.h"
 #include "ui/settings.h"
 #include "ui/viewmodels/chapel.h"
@@ -180,7 +181,13 @@ int main(int argc, char **argv)
     TransportPtr transport;
     QString surfaceQml;
     if (options.demo) {
-        transport = std::make_shared<FixtureTransport>(options.fixtures);
+        auto fixtures = std::make_shared<FixtureTransport>(options.fixtures);
+        // The captured menus are for two days in September 2026; this moves
+        // them onto whatever dates are asked for, so Home Cooking has a menu
+        // today and on any day paged to.
+        auto router = std::make_shared<TransportRouter>(fixtures);
+        router->route(DINING_BASE, std::make_shared<RedatedMenusTransport>(fixtures));
+        transport = router;
         surfaceQml = QStringLiteral("WebSurfaceStub.qml");
         qCInfo(lcApp).noquote() << "demo mode: serving fixtures from" << options.fixtures;
     } else {

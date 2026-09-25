@@ -32,8 +32,8 @@ inline constexpr int NEXT_MEAL_CHECK_MS = 30000;
 //
 // Flat rather than nested on purpose: QML list views want one model, and a
 // list of lists cannot be bound without a second model class per level. A row
-// is either a meal header (`isHeader`) or a dish, and the delegate picks a look
-// from that. It also means section headers scroll naturally with their items,
+// is either a meal header (`isHeader`, with that sitting's serving `hours`) or a
+// dish, and the delegate picks a look from that. It also means section headers scroll naturally with their items,
 // which is what you want on a phone.
 class MenuListModel : public QAbstractListModel
 {
@@ -44,6 +44,7 @@ public:
         TextRole = Qt::UserRole + 1,
         AllergenRole,
         HeaderRole,
+        HoursRole,
     };
 
     using QAbstractListModel::QAbstractListModel;
@@ -52,7 +53,8 @@ public:
     int rowCount(const QModelIndex &parent = QModelIndex()) const override;
     QVariant data(const QModelIndex &index, int role = Qt::DisplayRole) const override;
 
-    void replaceFromBlocks(const QList<MenuBlock> &blocks);
+    // `on` picks the serving hours: Chuck's keeps different ones at weekends.
+    void replaceFromBlocks(const QList<MenuBlock> &blocks, QDate on);
 
     // Dishes only, no heading row.
     //
@@ -66,6 +68,7 @@ private:
         QString text;
         QString allergens;
         bool isHeader = false;
+        QString hours;
     };
     QList<Row> m_rows;
 };

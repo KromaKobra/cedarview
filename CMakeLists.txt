@@ -31,6 +31,7 @@ add_library(cedarview_ui STATIC
     src/platform/backend.h
     src/ui/tasks.h
     src/ui/bridge.h src/ui/bridge.cpp
+    src/ui/demotransport.h src/ui/demotransport.cpp
     src/ui/login.h src/ui/login.cpp
     src/ui/settings.h src/ui/settings.cpp
     src/ui/webviewtransport.h src/ui/webviewtransport.cpp

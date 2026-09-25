@@ -77,6 +77,7 @@ The implementations:
 | Implementation | Used by | Needs |
 |---|---|---|
 | `FixtureTransport` | tests, `--demo` | a directory of files |
+| `RedatedMenusTransport` | `--demo`'s dining menus | a `FixtureTransport` |
 | `WebViewTransport` | Self-Service, on both platforms | the web surface |
 | `HttpTransport` | the dining menu and chapel schedule APIs | nothing — they are public |
 | `TransportRouter` | the app | the above, by origin |

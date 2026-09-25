@@ -16,33 +16,34 @@ AbstractButton {
 
     Theme { id: theme }
 
-    implicitHeight: 52
-    opacity: down ? 0.6 : 1.0
+    implicitHeight: 58
+    opacity: down ? 0.68 : 1.0
 
     contentItem: Column {
-        spacing: 5
+        anchors.centerIn: parent
+        spacing: 4
 
         Rectangle {
             anchors.horizontalCenter: parent.horizontalCenter
-            width: 42
-            height: 26
-            radius: 13
-            color: nav.selected ? theme.accentSoft : "transparent"
+            width: 46
+            height: 28
+            radius: 14
+            color: nav.selected ? theme.cedarSoft : "transparent"
 
             Glyph {
                 anchors.centerIn: parent
-                width: 18
-                height: 18
+                width: 17
+                height: 17
                 kind: nav.kind
-                color: nav.selected ? theme.accent : theme.faint
+                color: nav.selected ? theme.cedar : theme.faint
             }
         }
 
         Label {
             anchors.horizontalCenter: parent.horizontalCenter
             text: nav.text
-            color: nav.selected ? theme.accent : theme.faint
-            font.pixelSize: 11
+            color: nav.selected ? theme.text : theme.faint
+            font.pixelSize: 10
             font.bold: nav.selected
         }
     }
