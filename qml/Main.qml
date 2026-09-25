@@ -33,6 +33,23 @@ ApplicationWindow {
         semester.refreshAll()
     }
 
+    // Android delivers Back (button or gesture) as a close request once no
+    // popup has taken it. The first Back goes to Today, wherever you are; only
+    // a second one, with no tab change in between, closes the app. Desktop's
+    // window close is left alone, and so is Back on the sign-in surface.
+    property bool backWillClose: false
+    onCurrentPageChanged: backWillClose = false
+    onShowingLoginChanged: backWillClose = false
+
+    onClosing: (close) => {
+        if (Qt.platform.os === "android" && !window.showingLogin && !window.backWillClose) {
+            close.accepted = false
+            window.currentPage = 0
+            // After the tab change, whose handler disarms.
+            window.backWillClose = true
+        }
+    }
+
     header: Rectangle {
         id: appHeader
         implicitHeight: 70 + appHeader.SafeArea.margins.top
