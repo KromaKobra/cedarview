@@ -1,9 +1,8 @@
 // A row of equal segments with a raised thumb that slides to the chosen one.
 //
 // The same groove-and-thumb look as the Dining tab's All | Flex filter, for
-// any number of text choices. Every choice stays visible, so it works as the
-// Dining tab's section bar as well as a small filter. Set `width` (or let a
-// layout fill it); the segments share it evenly.
+// any number of text choices, such as the dining hours' day filter. Set
+// `width` (or let a layout fill it); the segments share it evenly.
 
 import QtQuick
 import QtQuick.Controls

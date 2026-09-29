@@ -222,18 +222,8 @@ ApplicationWindow {
         currentIndex: window.showingLogin ? 1 : 0
 
         Item {
-            // Quiet ambient shapes make the space feel dimensional without
+            // A quiet ambient shape makes the space feel dimensional without
             // competing with the data or adding image assets.
-            Rectangle {
-                x: -80
-                y: -90
-                width: 250
-                height: 250
-                radius: 125
-                color: theme.cedarSoft
-                opacity: 0.22
-            }
-
             Rectangle {
                 x: parent.width - 105
                 y: parent.height * 0.46

@@ -92,6 +92,7 @@ set(CEDARVIEW_QML
     qml/NavButton.qml
     qml/SegmentedControl.qml
     qml/StatStrip.qml
+    qml/TabStrip.qml
     qml/SummaryView.qml
     qml/ToggleSwitch.qml
     qml/WebSurfaceStub.qml

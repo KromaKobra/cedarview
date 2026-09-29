@@ -20,16 +20,13 @@ Item {
         anchors.fill: parent
         spacing: 0
 
-        SegmentedControl {
+        TabStrip {
             Layout.fillWidth: true
             Layout.leftMargin: theme.pageMargin
             Layout.rightMargin: theme.pageMargin
-            Layout.topMargin: 12
-            Layout.bottomMargin: 2
+            Layout.topMargin: 4
             labels: ["Meal plan", "Menu", "Dining hours"]
             currentIndex: root.section
-            selectedColor: theme.cedar
-            fontSize: 12
             onActivated: (index) => root.sectionRequested(index)
         }
 

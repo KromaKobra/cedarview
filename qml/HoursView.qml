@@ -287,75 +287,23 @@ Item {
                             }
                         }
                     }
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        Layout.topMargin: 12
-                        Layout.bottomMargin: 12
-                        height: 1
-                        color: theme.divider
-                    }
-
-                    // How often the card scans in one period, for this plan.
-                    RowLayout {
-                        Layout.fillWidth: true
-                        Layout.leftMargin: 4
-                        Layout.rightMargin: 4
-                        spacing: 12
-
-                        Rectangle {
-                            Layout.alignment: Qt.AlignVCenter
-                            width: 44
-                            height: 44
-                            radius: 15
-                            color: dining.scansPerPeriod > 0 ? theme.accentSoft : theme.cardAlt
-
-                            Label {
-                                anchors.centerIn: parent
-                                visible: dining.scansPerPeriod > 0
-                                text: dining.scansPerPeriod
-                                color: theme.accent
-                                font.pixelSize: 22
-                                font.bold: true
-                            }
-                            Glyph {
-                                anchors.centerIn: parent
-                                visible: dining.scansPerPeriod === 0
-                                kind: "chucks"
-                                color: theme.faint
-                                width: 18
-                                height: 18
-                            }
-                        }
-
-                        ColumnLayout {
-                            Layout.fillWidth: true
-                            spacing: 2
-
-                            Label {
-                                Layout.fillWidth: true
-                                text: dining.scansPerPeriod === 1 ? "scan per meal period"
-                                      : dining.scansPerPeriod === 5 ? "scans per meal period"
-                                      : "Neither plan detected"
-                                color: theme.text
-                                font.pixelSize: 14
-                                font.bold: true
-                                wrapMode: Text.Wrap
-                            }
-                            Label {
-                                Layout.fillWidth: true
-                                text: dining.scansPerPeriod === 1
-                                      ? "You're on a 14- or 21-meal plan, so you can only scan once each meal period."
-                                      : dining.scansPerPeriod === 5
-                                      ? "You're on a block plan, so you can scan up to five times each meal period."
-                                      : "14- and 21-meal plans scan once per meal period. Block plans scan up to five times."
-                                color: theme.muted
-                                font.pixelSize: 11
-                                wrapMode: Text.Wrap
-                            }
-                        }
-                    }
                 }
+            }
+
+            // How often the card scans in one period, for this plan.
+            Label {
+                Layout.fillWidth: true
+                Layout.leftMargin: 2
+                Layout.rightMargin: 2
+                Layout.topMargin: -4
+                text: dining.scansPerPeriod === 1
+                      ? "You can scan ONCE per meal period."
+                      : dining.scansPerPeriod === 5
+                      ? "You can scan up to FIVE times per meal peroid."
+                      : "14/21-meal plans scan once per meal period. Block plans scan up to five times."
+                color: theme.faint
+                font.pixelSize: 11
+                wrapMode: Text.Wrap
             }
 
             RowLayout {
@@ -434,27 +382,6 @@ Item {
                 color: theme.faint
                 font.pixelSize: 11
                 wrapMode: Text.Wrap
-            }
-
-            AbstractButton {
-                id: sourceButton
-                Layout.alignment: Qt.AlignHCenter
-                implicitWidth: sourceLabel.implicitWidth + 26
-                implicitHeight: 30
-                onClicked: Qt.openUrlExternally(root.sourceUrl)
-                background: Rectangle {
-                    radius: 15
-                    color: sourceButton.down ? theme.pressedStrong : theme.cedarSoft
-                }
-                contentItem: Label {
-                    id: sourceLabel
-                    text: "Dining information on cedarville.edu"
-                    color: theme.cedar
-                    font.pixelSize: 11
-                    font.bold: true
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                }
             }
 
             Item { Layout.preferredHeight: 8 }
