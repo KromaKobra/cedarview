@@ -122,6 +122,25 @@ private slots:
                  "redirects. Assign it from onLoadingChanged instead.");
     }
 
+    // Regression, found on the device: after a sign-in, the Self-Service page
+    // stayed on screen for seconds before the app replaced it. QtWebView
+    // reports the later pages of a redirect chain only when the last one has
+    // finished loading, so the surface must also poll the WebView's own
+    // address while it is showing.
+    void theAndroidSurfacePollsTheWebViewWhileShowing()
+    {
+        const QString source = stripComments(qml("WebSurfaceAndroid.qml"));
+
+        static const QRegularExpression timer(
+            QStringLiteral(R"(Timer\s*\{[^}]*running\s*:\s*root\.visible[^}]*urlProbe\.probe\(\))"));
+        QVERIFY2(timer.match(source).hasMatch(),
+                 "WebSurfaceAndroid.qml must call urlProbe.probe() on a timer that runs while it is visible");
+
+        static const QRegularExpression delivery(
+            QStringLiteral(R"(function\s+onObserved\s*\(\s*(\w+)\s*\)[^}]*currentUrl\s*=\s*\1)"));
+        QVERIFY2(delivery.match(source).hasMatch(), "what urlProbe observes must reach currentUrl");
+    }
+
     // --demo must not need QtWebEngine — that is the whole point of it.
     void theStubSurfaceImportsNothingPlatformSpecific()
     {

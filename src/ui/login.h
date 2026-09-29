@@ -108,9 +108,9 @@ public slots:
 
     // End the session: clear cookies and forget our metadata.
     //
-    // On desktop this also empties QtWebEngine's cookie store directly. On
-    // Android there is no cookie API, so the federated logout round trip is
-    // the mechanism.
+    // Empties the browser's cookie store directly (QtWebEngine's on desktop,
+    // CookieManager on Android), then makes the federated logout round trip
+    // to end the Entra session as well.
     void signOut();
 
 signals:
@@ -138,6 +138,7 @@ private:
     QString m_status;
     QString m_returnPath;
     bool m_signingOut = false;
+    bool m_signOutReachedIdp = false;
 };
 
 } // namespace mycu

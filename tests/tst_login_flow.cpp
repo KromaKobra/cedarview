@@ -181,6 +181,24 @@ private slots:
         QCOMPARE(m_controller->surfaceVisible(), false);
     }
 
+    // Android's surface is polled for its address as soon as it is shown, and
+    // the first answer is the page we are signing out from.
+    void signOutIgnoresTheSelfservicePageItStartedOn()
+    {
+        m_controller->begin("/cedarinfo/chapelskip");
+        m_controller->onUrlChanged(CHAPEL);
+        m_controller->signOut();
+
+        m_controller->onUrlChanged(CHAPEL);
+        QVERIFY(!m_rec->events.contains("signedOut"));
+        QCOMPARE(m_controller->surfaceVisible(), true);
+
+        m_controller->onUrlChanged(LOGOUT_URL);
+        m_controller->onUrlChanged(BASE_URL + "/");
+        QVERIFY(m_rec->events.contains("signedOut"));
+        QCOMPARE(m_controller->surfaceVisible(), false);
+    }
+
     // Android has no cookie API; sign-out must still work there.
     void signOutSurvivesABackendThatCannotClearCookies()
     {

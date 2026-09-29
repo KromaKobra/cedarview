@@ -48,7 +48,8 @@ qt_add_executable(cedarview src/ui/main.cpp)
 
 if(ANDROID)
     target_sources(cedarview PRIVATE src/platform/android.cpp
-                                     src/platform/android_sessiontransport.h src/platform/android_sessiontransport.cpp)
+                                     src/platform/android_sessiontransport.h src/platform/android_sessiontransport.cpp
+                                     src/platform/android_urlprobe.h src/platform/android_urlprobe.cpp)
     target_link_libraries(cedarview PRIVATE Qt6::WebView)
 else()
     target_sources(cedarview PRIVATE src/platform/desktop.cpp)

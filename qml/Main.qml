@@ -44,6 +44,13 @@ ApplicationWindow {
     onClosing: (close) => {
         if (Qt.platform.os === "android" && !window.showingLogin && !window.backWillClose) {
             close.accepted = false
+            // The edge-swipe Back gesture's first touch lands on the pages,
+            // then Android takes the gesture over and Qt never sees that touch
+            // end. A SwipeView left "pressed" ignores currentIndex, so the
+            // header would say Today over a page that no longer moves, even for
+            // the tab bar. Turning interactive off cancels the stale press.
+            pages.interactive = false
+            pages.interactive = true
             window.currentPage = 0
             // After the tab change, whose handler disarms.
             window.backWillClose = true

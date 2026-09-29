@@ -18,6 +18,7 @@ void LoginController::setSurfaceVisible(bool value)
 {
     if (m_surfaceVisible != value) {
         m_surfaceVisible = value;
+        qCInfo(lcLogin) << "TRACE surfaceVisible" << value;
         emit surfaceVisibleChanged();
     }
 }
@@ -54,8 +55,12 @@ void LoginController::onUrlChanged(const QString &url)
         // Only the landing back on Self-Service ends the sign-out. Matching on
         // anything in the logout URL itself (it carries
         // `post_logout_redirect_uri`) would declare victory the instant we
-        // navigated, before Entra had actually dropped the session.
-        if (isSelfservice(url)) {
+        // navigated, before Entra had actually dropped the session. And only
+        // once the logout has reached the identity provider: until then the
+        // surface may still report the Self-Service page we signed out from.
+        if (looksLikeLogin(url)) {
+            m_signOutReachedIdp = true;
+        } else if (m_signOutReachedIdp && isSelfservice(url)) {
             m_signingOut = false;
             setSurfaceVisible(false);
             setStatus(QStringLiteral("Signed out."));
@@ -98,6 +103,7 @@ void LoginController::onSessionExpired()
 void LoginController::signOut()
 {
     m_signingOut = true;
+    m_signOutReachedIdp = false;
     setStatus(QStringLiteral("Signing out…"));
     try {
         if (m_backend)

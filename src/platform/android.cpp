@@ -28,7 +28,11 @@
 
 #include "core/log.h"
 
+#include <QJniEnvironment>
+#include <QJniObject>
 #include <QtWebView/qtwebviewfunctions.h>
+
+#include <stdexcept>
 
 namespace mycu {
 
@@ -58,12 +62,16 @@ public:
         qCDebug(lcPlatform) << "android: cookie persistence is handled by the system WebView";
     }
 
-    // QtWebView exposes no cookie API at all, so "sign out" on Android is the
-    // federated logout round trip LoginController::signOut() drives in the
-    // surface, followed by clearing our own session metadata.
+    // QtWebView has no cookie API, but the WebView's own CookieManager does.
+    // The federated logout alone is not enough: it leaves Self-Service's
+    // session cookie behind, and the app relaunched signed in.
     void clearCookies() override
     {
-        qCInfo(lcPlatform) << "android: cookie clearing is delegated to LoginController::signOut";
+        QJniObject::callStaticMethod<void>("com/kromakobra/cedarview/WebViewCookies", "clear");
+        QJniEnvironment env;
+        if (env.checkAndClearExceptions())
+            throw std::runtime_error("CookieManager could not clear the WebView's cookies");
+        qCInfo(lcPlatform) << "android cookies cleared";
     }
 };
 

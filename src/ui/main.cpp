@@ -35,6 +35,7 @@
 
 #ifdef Q_OS_ANDROID
 #  include "platform/android_sessiontransport.h"
+#  include "platform/android_urlprobe.h"
 #endif
 
 #include <QCommandLineParser>
@@ -273,6 +274,12 @@ int main(int argc, char **argv)
     ctx->setContextProperty(QStringLiteral("platformSurface"), surfaceQml);
     // Desktop only: the persistent profile WebSurfaceDesktop.qml binds to.
     ctx->setContextProperty(QStringLiteral("webProfile"), backend->qmlProfile());
+#ifdef Q_OS_ANDROID
+    // Android only: what WebSurfaceAndroid.qml polls for the address QtWebView
+    // reports late. See platform/android_urlprobe.h.
+    AndroidUrlProbe urlProbe;
+    ctx->setContextProperty(QStringLiteral("urlProbe"), &urlProbe);
+#endif
 
     engine->loadFromModule("CedarView", "Main");
     if (engine->rootObjects().isEmpty()) {

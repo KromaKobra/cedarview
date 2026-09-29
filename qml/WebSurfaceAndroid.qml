@@ -38,12 +38,38 @@ Item {
         view.url = url
     }
 
+    onVisibleChanged: console.info("TRACE surface item visible", visible)
+
+    // The load signals below miss every page but the first of a redirect
+    // chain until the last one has finished loading, so the Self-Service page
+    // a sign-in ends on would stay on screen for seconds. While the surface is
+    // showing, ask the WebView itself. See platform/android_urlprobe.h.
+    Timer {
+        interval: 100
+        repeat: true
+        running: root.visible
+        onTriggered: urlProbe.probe()
+    }
+
+    Connections {
+        target: urlProbe
+        function onObserved(url) {
+            console.info("TRACE probe", url.split("?")[0])
+            if (url.length > 0)
+                root.currentUrl = url
+        }
+    }
+
     WebView {
         id: view
         anchors.fill: parent
         url: "about:blank"
 
-        onUrlChanged: root.currentUrl = view.url.toString()
+        onUrlChanged: {
+            console.info("TRACE url", view.url.toString().split("?")[0])
+            root.currentUrl = view.url.toString()
+        }
+        onLoadProgressChanged: console.info("TRACE progress", view.loadProgress)
 
         // THE load signal, not a diagnostic one: this is where the real URL
         // arrives, and the whole login state machine is driven by "which URL
@@ -68,6 +94,7 @@ Item {
         //   Signal loadingChanged(QQuickWebViewLoadRequest loadRequest)
         //   QQuickWebViewLoadRequest: url, status, errorString  (all readonly)
         onLoadingChanged: function (request) {
+            console.info("TRACE load", request.status, request.url.toString().split("?")[0])
             if (request.url) {
                 root.currentUrl = request.url.toString()
             }
