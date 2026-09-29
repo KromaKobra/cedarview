@@ -13,10 +13,12 @@ ApplicationWindow {
 
     readonly property string privacyPolicyUrl:
         "https://github.com/KromaKobra/cedarview/blob/main/PRIVACY.md"
-    readonly property var pageTitles: ["Today", "Chapel", "Dining"]
+    readonly property var pageTitles: ["Today", "Chapel", "Dining", "Buildings"]
     readonly property var pageSubtitles: [
         "Your Cedarville at a glance",
-        "Attendance and upcoming speakers"
+        "Attendance and upcoming speakers",
+        "",  // Dining's comes from diningSubtitles.
+        "Curfew and building hours"
     ]
     // The Dining tab's subtitle follows its section bar.
     readonly property var diningSubtitles: [
@@ -254,6 +256,7 @@ ApplicationWindow {
                         section: window.diningSection
                         onSectionRequested: (index) => window.diningSection = index
                     }
+                    BuildingsView {}
                 }
 
                 Rectangle {
@@ -297,6 +300,13 @@ ApplicationWindow {
                             kind: "dining"
                             selected: window.currentPage === 2
                             onClicked: window.currentPage = 2
+                        }
+                        NavButton {
+                            Layout.fillWidth: true
+                            text: "Buildings"
+                            kind: "buildings"
+                            selected: window.currentPage === 3
+                            onClicked: window.currentPage = 3
                         }
                     }
                 }

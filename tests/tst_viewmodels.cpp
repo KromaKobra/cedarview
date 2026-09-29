@@ -8,6 +8,7 @@
 
 #include "core/providers/meals.h"
 #include "ui/viewmodels/chapel.h"
+#include "ui/viewmodels/curfew.h"
 #include "ui/viewmodels/dining.h"
 #include "ui/viewmodels/format.h"
 
@@ -886,7 +887,59 @@ private slots:
         QCOMPARE(vm->activitySummary(), QStringLiteral("Since Dec 27 · 16 meals · $13.99 flex spent"));
     }
 
+    // ---- Curfew (the Buildings tab) -----------------------------------------
+
+    void aWeeknightCurfew()
+    {
+        auto vm = curfewAt(local(2026, 9, 29, 20, 0)); // Tuesday
+        QCOMPARE(vm->timeText(), QStringLiteral("11:59 PM"));
+        QCOMPARE(vm->nightText(), QStringLiteral("Tuesday night"));
+        QVERIFY(!vm->lateNight());
+    }
+
+    // At 12:30 AM on Saturday it is still Friday night, with half an hour left.
+    void fridayNightRunsPastMidnight()
+    {
+        auto vm = curfewAt(local(2026, 10, 3, 0, 29));
+        QCOMPARE(vm->timeText(), QStringLiteral("12:59 AM"));
+        QCOMPARE(vm->nightText(), QStringLiteral("Friday night"));
+        QVERIFY(vm->lateNight());
+        QCOMPARE(vm->countdownText(), QStringLiteral("30:00"));
+    }
+
+    void theCountdownIsOnlyForTheLastHour()
+    {
+        QCOMPARE(curfewAt(local(2026, 9, 29, 22, 58))->countdownText(), QString());
+        QCOMPARE(curfewAt(local(2026, 9, 29, 22, 59))->countdownText(), QStringLiteral("60:00"));
+        QCOMPARE(curfewAt(QDateTime(QDate(2026, 9, 29), QTime(23, 58, 55)))->countdownText(),
+                 QStringLiteral("0:05"));
+        // Past curfew it moves on to tomorrow night, with no countdown yet.
+        auto after = curfewAt(local(2026, 9, 29, 23, 59));
+        QCOMPARE(after->nightText(), QStringLiteral("Wednesday night"));
+        QCOMPARE(after->countdownText(), QString());
+    }
+
+    void refreshingReReadsTheClock()
+    {
+        auto vm = curfewAt(local(2026, 9, 29, 22, 0));
+        QSignalSpy changed(vm.get(), &CurfewViewModel::changed);
+        vm->refreshAll();
+        QCOMPARE(changed.count(), 0);
+        vm->now = [] { return local(2026, 9, 29, 23, 30); };
+        vm->refreshAll();
+        QCOMPARE(changed.count(), 1);
+        QCOMPARE(vm->countdownText(), QStringLiteral("29:00"));
+    }
+
 private:
+    static std::unique_ptr<CurfewViewModel> curfewAt(QDateTime when)
+    {
+        auto vm = std::make_unique<CurfewViewModel>();
+        vm->now = [when] { return when; };
+        vm->refreshAll();
+        return vm;
+    }
+
     // A Wednesday, ten minutes into chapel.
     std::unique_ptr<ChapelViewModel> scheduled()
     {

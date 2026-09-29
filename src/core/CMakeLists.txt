@@ -14,6 +14,7 @@ add_library(cedarview_core STATIC
     transport.h transport.cpp
     session.h session.cpp
     calendar.h calendar.cpp
+    curfew.h curfew.cpp
     models.h models.cpp
     htmlattrs.h htmlattrs.cpp
     providers/chapel.h providers/chapel.cpp

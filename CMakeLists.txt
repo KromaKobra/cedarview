@@ -11,7 +11,7 @@ cmake_minimum_required(VERSION 3.21)
 
 # The single version source. The APK's versionName and versionCode, the About
 # sheet and `cedarview --version` are all read from here.
-project(CedarView VERSION 0.2.1 LANGUAGES CXX)
+project(CedarView VERSION 0.3.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -39,6 +39,7 @@ add_library(cedarview_ui STATIC
     src/ui/viewmodels/chapel.h src/ui/viewmodels/chapel.cpp
     src/ui/viewmodels/dining.h src/ui/viewmodels/dining.cpp
     src/ui/viewmodels/semester.h src/ui/viewmodels/semester.cpp
+    src/ui/viewmodels/curfew.h src/ui/viewmodels/curfew.cpp
 )
 target_include_directories(cedarview_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(cedarview_ui PUBLIC cedarview_core Qt6::Core Qt6::Qml)
@@ -78,6 +79,7 @@ set(CEDARVIEW_QML
     qml/Main.qml
     qml/Theme.qml
     qml/BalanceTile.qml
+    qml/BuildingsView.qml
     qml/Card.qml
     qml/ChapelView.qml
     qml/ChucksView.qml

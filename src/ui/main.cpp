@@ -30,6 +30,7 @@
 #include "ui/settings.h"
 #include "ui/viewmodels/chapel.h"
 #include "ui/viewmodels/dining.h"
+#include "ui/viewmodels/curfew.h"
 #include "ui/viewmodels/semester.h"
 #include "ui/webviewtransport.h"
 
@@ -217,6 +218,8 @@ int main(int argc, char **argv)
     // No transport: the term's dates are in core/calendar.h, because no
     // Cedarville service publishes them. See that file for the apology.
     SemesterViewModel semester;
+    // The same again for curfew; its rule is in core/curfew.h.
+    CurfewViewModel curfew;
     // Default QSettings, so it must be built after setApplicationName and
     // setOrganizationName above — otherwise it writes to a file named after
     // the executable.
@@ -268,6 +271,7 @@ int main(int argc, char **argv)
     ctx->setContextProperty(QStringLiteral("chapel"), &chapel);
     ctx->setContextProperty(QStringLiteral("dining"), &dining);
     ctx->setContextProperty(QStringLiteral("semester"), &semester);
+    ctx->setContextProperty(QStringLiteral("curfew"), &curfew);
     // Read by every Theme.qml instance, which is how eight separate copies of
     // the palette agree on which one is showing.
     ctx->setContextProperty(QStringLiteral("settings"), &settings);

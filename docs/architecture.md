@@ -28,7 +28,8 @@ cedarview/
       session.{h,cpp}       persistence of non-secret metadata
       models.{h,cpp}        the domain types the viewmodels expose
       errors.h              SessionExpired / TransportError / ParseError
-      calendar.{h,cpp}      term start/end dates — the one hand-entered fact
+      calendar.{h,cpp}      term start/end dates — hand-entered
+      curfew.{h,cpp}        the curfew rule — hand-entered too
       htmlattrs.{h,cpp}     one element's attributes from the meal-plan page
       pyjson.{h,cpp}        defensive reads of someone else's JSON
       providers/            chapel, chapel_schedule, dining, meals
@@ -223,9 +224,11 @@ browser at all, which is what `tests/tst_login_flow.cpp` does.
 
 ## The screens
 
-Three tabs, behind a bottom bar: **Summary**, **Chapel** and **Dining**.
-Dining has its own bar along the top for its three sections: the meal plan,
-the Home Cooking menu and the dining hours.
+Four tabs, behind a bottom bar: **Summary**, **Chapel**, **Dining** and
+**Buildings**. Dining has its own bar along the top for its three sections: the
+meal plan, the Home Cooking menu and the dining hours. Buildings is tonight's
+curfew (the `curfew` viewmodel, over `core/curfew.h`) above every building's
+hours, which are copied into `BuildingsView.qml` from Campus Security's page.
 
 Summary is deliberately *not* owned by one viewmodel. It reads from `chapel`,
 `dining` and `semester`, and through them from four separate services — the
@@ -238,7 +241,7 @@ A consequence worth knowing: the public half fills in before you sign in and
 stays filled in after you sign out, so the screen is never entirely blank.
 
 The viewmodels are exposed as context properties (`bridge`, `login`, `chapel`,
-`dining`, `semester`, `settings`), which QML resolves by name at runtime. A
+`dining`, `semester`, `curfew`, `settings`), which QML resolves by name at runtime. A
 typo is therefore not a compile error; `tests/tst_qml_contract.cpp` reads every
 `chapel.<name>`-style reference out of the QML and checks it against the
 classes' `staticMetaObject`, and every `model.<role>` against the list models'

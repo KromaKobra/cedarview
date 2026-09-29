@@ -20,7 +20,7 @@ Canvas {
     id: glyph
 
     //: "tree" | "refresh" | "summary" | "chapel" | "dining" | "chucks"
-    //: | "chevronLeft" | "chevronRight"
+    //: | "buildings" | "chevronLeft" | "chevronRight"
     //: "tree" is no longer drawn anywhere — the header uses icon.png now — but
     //: it stays as the fallback mark for anywhere an image would be wrong.
     property string kind: "tree"
@@ -52,6 +52,7 @@ Canvas {
         case "chapel":  paintChapel(ctx, w, h);  break
         case "dining":  paintDining(ctx, w, h);  break
         case "chucks":  paintChucks(ctx, w, h);  break
+        case "buildings": paintBuildings(ctx, w, h); break
         case "chevronLeft":  paintChevron(ctx, w, h, -1); break
         case "chevronRight": paintChevron(ctx, w, h, 1);  break
         }
@@ -200,6 +201,31 @@ Canvas {
         ctx.moveTo(0.06 * w, 0.84 * h)
         ctx.lineTo(0.94 * w, 0.84 * h)
         ctx.stroke()
+    }
+
+    // ---- Buildings: a tower with windows beside a lower block --------------
+    // Flat roofs and a grid of windows, so it cannot be mistaken for Chapel's
+    // pitched roof sitting beside it in the tab bar.
+    function paintBuildings(ctx, w, h) {
+        ctx.lineWidth = 0.095 * Math.min(w, h)
+
+        ctx.beginPath()
+        ctx.moveTo(0.16 * w, 0.88 * h)
+        ctx.lineTo(0.16 * w, 0.12 * h)
+        ctx.lineTo(0.58 * w, 0.12 * h)
+        ctx.lineTo(0.58 * w, 0.88 * h)
+        ctx.moveTo(0.58 * w, 0.44 * h)
+        ctx.lineTo(0.86 * w, 0.44 * h)
+        ctx.lineTo(0.86 * w, 0.88 * h)
+        ctx.moveTo(0.06 * w, 0.88 * h)
+        ctx.lineTo(0.94 * w, 0.88 * h)
+        ctx.stroke()
+
+        // Filled, like Chapel's door: stroked windows merge at 17px.
+        const size = 0.10 * w
+        for (const y of [0.26, 0.44, 0.62])
+            for (const x of [0.27, 0.42])
+                ctx.fillRect(x * w - size / 2, y * h, size, 0.10 * h)
     }
 
     // ---- Chevrons: day paging on the Chucks tab ---------------------------

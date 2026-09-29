@@ -18,6 +18,7 @@
 #include "ui/login.h"
 #include "ui/settings.h"
 #include "ui/viewmodels/chapel.h"
+#include "ui/viewmodels/curfew.h"
 #include "ui/viewmodels/dining.h"
 #include "ui/viewmodels/semester.h"
 
@@ -34,6 +35,7 @@ const QHash<QString, const QMetaObject *> VIEWMODELS = {
     {QStringLiteral("chapel"), &ChapelViewModel::staticMetaObject},
     {QStringLiteral("dining"), &DiningViewModel::staticMetaObject},
     {QStringLiteral("semester"), &SemesterViewModel::staticMetaObject},
+    {QStringLiteral("curfew"), &CurfewViewModel::staticMetaObject},
 };
 
 // Everything QML binds to by context-property name. `settings` is not a
