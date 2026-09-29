@@ -32,45 +32,18 @@ Item {
             width: scroll.width - theme.pageMargin * 2
             spacing: theme.gap
 
-            RowLayout {
-                Layout.fillWidth: true
-                Layout.leftMargin: 2
-                Layout.rightMargin: 2
-                Layout.bottomMargin: 2
-                spacing: 8
+            Rectangle {
+                visible: chapel.busy || dining.busy
+                implicitWidth: 34
+                implicitHeight: 34
+                radius: 17
+                color: theme.cedarSoft
 
-                ColumnLayout {
-                    Layout.fillWidth: true
-                    spacing: 2
-
-                    Label {
-                        text: "YOUR DAY"
-                        color: theme.cedar
-                        font.pixelSize: 11
-                        font.bold: true
-                        font.letterSpacing: 1.5
-                    }
-
-                    Label {
-                        text: "The essentials, without the hunt."
-                        color: theme.muted
-                        font.pixelSize: 13
-                    }
-                }
-
-                Rectangle {
-                    visible: chapel.busy || dining.busy
-                    implicitWidth: 34
-                    implicitHeight: 34
-                    radius: 17
-                    color: theme.cedarSoft
-
-                    BusyIndicator {
-                        anchors.centerIn: parent
-                        running: parent.visible
-                        implicitWidth: 20
-                        implicitHeight: 20
-                    }
+                BusyIndicator {
+                    anchors.centerIn: parent
+                    running: parent.visible
+                    implicitWidth: 20
+                    implicitHeight: 20
                 }
             }
 
@@ -89,17 +62,6 @@ Item {
                         orientation: Gradient.Horizontal
                         GradientStop { position: 0.0; color: theme.heroStart }
                         GradientStop { position: 1.0; color: theme.heroEnd }
-                    }
-
-                    Rectangle {
-                        anchors.right: parent.right
-                        anchors.top: parent.top
-                        anchors.rightMargin: -44
-                        anchors.topMargin: -64
-                        width: 184
-                        height: 184
-                        radius: 92
-                        color: Qt.rgba(1, 1, 1, 0.045)
                     }
 
                     ColumnLayout {
@@ -130,6 +92,15 @@ Item {
                                 color: Qt.rgba(1, 1, 1, 0.10)
                                 border.width: 1
                                 border.color: Qt.rgba(1, 1, 1, 0.12)
+
+                                // Soft halo that hugs the badge.
+                                Rectangle {
+                                    anchors.fill: parent
+                                    anchors.margins: -8
+                                    z: -1
+                                    radius: height / 2
+                                    color: Qt.rgba(1, 1, 1, 0.045)
+                                }
 
                                 Label {
                                     id: heroDay
