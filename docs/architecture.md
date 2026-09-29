@@ -223,8 +223,9 @@ browser at all, which is what `tests/tst_login_flow.cpp` does.
 
 ## The screens
 
-Four tabs, behind a bottom bar: **Summary**, **Chapel**, **Dining** and
-**Chucks**.
+Three tabs, behind a bottom bar: **Summary**, **Chapel** and **Dining**.
+Dining has its own bar along the top for its three sections: the meal plan,
+the Home Cooking menu and the dining hours.
 
 Summary is deliberately *not* owned by one viewmodel. It reads from `chapel`,
 `dining` and `semester`, and through them from four separate services — the

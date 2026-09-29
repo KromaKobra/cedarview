@@ -153,6 +153,7 @@ class DiningViewModel : public QObject
     Q_PROPERTY(bool hasPlan READ hasPlan NOTIFY changed)
     Q_PROPERTY(QString mealsPeriodText READ mealsPeriodText NOTIFY changed)
     Q_PROPERTY(QString planDescription READ planDescription NOTIFY changed)
+    Q_PROPERTY(int scansPerPeriod READ scansPerPeriod NOTIFY changed)
 
     // ---- Recent activity (the Dining tab)
     Q_PROPERTY(QObject *activity READ activity CONSTANT)
@@ -219,6 +220,13 @@ public:
 
     // "21 Meals per week" / "Block 120" / "Weekly meal plan" / "".
     QString planDescription() const { return m_plan.planDescription(); }
+
+    // How many times the card can be scanned in one meal period: 1 on a 14- or
+    // 21-meal weekly plan, 5 on a block plan, 0 when the plan is not known.
+    //
+    // Keyed off MealPlan::period, which is only set when the plan's name said
+    // which kind it is, so an unrecognised plan gets 0 rather than a guess.
+    int scansPerPeriod() const;
 
     QObject *activity() { return &m_activity; }
     bool flexOnly() const { return m_flexOnly; }

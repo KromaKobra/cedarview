@@ -83,11 +83,14 @@ set(CEDARVIEW_QML
     qml/ChucksView.qml
     qml/ComingSoon.qml
     qml/DarkMenuItem.qml
+    qml/DiningSections.qml
     qml/DiningView.qml
     qml/Glyph.qml
+    qml/HoursView.qml
     qml/InfoSheet.qml
     qml/MeterBar.qml
     qml/NavButton.qml
+    qml/SegmentedControl.qml
     qml/StatStrip.qml
     qml/SummaryView.qml
     qml/ToggleSwitch.qml

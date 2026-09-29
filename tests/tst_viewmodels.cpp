@@ -528,6 +528,16 @@ private slots:
         QCOMPARE(vm->planDescription(), QString());
     }
 
+    void theScanLimitFollowsThePlanKind()
+    {
+        auto vm = diningVm();
+        QCOMPARE(vm->scansPerPeriod(), 0);
+        vm->m_plan.period = "week";
+        QCOMPARE(vm->scansPerPeriod(), 1);
+        vm->m_plan.period = "term";
+        QCOMPARE(vm->scansPerPeriod(), 5);
+    }
+
     void unreportedBalancesAreSentinels()
     {
         auto vm = diningVm();

@@ -7,6 +7,8 @@ import QtQuick.Layouts
 Item {
     id: root
     signal openTab(int index)
+    // 0 meal plan, 1 menu, 2 hours — see DiningSections.
+    signal openDining(int section)
 
     Theme { id: theme }
 
@@ -199,7 +201,7 @@ Item {
 
                 AbstractButton {
                     id: cardDetails
-                    onClicked: root.openTab(2)
+                    onClicked: root.openDining(0)
                     implicitWidth: detailsLabel.implicitWidth + 20
                     implicitHeight: 28
                     background: Rectangle {
@@ -241,7 +243,7 @@ Item {
                         Layout.preferredWidth: 1
                         padding: 13
                         tappable: true
-                        onTapped: root.openTab(2)
+                        onTapped: root.openDining(0)
 
                         ColumnLayout {
                             Layout.fillWidth: true
@@ -301,7 +303,7 @@ Item {
             Card {
                 padding: 0
                 tappable: true
-                onTapped: root.openTab(3)
+                onTapped: root.openDining(1)
 
                 Rectangle {
                     Layout.fillWidth: true

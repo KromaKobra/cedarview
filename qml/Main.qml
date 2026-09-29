@@ -13,18 +13,29 @@ ApplicationWindow {
 
     readonly property string privacyPolicyUrl:
         "https://github.com/KromaKobra/cedarview/blob/main/PRIVACY.md"
-    readonly property var pageTitles: ["Today", "Chapel", "Meal card", "Home Cooking"]
+    readonly property var pageTitles: ["Today", "Chapel", "Dining"]
     readonly property var pageSubtitles: [
         "Your Cedarville at a glance",
-        "Attendance and upcoming speakers",
+        "Attendance and upcoming speakers"
+    ]
+    // The Dining tab's subtitle follows its section bar.
+    readonly property var diningSubtitles: [
         "Balances and recent activity",
-        "Menus by day"
+        "Home Cooking menus by day",
+        "Hours and meal periods"
     ]
 
     Theme { id: theme }
 
     property bool showingLogin: login.surfaceVisible
     property int currentPage: 0
+    // Which of DiningSections' pages is showing: meal plan, menu or hours.
+    property int diningSection: 0
+
+    function openDining(section) {
+        window.diningSection = section
+        window.currentPage = 2
+    }
     property bool busy: chapel.busy || dining.busy
 
     function refreshEverything() {
@@ -103,7 +114,8 @@ ApplicationWindow {
 
                 Label {
                     Layout.fillWidth: true
-                    text: window.pageSubtitles[window.currentPage]
+                    text: window.currentPage === 2 ? window.diningSubtitles[window.diningSection]
+                                                   : window.pageSubtitles[window.currentPage]
                     color: theme.muted
                     font.pixelSize: 10
                     elide: Text.ElideRight
@@ -243,10 +255,15 @@ ApplicationWindow {
                     currentIndex: window.currentPage
                     onCurrentIndexChanged: window.currentPage = currentIndex
 
-                    SummaryView { onOpenTab: (index) => window.currentPage = index }
+                    SummaryView {
+                        onOpenTab: (index) => window.currentPage = index
+                        onOpenDining: (section) => window.openDining(section)
+                    }
                     ChapelView {}
-                    DiningView {}
-                    ChucksView {}
+                    DiningSections {
+                        section: window.diningSection
+                        onSectionRequested: (index) => window.diningSection = index
+                    }
                 }
 
                 Rectangle {
@@ -290,13 +307,6 @@ ApplicationWindow {
                             kind: "dining"
                             selected: window.currentPage === 2
                             onClicked: window.currentPage = 2
-                        }
-                        NavButton {
-                            Layout.fillWidth: true
-                            text: "Menu"
-                            kind: "chucks"
-                            selected: window.currentPage === 3
-                            onClicked: window.currentPage = 3
                         }
                     }
                 }

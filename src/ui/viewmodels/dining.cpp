@@ -248,6 +248,15 @@ QString DiningViewModel::mealsPeriodText() const
     return period.isEmpty() ? QStringLiteral("left") : QStringLiteral("left ") + period;
 }
 
+int DiningViewModel::scansPerPeriod() const
+{
+    if (m_plan.period == u"week")
+        return 1;
+    if (m_plan.period == u"term")
+        return 5;
+    return 0;
+}
+
 void DiningViewModel::setFlexOnly(bool on)
 {
     if (on != m_flexOnly) {

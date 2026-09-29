@@ -130,8 +130,8 @@ using ServingHours = std::pair<QTime, QTime>;
 // **Hardcoded, not the API's.** The menu feed carries no serving times at all —
 // only a `slot` label — so these are copied off Chuck's posted hours. A sitting
 // stops being "next" the moment its window closes: at 9:30 on a weekday the
-// summary card moves on to lunch. If Chuck's changes its hours, the table in
-// dining.cpp is the one place to change.
+// summary card moves on to lunch. If Chuck's changes its hours, change the
+// table in dining.cpp and the Dining hours page (qml/HoursView.qml) together.
 std::optional<ServingHours> servingHours(QDate on, const QString &slot);
 
 // "10:30am–2:30pm" — a serving window, for the summary card.
