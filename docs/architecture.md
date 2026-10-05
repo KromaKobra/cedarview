@@ -300,6 +300,25 @@ WebView transport) collapse into one check. The coordinator also owns the
 15-second clock tick that keeps every countdown honest, and exposes `busy`
 (the thin bar under the header), `offline` and the header's "updated …".
 
+**What a refresh costs the UI thread.** The fetching and parsing run on
+worker threads, and parsing is under a millisecond anyway. What a refresh
+used to cost was QML: every `changed()` on a viewmodel re-evaluates every
+binding on it and rebuilds every Repeater fed by one of its lists, and a
+pull fired several — for each source starting, and again for each one
+coming back with the figures already on screen. Measured on a desktop, the
+chapel schedule alone took 50–90 ms, twice (page 1, then the term), the menus
+up to 25 ms and the meal plan up to 20; a phone is several times slower. So:
+
+- a fetch starting or failing emits `fetchStateChanged()`, which only `busy`,
+  `error` and the empty-state texts that read them listen to;
+- a result equal to what is on screen moves only its status's "Updated …";
+- the schedule's page 1 goes up only when there is no schedule yet;
+- the schedule's rows are updated one by one, and only those whose text
+  moved, rather than all of them every tick;
+- a pull does not tick the clock, which the 15-second tick did moments ago.
+
+A pull that changes nothing now costs a few milliseconds on the desktop.
+
 The requests themselves got fewer. The chapel's three JSON endpoints run at
 once (`std::async`), and the student ID they need is remembered, so the 59 KB
 dashboard is read once per sign-in rather than once per refresh. The meal

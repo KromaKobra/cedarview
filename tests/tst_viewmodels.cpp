@@ -14,6 +14,7 @@
 #include "ui/viewmodels/dining.h"
 #include "ui/viewmodels/format.h"
 
+#include <QJsonDocument>
 #include <QSignalSpy>
 #include <QUuid>
 
@@ -360,6 +361,54 @@ private slots:
         QCOMPARE(spy.count(), 0); // no state change emitted, so nothing was kicked off
     }
 
+    // ---- What a refresh rebuilds ---------------------------------------------
+    //
+    // Every changed() re-evaluates every binding on the viewmodel and rebuilds
+    // the lists fed by it — tens of milliseconds a time on the phone, and a
+    // pull used to fire several. Only a real change may.
+
+    // Starting a refresh and its failing are for what shows the fetch state.
+    void startingAndFailingARefreshRebuildNothing()
+    {
+        auto vm = chapelVm();
+        vm->onLoaded(figures(2, 18, 16));
+        QSignalSpy changed(vm.get(), &ChapelViewModel::changed);
+        QSignalSpy state(vm.get(), &ChapelViewModel::fetchStateChanged);
+
+        vm->refresh();
+        QVERIFY(vm->busy());
+        QCOMPARE(changed.count(), 0);
+        QCOMPARE(state.count(), 1);
+        QTRY_VERIFY(!vm->busy());
+
+        changed.clear();
+        state.clear();
+        vm->onFailed(make<TransportError>("timed out"));
+        QCOMPARE(changed.count(), 0);
+        QCOMPARE(state.count(), 1);
+        QVERIFY(!vm->error().isEmpty());
+    }
+
+    // Figures equal to those on screen move only the "Updated …" stamp.
+    void theSameFiguresAgainRebuildNothing()
+    {
+        auto vm = chapelVm();
+        vm->onLoaded(figures(2, 18, 16));
+        QSignalSpy changed(vm.get(), &ChapelViewModel::changed);
+        QSignalSpy state(vm.get(), &ChapelViewModel::fetchStateChanged);
+        QSignalSpy reset(static_cast<QAbstractItemModel *>(vm->records()), &QAbstractItemModel::modelReset);
+
+        vm->onLoaded(figures(2, 18, 16));
+        QCOMPARE(changed.count(), 0);
+        QCOMPARE(reset.count(), 0);
+        QCOMPARE(state.count(), 1);
+        QVERIFY(vm->skipsStatus()->hasData());
+
+        vm->onLoaded(figures(3, 18, 15));
+        QCOMPARE(changed.count(), 1);
+        QCOMPARE(vm->remaining(), 15);
+    }
+
     void theTermIsRememberedAcrossLaunches()
     {
         const QString dir = m_dir.path() + "/remember";
@@ -513,6 +562,70 @@ private slots:
             chapel(now.addDays(1), "Sooner", {"Sooner Speaker"}),
         });
         QCOMPARE(vm->nextSpeaker(), QStringLiteral("Sooner Speaker"));
+    }
+
+    void theSameScheduleAgainRebuildsNothing()
+    {
+        auto vm = scheduled();
+        auto *model = static_cast<QAbstractItemModel *>(vm->schedule());
+        QSignalSpy changed(vm.get(), &ChapelViewModel::changed);
+        QSignalSpy reset(model, &QAbstractItemModel::modelReset);
+        QSignalSpy rows(model, &QAbstractItemModel::dataChanged);
+
+        vm->onScheduleLoaded(vm->m_chapels);
+        vm->tick(); // the clock has not moved either
+        QCOMPARE(changed.count(), 0);
+        QCOMPARE(reset.count(), 0);
+        QCOMPARE(rows.count(), 0);
+    }
+
+    // The clock tick redraws the row whose countdown moved, not the term.
+    void aTickRedrawsOnlyTheRowWhoseCountdownMoved()
+    {
+        QDateTime clock = local(2026, 9, 23, 9);
+        auto vm = chapelVm();
+        vm->now = [&clock] { return clock; };
+        vm->onScheduleLoaded({
+            chapel(local(2026, 9, 23), "Garrett Kell", {"Garrett Kell"}),
+            chapel(local(2026, 9, 24), "SGA"),
+            chapel(local(2026, 9, 28), "Sermon on the Mount", {"Philip Miller"}),
+        });
+        auto *model = static_cast<QAbstractItemModel *>(vm->schedule());
+        QSignalSpy reset(model, &QAbstractItemModel::modelReset);
+        QSignalSpy rows(model, &QAbstractItemModel::dataChanged);
+
+        clock = clock.addSecs(30 * 60);
+        vm->tick();
+        QCOMPARE(reset.count(), 0);
+        QCOMPARE(rows.count(), 1);
+        const QModelIndex moved = rows.first().at(0).toModelIndex();
+        QCOMPARE(model->data(moved, ScheduleListModel::WhoRole).toString(), QStringLiteral("Garrett Kell"));
+    }
+
+    // Page 1 of the schedule goes up at once on a cold start. With a schedule
+    // already showing it would only shorten the list for a moment, and
+    // rebuild every row of it twice.
+    void pageOneGoesUpOnlyWhenThereIsNoScheduleYet()
+    {
+        const QJsonObject page =
+            QJsonDocument::fromJson(
+                testing::readText(testing::fixturesDir()
+                                  + "/mediaserve_cedarville_edu_chapelmedia_api_v2_chapels_upcoming.json")
+                    .toUtf8())
+                .object();
+
+        auto cold = chapelVm();
+        cold->m_scheduleBusy = true;
+        cold->onScheduleFirstPage(page);
+        QVERIFY(!cold->m_chapels.isEmpty());
+
+        auto vm = scheduled();
+        vm->m_scheduleBusy = true;
+        const QList<UpcomingChapel> before = vm->m_chapels;
+        QSignalSpy reset(static_cast<QAbstractItemModel *>(vm->schedule()), &QAbstractItemModel::modelReset);
+        vm->onScheduleFirstPage(page);
+        QCOMPARE(reset.count(), 0);
+        QCOMPARE(vm->m_chapels, before);
     }
 
     void whyTheScheduleIsEmpty()
@@ -795,6 +908,51 @@ private slots:
 
         QCOMPARE(fetches.size(), 2);
         QCOMPARE(fetches[1].provider.start(), today().addDays(-1));
+    }
+
+    // Menus and balances equal to those on screen move only the stamps.
+    void theSameMenusAndPlanAgainRebuildNothing()
+    {
+        QList<Fetch> fetches;
+        auto vm = diningVm(&fetches);
+        MealPlan plan;
+        plan.mealsRemaining = 12;
+        vm->onLoaded({home(today(), {"Bratwurst"})});
+        vm->onPlanLoaded(plan);
+        QSignalSpy changed(vm.get(), &DiningViewModel::changed);
+        QSignalSpy state(vm.get(), &DiningViewModel::fetchStateChanged);
+        QSignalSpy stations(static_cast<QAbstractItemModel *>(vm->stations()), &QAbstractItemModel::modelReset);
+        QSignalSpy activity(static_cast<QAbstractItemModel *>(vm->activity()), &QAbstractItemModel::modelReset);
+
+        vm->onLoaded({home(today(), {"Bratwurst"})});
+        vm->onPlanLoaded(plan);
+        QCOMPARE(changed.count(), 0);
+        QCOMPARE(stations.count(), 0);
+        QCOMPARE(activity.count(), 0);
+        QCOMPARE(state.count(), 2);
+
+        vm->onLoaded({home(today(), {"Tacos"})});
+        QCOMPARE(changed.count(), 1);
+        plan.mealsRemaining = 11;
+        vm->onPlanLoaded(plan);
+        QCOMPARE(changed.count(), 2);
+        QCOMPARE(vm->mealsRemaining(), 11);
+    }
+
+    void startingAMenuRefreshRebuildsNothing()
+    {
+        QList<Fetch> fetches;
+        auto vm = diningVm(&fetches);
+        vm->onLoaded({home(today(), {"Bratwurst"})});
+        QSignalSpy changed(vm.get(), &DiningViewModel::changed);
+        QSignalSpy state(vm.get(), &DiningViewModel::fetchStateChanged);
+        vm->refresh();
+        QCOMPARE(fetches.size(), 1);
+        QCOMPARE(changed.count(), 0);
+        QCOMPARE(state.count(), 1);
+        fetches[0].failed(make<TransportError>("timed out"));
+        QCOMPARE(changed.count(), 0);
+        QCOMPARE(state.count(), 2);
     }
 
     void aDistantDayNamesItsYear()

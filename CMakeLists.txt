@@ -116,6 +116,7 @@ set(CEDARVIEW_QML
     qml/PipMeter.qml
     qml/PlaceRow.qml
     qml/PrimaryButton.qml
+    qml/SearchBox.qml
     qml/SearchView.qml
     qml/SectionCaption.qml
     qml/SegmentedControl.qml

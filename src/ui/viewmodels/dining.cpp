@@ -418,6 +418,7 @@ DiningViewModel::DiningViewModel(TransportPtr transport, std::optional<Storage> 
     m_menuStatus.now = [this] { return now(); };
     m_planStatus.now = [this] { return now(); };
     connect(this, &DiningViewModel::changed, this, &DiningViewModel::clockChanged);
+    connect(this, &DiningViewModel::changed, this, &DiningViewModel::fetchStateChanged);
 
     m_nextMealTimer.setInterval(NEXT_MEAL_CHECK_MS);
     connect(&m_nextMealTimer, &QTimer::timeout, this, &DiningViewModel::tick);
@@ -903,7 +904,7 @@ void DiningViewModel::refreshPlan()
         return;
     m_planBusy = true;
     m_planStatus.begin();
-    emit changed();
+    emit fetchStateChanged();
 
     const int generation = m_generation;
     runInBackground(
@@ -948,6 +949,9 @@ void DiningViewModel::onPlanPayloadLoaded(const QJsonObject &payload)
 
 void DiningViewModel::onPlanLoaded(const MealPlan &plan)
 {
+    // The same balances as on screen, more often than not: then only the
+    // stamp moves.
+    const bool same = plan == m_plan;
     m_plan = plan;
     m_planBusy = false;
     m_planStatus.succeeded(now());
@@ -957,7 +961,10 @@ void DiningViewModel::onPlanLoaded(const MealPlan &plan)
                                            MealPlan::money(m_plan.diningDollars),
                                            MealPlan::money(m_plan.flexDollars))
                                       .arg(m_plan.transactions.size());
-    rebuildActivity();
+    if (same)
+        emit fetchStateChanged();
+    else
+        rebuildActivity();
 }
 
 void DiningViewModel::onPlanFailed(std::exception_ptr error)
@@ -968,7 +975,7 @@ void DiningViewModel::onPlanFailed(std::exception_ptr error)
         std::rethrow_exception(error);
     } catch (const SessionExpired &) {
         m_planStatus.stopped();
-        emit changed();
+        emit fetchStateChanged();
         emit sessionExpired();
         return;
     } catch (const ParseError &e) {
@@ -984,7 +991,7 @@ void DiningViewModel::onPlanFailed(std::exception_ptr error)
     }
     m_planStatus.failed(message, isOffline(error));
     qCWarning(lcDining).noquote() << "meal plan unavailable:" << describe(error);
-    emit changed();
+    emit fetchStateChanged();
 }
 
 void DiningViewModel::refreshAll()
@@ -1001,7 +1008,7 @@ void DiningViewModel::refresh()
     m_busy = true;
     m_error.clear();
     m_menuStatus.begin();
-    emit changed();
+    emit fetchStateChanged();
 
     const int generation = m_generation;
     fetchMenus(
@@ -1169,7 +1176,7 @@ void DiningViewModel::onWindowFailed(const QSet<QDate> &window, std::exception_p
         m_dayError = menuErrorText(error);
     qCCritical(lcDining).noquote() << "dining window from" << firstOf(window).toString(Qt::ISODate)
                                    << "failed:" << describe(error);
-    emit changed();
+    emit fetchStateChanged();
 }
 
 void DiningViewModel::rebuildNextMeal()
@@ -1231,6 +1238,7 @@ void DiningViewModel::onLoaded(const QList<DayMenu> &menus)
 {
     m_busy = false;
     m_error.clear();
+    const bool same = menus == m_menus;
     // A refresh starts over, so a day moved to earlier is fetched again when
     // next shown rather than served stale forever.
     applyMenus(menus);
@@ -1240,7 +1248,14 @@ void DiningViewModel::onLoaded(const QList<DayMenu> &menus)
         requested.insert(today.addDays(i));
     store(requested, menus);
     m_menuStatus.succeeded(now());
-    qCInfo(lcDining) << "dining:" << menus.size() << "days loaded";
+    qCInfo(lcDining) << "dining:" << menus.size() << "days loaded" << (same ? "(unchanged)" : "");
+    // The same menus as on screen, more often than not: then only the stamp
+    // moves — unless the day on screen was one paged in apart, which starting
+    // over has just dropped.
+    if (same && requested.contains(selectedDate())) {
+        emit fetchStateChanged();
+        return;
+    }
     rebuild();
 }
 
@@ -1250,7 +1265,7 @@ void DiningViewModel::onFailed(std::exception_ptr error)
     m_error = menuErrorText(error);
     m_menuStatus.failed(m_error, isOffline(error));
     qCCritical(lcDining).noquote() << "dining refresh failed:" << describe(error);
-    emit changed();
+    emit fetchStateChanged();
 }
 
 void DiningViewModel::clearPersonal()

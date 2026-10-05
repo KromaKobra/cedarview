@@ -306,16 +306,20 @@ void ScheduleListModel::replace(const QList<UpcomingChapel> &chapels, const QDat
         rows.append(row);
     }
 
-    // The same chapels as before: update in place.
+    // The same chapels as before: update in place, and only the rows whose
+    // text moved — usually none, or the one counting down.
     const bool sameRows = rows.size() == m_rows.size()
         && std::equal(rows.cbegin(), rows.cend(), m_rows.cbegin(), [](const Row &a, const Row &b) {
                return a.isHeader == b.isHeader && a.who == b.who && a.startsAt == b.startsAt
                    && a.heading == b.heading;
            });
     if (sameRows) {
-        m_rows = rows;
-        if (!m_rows.isEmpty())
-            emit dataChanged(index(0), index(static_cast<int>(m_rows.size()) - 1));
+        for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
+            if (rows.at(i) == m_rows.at(i))
+                continue;
+            m_rows[i] = rows.at(i);
+            emit dataChanged(index(i), index(i));
+        }
         return;
     }
     beginResetModel();
@@ -337,6 +341,7 @@ ChapelViewModel::ChapelViewModel(TransportPtr transport, std::optional<Storage> 
     m_skipsStatus.now = [this] { return now(); };
     m_scheduleStatus.now = [this] { return now(); };
     connect(this, &ChapelViewModel::changed, this, &ChapelViewModel::clockChanged);
+    connect(this, &ChapelViewModel::changed, this, &ChapelViewModel::fetchStateChanged);
     hydrate();
 }
 
@@ -594,11 +599,9 @@ void ChapelViewModel::refreshSchedule()
         return;
     m_scheduleBusy = true;
     m_scheduleStatus.begin();
-    emit changed();
+    emit fetchStateChanged();
 
     const int generation = m_generation;
-    // Page 1 carries the next chapel, so it goes on screen at once; the rest of
-    // the term follows.
     runInBackgroundWithPartial<QJsonObject>(
         this,
         [transport = m_transport](const std::function<void(const QJsonObject &)> &report) {
@@ -609,14 +612,8 @@ void ChapelViewModel::refreshSchedule()
             return payload;
         },
         [this, generation](const QJsonObject &firstPage) {
-            if (generation != m_generation || !m_scheduleBusy)
-                return;
-            try {
-                applySchedule(parseUpcoming(firstPage));
-                emit changed();
-            } catch (const std::exception &) {
-                // The whole fetch fails the same way, and reports it.
-            }
+            if (generation == m_generation)
+                onScheduleFirstPage(firstPage);
         },
         [this, generation](const QJsonObject &payload) {
             if (generation == m_generation)
@@ -626,6 +623,22 @@ void ChapelViewModel::refreshSchedule()
             if (generation == m_generation)
                 onScheduleFailed(error);
         });
+}
+
+void ChapelViewModel::onScheduleFirstPage(const QJsonObject &firstPage)
+{
+    // Page 1 carries the next chapel, so with nothing on screen yet it goes up
+    // at once; the rest of the term follows. With a schedule already showing
+    // it would only shorten the list for a moment — and rebuild every row of
+    // it twice.
+    if (!m_scheduleBusy || !m_chapels.isEmpty())
+        return;
+    try {
+        applySchedule(parseUpcoming(firstPage));
+        emit changed();
+    } catch (const std::exception &) {
+        // The whole fetch fails the same way, and reports it.
+    }
 }
 
 void ChapelViewModel::onSchedulePayloadLoaded(const QJsonObject &payload)
@@ -645,11 +658,20 @@ void ChapelViewModel::onSchedulePayloadLoaded(const QJsonObject &payload)
 void ChapelViewModel::onScheduleLoaded(const QList<UpcomingChapel> &chapels)
 {
     m_scheduleBusy = false;
-    applySchedule(chapels);
+    // What is on screen already, more often than not: then only the stamp
+    // moves.
+    const bool same = chapels == m_chapels;
+    if (!same)
+        applySchedule(chapels);
     m_scheduleError.clear();
     m_scheduleStatus.succeeded(now());
     qCInfo(lcChapel).noquote() << "chapel schedule:" << chapels.size() << "chapels, next is"
-                               << (m_next ? m_next->who() : QStringLiteral("(none)"));
+                               << (m_next ? m_next->who() : QStringLiteral("(none)"))
+                               << (same ? "(unchanged)" : "");
+    if (same) {
+        emit fetchStateChanged();
+        return;
+    }
     emit changed();
 }
 
@@ -670,7 +692,7 @@ void ChapelViewModel::onScheduleFailed(std::exception_ptr error)
     }
     m_scheduleStatus.failed(m_scheduleError, isOffline(error));
     qCWarning(lcChapel).noquote() << "chapel schedule unavailable:" << describe(error);
-    emit changed();
+    emit fetchStateChanged();
 }
 
 void ChapelViewModel::refreshAll()
@@ -702,7 +724,7 @@ void ChapelViewModel::refresh()
     m_busy = true;
     m_error.clear();
     m_skipsStatus.begin();
-    emit changed();
+    emit fetchStateChanged();
 
     const int generation = m_generation;
     runInBackground(
@@ -746,7 +768,11 @@ void ChapelViewModel::applySummary(const ChapelSummary &summary)
 
 void ChapelViewModel::onLoaded(const ChapelSummary &summary)
 {
-    applySummary(summary);
+    // The same figures as on screen, more often than not: then only the stamp
+    // moves.
+    const bool same = summary == m_summary;
+    if (!same)
+        applySummary(summary);
     m_busy = false;
     m_error.clear();
     m_skipsStatus.succeeded(now());
@@ -768,7 +794,10 @@ void ChapelViewModel::onLoaded(const ChapelSummary &summary)
                                       .arg(summary.entries.size())
                                       .arg(figure(summary.used), figure(summary.total),
                                            figure(summary.remaining));
-    emit changed();
+    if (same)
+        emit fetchStateChanged();
+    else
+        emit changed();
 }
 
 void ChapelViewModel::onFailed(std::exception_ptr error)
@@ -782,7 +811,7 @@ void ChapelViewModel::onFailed(std::exception_ptr error)
         // lifecycle. Hand it to the login flow and stay quiet.
         m_error.clear();
         m_skipsStatus.stopped();
-        emit changed();
+        emit fetchStateChanged();
         emit sessionExpired();
         return;
     } catch (const ParseError &) {
@@ -796,7 +825,7 @@ void ChapelViewModel::onFailed(std::exception_ptr error)
 
     m_skipsStatus.failed(m_error, isOffline(error));
     qCCritical(lcChapel).noquote() << "chapel refresh failed:" << describe(error);
-    emit changed();
+    emit fetchStateChanged();
 }
 
 void ChapelViewModel::clearPersonal()

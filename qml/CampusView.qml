@@ -17,39 +17,23 @@ ScrollPage {
     // The groups opened by a tap, by title; the first is always open.
     property var expanded: ({})
 
+    // Swiped or tapped away from (Back included): let go of the keyboard and
+    // the caret. A page off to the side is still visible as far as Qt is
+    // concerned, so nothing else would.
+    SwipeView.onIsCurrentItemChanged: {
+        if (!SwipeView.isCurrentItem)
+            buildingSearch.release()
+    }
+
     CurfewHero {}
 
     // ---- Search and filters -----------------------------------------------------
-    TextField {
+    SearchBox {
         id: buildingSearch
         Layout.fillWidth: true
-        implicitHeight: 48
-        leftPadding: 42
-        rightPadding: 16
-        placeholderText: campus.searchPlaceholder
-        placeholderTextColor: theme.faint
-        color: theme.text
-        font.family: theme.ui
-        font.pixelSize: 15
-        inputMethodHints: Qt.ImhNoPredictiveText
+        placeholder: campus.searchPlaceholder
         onTextChanged: campus.setQuery(text)
         Accessible.name: "Search buildings"
-
-        background: Rectangle {
-            radius: 16
-            color: theme.surface
-            border.width: 1
-            border.color: buildingSearch.activeFocus ? theme.cedar : theme.line
-        }
-
-        Glyph {
-            x: 15
-            anchors.verticalCenter: parent.verticalCenter
-            width: 18
-            height: 18
-            kind: "search"
-            color: theme.muted
-        }
     }
 
     Flow {

@@ -140,6 +140,8 @@ private:
         bool isNow = false;
         bool isToday = false;
         bool livestream = false;
+
+        bool operator==(const Row &) const = default;
     };
     QList<Row> m_rows;
 };
@@ -165,11 +167,11 @@ class ChapelViewModel : public QObject
     Q_PROPERTY(QObject *records READ records CONSTANT)
     Q_PROPERTY(QObject *skipsStatus READ skipsStatus CONSTANT)
     Q_PROPERTY(QObject *scheduleStatus READ scheduleStatus CONSTANT)
-    Q_PROPERTY(bool busy READ busy NOTIFY changed)
+    Q_PROPERTY(bool busy READ busy NOTIFY fetchStateChanged)
     // True once there are figures to show: fetched this run, or saved by the
     // last one.
-    Q_PROPERTY(bool loaded READ loaded NOTIFY changed)
-    Q_PROPERTY(QString error READ error NOTIFY changed)
+    Q_PROPERTY(bool loaded READ loaded NOTIFY fetchStateChanged)
+    Q_PROPERTY(QString error READ error NOTIFY fetchStateChanged)
     Q_PROPERTY(QString term READ term NOTIFY changed)
     // "Fall 2026" — the term, short enough for a header.
     Q_PROPERTY(QString termLabel READ termLabel NOTIFY changed)
@@ -215,7 +217,7 @@ class ChapelViewModel : public QObject
     Q_PROPERTY(QObject *schedule READ schedule CONSTANT)
     // How many weeks the schedule spans, for "Show 3 more weeks".
     Q_PROPERTY(int scheduleWeeks READ scheduleWeeks NOTIFY changed)
-    Q_PROPERTY(QString scheduleEmptyText READ scheduleEmptyText NOTIFY changed)
+    Q_PROPERTY(QString scheduleEmptyText READ scheduleEmptyText NOTIFY fetchStateChanged)
 
 public:
     // No `storage`: nothing is read back or saved.
@@ -358,6 +360,11 @@ signals:
     // changed() so a tick does not make every list on the screen rebuild.
     // Every changed() is also a clockChanged().
     void clockChanged();
+    // Only whether a fetch is running or has failed: busy, error, and what
+    // reads them. Kept apart from changed() so starting a refresh, or one
+    // that brings back what is already on screen, rebuilds nothing. Every
+    // changed() is also a fetchStateChanged().
+    void fetchStateChanged();
 
     // The provider hit an expired session. The coordinator answers with a
     // silent sign-in, then calls refresh() again.
@@ -375,6 +382,7 @@ private:
     void onLoaded(const ChapelSummary &summary);
     void onFailed(std::exception_ptr error);
     void onScheduleLoaded(const QList<UpcomingChapel> &chapels);
+    void onScheduleFirstPage(const QJsonObject &firstPage);
     void onSchedulePayloadLoaded(const QJsonObject &payload);
     void onScheduleFailed(std::exception_ptr error);
 

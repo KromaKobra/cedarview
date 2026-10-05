@@ -187,7 +187,9 @@ void SyncCoordinator::refreshAll()
     default:
         break;
     }
-    tick();
+    // No tick() here: the clock tick has re-read the clock within the last 15
+    // seconds, and a pull is the moment the page is springing back into place
+    // — no time to rebuild anything that does not need it.
 }
 
 void SyncCoordinator::resume()

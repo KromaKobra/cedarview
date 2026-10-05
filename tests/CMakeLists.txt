@@ -33,8 +33,12 @@ cedarview_test(tst_hours LIBS cedarview_ui)
 cedarview_test(tst_sync LIBS cedarview_ui)
 cedarview_test(tst_qml_contract LIBS cedarview_ui)
 cedarview_test(tst_surfaces LIBS cedarview_ui)
-# A QML component run for real: the sheet's open/close transitions.
-cedarview_test(tst_bottom_sheet LIBS Qt6::Gui Qt6::Quick)
+# QML components run for real: the sheet, the segments, the search field.
+# Twice: in the desktop's Controls style, and in Material, the phone's.
+cedarview_test(tst_components LIBS Qt6::Gui Qt6::Quick)
+add_test(NAME tst_components_material COMMAND tst_components)
+set_tests_properties(tst_components_material PROPERTIES
+    ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_CONTROLS_STYLE=Material")
 
 # The C++ transport against a real browser: offscreen QtWebEngine fetching
 # from a loopback server. The one test that exercises the in-page fetch end

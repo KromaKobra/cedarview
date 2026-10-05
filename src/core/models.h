@@ -96,6 +96,8 @@ struct ChapelSummary
 
     // The nicer of the two term spellings — "Fall Semester 2026" over "2026FA".
     QString label() const { return !termName.isEmpty() ? termName : term; }
+
+    bool operator==(const ChapelSummary &) const = default;
 };
 
 // ---------------------------------------------------------------------------
@@ -335,6 +337,8 @@ struct MealPlan
 
     // 112.08 -> "$112.08"; nothing -> "" (never "$0.00").
     static QString money(std::optional<double> value);
+
+    bool operator==(const MealPlan &) const = default;
 };
 
 } // namespace mycu

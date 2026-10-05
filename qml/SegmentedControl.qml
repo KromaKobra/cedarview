@@ -70,6 +70,7 @@ Item {
                 readonly property bool active: control.currentIndex === index
                 width: control.segment
                 height: parent.height
+                padding: 0
                 focusPolicy: Qt.NoFocus
                 onClicked: {
                     if (!active)
@@ -79,31 +80,36 @@ Item {
                 Accessible.name: modelData
                 Accessible.selected: active
                 background: Item {}
-                contentItem: Column {
-                    spacing: 2
-                    topPadding: (segmentButton.height - implicitHeight) / 2
+                // Centred by anchors. It used to be a Column padded by half of
+                // (height − implicitHeight), but a Column's implicitHeight
+                // counts its own padding, so the label settled off centre.
+                contentItem: Item {
+                    Column {
+                        anchors.centerIn: parent
+                        spacing: 2
 
-                    Text {
-                        width: segmentButton.width
-                        text: segmentButton.modelData
-                        horizontalAlignment: Text.AlignHCenter
-                        elide: Text.ElideRight
-                        color: segmentButton.active ? theme.text : theme.muted
-                        opacity: segmentButton.down && !segmentButton.active ? 0.6 : 1.0
-                        font.family: theme.ui
-                        font.pixelSize: control.fontSize
-                        font.weight: segmentButton.active ? Font.Bold : Font.DemiBold
-                    }
-                    Text {
-                        visible: control.sublabels.length > segmentButton.index
-                        width: segmentButton.width
-                        text: visible ? control.sublabels[segmentButton.index] : ""
-                        horizontalAlignment: Text.AlignHCenter
-                        elide: Text.ElideRight
-                        color: segmentButton.active ? theme.gold : theme.faint
-                        font.family: theme.display
-                        font.pixelSize: 12
-                        font.weight: Font.DemiBold
+                        Text {
+                            width: segmentButton.width
+                            text: segmentButton.modelData
+                            horizontalAlignment: Text.AlignHCenter
+                            elide: Text.ElideRight
+                            color: segmentButton.active ? theme.text : theme.muted
+                            opacity: segmentButton.down && !segmentButton.active ? 0.6 : 1.0
+                            font.family: theme.ui
+                            font.pixelSize: control.fontSize
+                            font.weight: segmentButton.active ? Font.Bold : Font.DemiBold
+                        }
+                        Text {
+                            visible: control.sublabels.length > segmentButton.index
+                            width: segmentButton.width
+                            text: visible ? control.sublabels[segmentButton.index] : ""
+                            horizontalAlignment: Text.AlignHCenter
+                            elide: Text.ElideRight
+                            color: segmentButton.active ? theme.gold : theme.faint
+                            font.family: theme.display
+                            font.pixelSize: 12
+                            font.weight: Font.DemiBold
+                        }
                     }
                 }
             }

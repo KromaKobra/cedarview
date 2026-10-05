@@ -192,9 +192,9 @@ class DiningViewModel : public QObject
 
     Q_PROPERTY(QObject *menuStatus READ menuStatus CONSTANT)
     Q_PROPERTY(QObject *planStatus READ planStatus CONSTANT)
-    Q_PROPERTY(bool busy READ busy NOTIFY changed)
-    Q_PROPERTY(bool loaded READ loaded NOTIFY changed)
-    Q_PROPERTY(QString error READ error NOTIFY changed)
+    Q_PROPERTY(bool busy READ busy NOTIFY fetchStateChanged)
+    Q_PROPERTY(bool loaded READ loaded NOTIFY fetchStateChanged)
+    Q_PROPERTY(QString error READ error NOTIFY fetchStateChanged)
     Q_PROPERTY(QString venue READ venue NOTIFY changed)
 
     // ---- The Menu section
@@ -203,8 +203,8 @@ class DiningViewModel : public QObject
     Q_PROPERTY(QString dateDetail READ dateDetail NOTIFY changed)
     Q_PROPERTY(int dayOffset READ dayOffset NOTIFY changed)
     Q_PROPERTY(bool isToday READ isToday NOTIFY changed)
-    Q_PROPERTY(bool dayLoading READ dayLoading NOTIFY changed)
-    Q_PROPERTY(QString dayEmptyText READ dayEmptyText NOTIFY changed)
+    Q_PROPERTY(bool dayLoading READ dayLoading NOTIFY fetchStateChanged)
+    Q_PROPERTY(QString dayEmptyText READ dayEmptyText NOTIFY fetchStateChanged)
     // A week of days around today: [{offset, dow, num, isToday, selected,
     // available}]. `available` is false only for a day known to have nothing.
     Q_PROPERTY(QVariantList days READ days NOTIFY changed)
@@ -271,7 +271,7 @@ class DiningViewModel : public QObject
     // 0 everything, 1 meals only, 2 flex only.
     Q_PROPERTY(int activityFilter READ activityFilter NOTIFY changed)
     Q_PROPERTY(QString activitySummary READ activitySummary NOTIFY changed)
-    Q_PROPERTY(QString activityEmptyText READ activityEmptyText NOTIFY changed)
+    Q_PROPERTY(QString activityEmptyText READ activityEmptyText NOTIFY fetchStateChanged)
 
     // ---- The next sitting
     // Public data, so this fills in before sign-in and stays filled in after a
@@ -458,6 +458,11 @@ signals:
     // apart from changed() so a tick does not make the day strip, the chips
     // and the stations rebuild. Every changed() is also a clockChanged().
     void clockChanged();
+    // Only whether a fetch is running or has failed: busy, error, and what
+    // reads them. Kept apart from changed() so starting a refresh, or one
+    // that brings back what is already on screen, rebuilds nothing. Every
+    // changed() is also a fetchStateChanged().
+    void fetchStateChanged();
     // The meal plan hit an expired session.
     void sessionExpired();
 

@@ -46,12 +46,12 @@ throwaway directory, so no test can touch your real session.
 | `tst_core_is_gui_free` | The architectural rule: `cedarview_core` links Qt Core only, and no GUI include hides in the sources |
 | `tst_tasks` | Results and typed exceptions crossing threads; partial results arriving in order; a destroyed caller not being called back |
 | `tst_login_flow` | The phases: Welcome, the silent check and its grace, needs-sign-in, signing in from each place, the address asked for not counting as a sign-in, a refused renewal asking instead of looping, preview, sign-out |
-| `tst_viewmodels` | List-model roles, error translation, the `-1` sentinel, re-entrancy, opening on saved data, the meal plan's errors and expiry, sign-out, the schedule and its series, the Menu section's stations, Avoid and day strip, the flex pace |
+| `tst_viewmodels` | List-model roles, error translation, the `-1` sentinel, re-entrancy, opening on saved data, the meal plan's errors and expiry, sign-out, the schedule and its series, the Menu section's stations, Avoid and day strip, the flex pace, a refresh rebuilding only what changed (and page 1 of the schedule only on a cold start) |
 | `tst_hours` | The hours tables, past-midnight windows, the Hours section's hero and timeline, the Campus tab's groups, filters, search and stars, curfew's evening bar |
 | `tst_sync` | The coordinator, with real worker threads: what is fetched at launch on each platform and phase, the Android probe only after an upgrade from v0.3, fresh saved data not refetched, two expiries making one check, a refused renewal ending in the banner, offline, sign-out and staying signed out, preview never touching the user's data |
 | `tst_qml_contract` | Every `chapel.x` / `dining.x` / … and every `chapel.skipsStatus.x`, `model.role` and delegate `required property` in the QML exists in C++; every refresh goes through `sync` |
 | `tst_surfaces` | The web surfaces' shared interface (including `loading`/`loadProgress`/`pageLoaded`), their imports, and that each platform builds only its own |
-| `tst_bottom_sheet` | `BottomSheet.qml` run for real: it rises flush with the bottom edge, every time it is opened |
+| `tst_components` | QML components run for real, in the desktop's Controls style and again in Material (`tst_components_material`), the phone's: the sheet rises flush with the bottom every time it is opened, segment labels are centred, the search box's placeholder is its own and `release()` gives up focus, and no component is shadowed by a Controls type of the same name |
 | `tst_webview_transport` | The in-page fetch end to end: offscreen QtWebEngine, the real surface QML, a loopback server |
 
 ## The tests that exist because something went wrong
@@ -85,6 +85,17 @@ guard:
 - `theSheetRisesAgainAfterClosing` — the closing transition animated `y` and
   replaced its binding, so every sheet opened only once; after that the scrim
   dimmed the screen over nothing.
+- `segmentLabelsAreCentredVertically` — the labels were padded by half of
+  (height − implicitHeight), and a Column's implicitHeight counts its own
+  padding: 3.5 px high, about ten pixels on the phone.
+- `thePlaceholderIsOursAndGoesWithTheFirstLetter` — Material, the phone's
+  style, floats TextField's placeholder onto the top edge once there is
+  text, where it sat on the search box's border.
+- `releaseLetsGoOfTheFocus` — a hidden field keeps its focus, and on Android
+  its cursor handle stayed on screen after Back.
+- The component test's host resolves names as the app's files do: Qt 6.10's
+  own `SearchField` silently replaced ours wherever QtQuick.Controls was
+  imported, as `Page` once did.
 - `theAndroidSurfaceTakesItsUrlFromTheLoadRequest` — QtWebView's `url` does
   not follow redirects, so sign-in could never start on the phone.
 - `everyRefreshGoesThroughTheCoordinator` — pull-to-refresh called

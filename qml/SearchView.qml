@@ -18,6 +18,13 @@ Rectangle {
 
     color: theme.bg
 
+    // Closed by Back, the back arrow or a result: let go of the keyboard and
+    // the caret either way.
+    onVisibleChanged: {
+        if (!visible)
+            field.release()
+    }
+
     function begin() {
         field.text = ""
         search.setQuery("")
@@ -56,19 +63,13 @@ Rectangle {
                 }
             }
 
-            TextField {
+            SearchBox {
                 id: field
                 Layout.fillWidth: true
-                implicitHeight: 48
-                leftPadding: 42
                 rightPadding: 44
-                placeholderText: "Search menus, places, speakers"
-                placeholderTextColor: theme.faint
-                color: theme.text
-                font.family: theme.ui
-                font.pixelSize: 16
-                font.weight: Font.DemiBold
-                inputMethodHints: Qt.ImhNoPredictiveText
+                emphasised: true
+                glyphColor: theme.cedar
+                placeholder: "Search menus, places, speakers"
                 onTextChanged: search.setQuery(text)
                 onAccepted: {
                     search.commit()
@@ -76,21 +77,6 @@ Rectangle {
                 }
                 Accessible.name: "Search CedarView"
 
-                background: Rectangle {
-                    radius: 16
-                    color: theme.surface
-                    border.width: 2
-                    border.color: field.activeFocus ? theme.cedar : theme.line
-                }
-
-                Glyph {
-                    x: 14
-                    anchors.verticalCenter: parent.verticalCenter
-                    width: 18
-                    height: 18
-                    kind: "search"
-                    color: theme.cedar
-                }
                 IconButton {
                     visible: field.text.length > 0
                     anchors.right: parent.right
