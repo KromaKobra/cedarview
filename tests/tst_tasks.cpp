@@ -114,6 +114,65 @@ private slots:
         QTest::qWait(50);
         QVERIFY(!called);
     }
+
+    // The chapel schedule's first page is shown before the rest arrive: early
+    // results come back in order, on the context's thread, before the last.
+    void partialResultsArriveInOrderBeforeTheResult()
+    {
+        QObject context;
+        QStringList seen;
+        runInBackgroundWithPartial<int>(
+            &context,
+            [](const std::function<void(const int &)> &report) {
+                report(1);
+                report(2);
+                return 3;
+            },
+            [&](const int &partial) {
+                QCOMPARE(QThread::currentThread(), context.thread());
+                seen.append(QStringLiteral("partial %1").arg(partial));
+            },
+            [&](int result) { seen.append(QStringLiteral("done %1").arg(result)); },
+            [&](std::exception_ptr) { seen.append(QStringLiteral("error")); });
+        QTRY_COMPARE(seen, (QStringList{"partial 1", "partial 2", "done 3"}));
+    }
+
+    void anErrorAfterAPartialStillReachesTheErrorCallback()
+    {
+        QObject context;
+        QStringList seen;
+        runInBackgroundWithPartial<int>(
+            &context,
+            [](const std::function<void(const int &)> &report) -> int {
+                report(1);
+                throw mycu::TransportError(QStringLiteral("page 2 failed"));
+            },
+            [&](const int &) { seen.append(QStringLiteral("partial")); },
+            [&](int) { seen.append(QStringLiteral("done")); },
+            [&](std::exception_ptr) { seen.append(QStringLiteral("error")); });
+        QTRY_COMPARE(seen, (QStringList{"partial", "error"}));
+    }
+
+    void aDestroyedContextGetsNoPartialsEither()
+    {
+        bool called = false;
+        {
+            QObject context;
+            runInBackgroundWithPartial<int>(
+                &context,
+                [](const std::function<void(const int &)> &report) {
+                    QThread::msleep(100);
+                    report(1);
+                    return 2;
+                },
+                [&](const int &) { called = true; }, [&](int) { called = true; },
+                [&](std::exception_ptr) { called = true; });
+        }
+        QThreadPool::globalInstance()->waitForDone(5000);
+        QCoreApplication::processEvents();
+        QTest::qWait(50);
+        QVERIFY(!called);
+    }
 };
 
 CEDARVIEW_TEST_MAIN(TestTasks, QCoreApplication)

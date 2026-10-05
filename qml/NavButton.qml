@@ -1,8 +1,8 @@
 // One destination in the bottom bar.
 //
-// The selected tab gets a tinted pill behind its icon as well as the accent
-// colour, so which tab you are on survives being read at a glance, in sunlight,
-// or by someone who cannot separate orange from grey.
+// The selected tab gets a tinted pill behind its icon as well as the brand
+// blue, so which tab you are on survives being read at a glance, in
+// sunlight, or by someone who cannot separate the blue from grey.
 
 import QtQuick
 import QtQuick.Controls
@@ -10,41 +10,50 @@ import QtQuick.Controls
 AbstractButton {
     id: nav
 
-    //: One of Glyph's kinds — "summary", "chapel", "dining", "buildings".
-    property string kind
+    //: One of Glyph's kinds — "today", "chapel", "dining", "campus".
+    property string glyph
     property bool selected: false
 
     Theme { id: theme }
 
-    implicitHeight: 58
-    opacity: down ? 0.68 : 1.0
+    implicitHeight: 62
+    focusPolicy: Qt.NoFocus
+    Accessible.role: Accessible.PageTab
+    Accessible.name: text
+    Accessible.selected: selected
 
-    contentItem: Column {
-        anchors.centerIn: parent
-        spacing: 4
-
-        Rectangle {
+    contentItem: Item {
+        Column {
             anchors.horizontalCenter: parent.horizontalCenter
-            width: 46
-            height: 28
-            radius: 14
-            color: nav.selected ? theme.cedarSoft : "transparent"
+            anchors.top: parent.top
+            anchors.topMargin: 6
+            spacing: 4
 
-            Glyph {
-                anchors.centerIn: parent
-                width: 17
-                height: 17
-                kind: nav.kind
-                color: nav.selected ? theme.cedar : theme.faint
+            Rectangle {
+                anchors.horizontalCenter: parent.horizontalCenter
+                width: 58
+                height: 32
+                radius: 16
+                color: nav.selected ? theme.cedarSoft : nav.down ? theme.pressed : "transparent"
+                Behavior on color { ColorAnimation { duration: 160 } }
+
+                Glyph {
+                    anchors.centerIn: parent
+                    width: 20
+                    height: 20
+                    kind: nav.glyph
+                    color: nav.selected ? theme.cedar : theme.muted
+                }
             }
-        }
 
-        Label {
-            anchors.horizontalCenter: parent.horizontalCenter
-            text: nav.text
-            color: nav.selected ? theme.text : theme.faint
-            font.pixelSize: 10
-            font.bold: nav.selected
+            Text {
+                anchors.horizontalCenter: parent.horizontalCenter
+                text: nav.text
+                color: nav.selected ? theme.text : theme.muted
+                font.family: theme.ui
+                font.pixelSize: 12
+                font.weight: Font.DemiBold
+            }
         }
     }
 

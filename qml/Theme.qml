@@ -1,77 +1,93 @@
 import QtQuick
 
-// CedarView's visual language, built on Cedarville's navy (#003A63) and gold
-// (#FDB813). Surfaces are near-neutral with only a hint of cool blue so the two
-// brand colours carry all the emphasis: blue for navigation and structure, gold
-// for the figure that needs attention now. The hero cards are navy in both
-// themes, so anything drawn on them uses the hero* tokens, never accent.
+// CedarView's visual language, built on Cedarville's navy and gold, as the
+// v0.4 canvas set it out. Surfaces are near-neutral so the two brand colours
+// carry the emphasis: navy for the hero cards and structure, gold for the
+// figure that matters now, cedar blue for navigation, violet for money. Each
+// accent comes as a pair — the colour and a soft fill of the same hue — plus
+// a light-to-deep pair (…A, …B) for anything that should look lit from above.
+// One hue per element: depth comes from shading within it, never from a
+// second colour.
+//
+// The hero cards are navy in both themes, so anything drawn on them uses the
+// on-navy tokens (navyText, goldHero, heroInset, …), never the page's.
+//
+// A plain QtObject, instantiated once per file — not a singleton. Every copy
+// binds `light` to the `settings` context property, so they all change
+// together; that is the one thing that has to be shared.
 QtObject {
     readonly property bool light: (typeof settings !== "undefined") && settings.lightMode
 
-    readonly property color background: light ? "#F3F4F6" : "#0B0D10"
-    readonly property color backgroundTop: light ? "#F8F9FA" : "#0F1216"
-    readonly property color ribbon: light ? "#F8F9FA" : "#0D1013"
-    readonly property color nav: light ? "#FFFFFF" : "#111418"
-    readonly property color card: light ? "#FFFFFF" : "#15181D"
-    readonly property color cardAlt: light ? "#EEF1F5" : "#1B2027"
-    readonly property color sheet: light ? "#FFFFFF" : "#1A1E24"
-    readonly property color cardBorder: light ? "#DDE2E8" : "#252B33"
-    readonly property color divider: light ? "#E3E7EC" : "#232830"
-    readonly property color track: light ? "#DEE3EA" : "#272D36"
-    // The semester meter: one blue, lit from above, over a recessed groove.
-    readonly property color meterTop: light ? "#2475B3" : "#A9D2F5"
-    readonly property color meterMid: light ? "#0B4F85" : "#7CB7EA"
-    readonly property color meterBottom: light ? "#003A63" : "#5A9AD6"
-    readonly property color meterGlow: light ? "#0B4F85" : "#3F80BD"
-    readonly property color grooveTop: light ? "#D3DAE3" : "#1D2229"
-    readonly property color grooveBottom: light ? "#E6EAF0" : "#2B323C"
-    // A neutral surface raised out of a groove, such as a segmented thumb.
-    readonly property color raisedTop: light ? "#FFFFFF" : "#3A424E"
-    readonly property color raisedBottom: light ? "#F2F4F7" : "#2C333D"
+    // ---- The page
+    readonly property color bg: light ? "#F2F4F7" : "#0A0C0F"
+    readonly property color surface: light ? "#FFFFFF" : "#14171C"
+    readonly property color surface2: light ? "#EDF1F5" : "#1B2027"
+    readonly property color raised: light ? "#FFFFFF" : "#2A313B"
+    readonly property color line: light ? "#DEE3EA" : "#262C35"
+    readonly property color text: light ? "#121821" : "#F2F4F7"
+    readonly property color muted: light ? "#55606C" : "#A9B2BD"
+    readonly property color faint: light ? "#68717D" : "#8A939E"
+    readonly property color nav: light ? Qt.rgba(1, 1, 1, 0.94) : Qt.rgba(0.051, 0.063, 0.078, 0.92)
+    readonly property color scrim: light ? Qt.rgba(0.02, 0.07, 0.12, 0.42) : Qt.rgba(0, 0, 0, 0.62)
+    // Under a card in the light theme; the dark one lifts cards with a top
+    // highlight instead (cardHighlight).
+    readonly property color cardShadow: Qt.rgba(0.063, 0.094, 0.157, light ? 0.07 : 0)
+    readonly property color cardHighlight: light ? "transparent" : Qt.rgba(1, 1, 1, 0.04)
 
-    readonly property color text: light ? "#131820" : "#F2F4F7"
-    readonly property color muted: light ? "#5B6570" : "#A3ACB7"
-    readonly property color faint: light ? "#7F8893" : "#737C87"
-    readonly property color textOnAccent: light ? "#FFFFFF" : "#0D1B2A"
-    readonly property color textOnCedar: light ? "#FFFFFF" : "#0D1B2A"
-    readonly property color textOnDark: "#F5F8FB"
-
-    // Gold is darkened in the light theme: #FDB813 on white is under 2:1.
-    readonly property color accent: light ? "#9A6700" : "#FAC03D"
-    readonly property color accentDeep: light ? "#7A5200" : "#E0A21C"
-    readonly property color accentSoft: light ? "#FBF0D6" : "#2B2413"
+    // ---- Accents. Gold is darkened in the light theme: #FDB813 on white is
+    // under 2:1.
+    readonly property color gold: light ? "#8F5F00" : "#FAC03D"
+    readonly property color goldSoft: light ? "#FBF0D6" : "#2A2312"
+    readonly property color goldA: light ? "#E0A52A" : "#FFD566"
+    readonly property color goldB: light ? "#9A6700" : "#E9A510"
     // "cedar" is the primary brand blue; the name predates the palette.
     readonly property color cedar: light ? "#0B4F85" : "#7CB7EA"
-    readonly property color cedarDeep: light ? "#003A63" : "#3F80BD"
-    readonly property color cedarSoft: light ? "#E4EDF6" : "#17273A"
-    readonly property color violet: light ? "#5E4FB8" : "#B3A6F2"
-    readonly property color violetSoft: light ? "#ECE9FA" : "#262340"
-    // A raised violet surface, lit from above like the meter fill.
-    readonly property color violetTop: light ? "#7466D0" : "#C9BEF8"
-    readonly property color violetBottom: light ? "#4B3DA3" : "#9C8CE6"
-    readonly property color textOnViolet: light ? "#FFFFFF" : "#18123A"
-    readonly property color danger: light ? "#B8403A" : "#FF8D83"
+    readonly property color cedarSoft: light ? "#E3EDF7" : "#152639"
+    readonly property color meterA: light ? "#2C7DBD" : "#A9D2F5"
+    readonly property color meterB: light ? "#0B4F85" : "#5A9AD6"
+    readonly property color violet: light ? "#5A4BB5" : "#B8ABF5"
+    readonly property color violetSoft: light ? "#ECE9FA" : "#24203C"
+    readonly property color violetA: light ? "#7F72D6" : "#D3CBFB"
+    readonly property color violetB: light ? "#4B3DA3" : "#9C8CE6"
+    readonly property color danger: light ? "#B23A34" : "#FF8D83"
     readonly property color dangerSoft: light ? "#FBE8E5" : "#3A1D1B"
+    // Text on a filled gold or cedar button.
+    readonly property color accentText: light ? "#FFFFFF" : "#0A0C0F"
 
-    readonly property color heroStart: light ? "#0B4A7C" : "#0E3F68"
-    readonly property color heroEnd: light ? "#002D4F" : "#0A2641"
-    readonly property color heroAccent: "#FDB813"
-    readonly property color heroAccentSoft: Qt.rgba(0.99, 0.72, 0.07, 0.14)
-    readonly property color heroDanger: "#FF8D83"
-    readonly property color mealStart: light ? "#FBF0D6" : "#2A2314"
-    readonly property color mealEnd: light ? "#EAF0F7" : "#15202D"
+    // ---- The navy hero, the same in both themes
+    readonly property color navyHi: "#1D6099"
+    readonly property color navy: "#0D406D"
+    readonly property color navyLo: "#062240"
+    readonly property color navyText: "#F5F8FB"
+    readonly property color navyMuted: Qt.rgba(0.961, 0.973, 0.984, 0.76)
+    readonly property color goldHero: "#FDB813"
+    readonly property color heroPipA: "#FFD15C"
+    readonly property color heroPipB: "#F2A900"
+    readonly property color heroPipOff: Qt.rgba(1, 1, 1, 0.16)
+    readonly property color heroSky: "#A9D2F5"
+    readonly property color heroDanger: "#FFA79F"
+    readonly property color heroInset: Qt.rgba(0, 0.04, 0.1, 0.28)
+    readonly property color heroLine: Qt.rgba(1, 1, 1, 0.12)
+    readonly property color heroChip: Qt.rgba(1, 1, 1, 0.10)
+    readonly property color heroSkeleton: Qt.rgba(1, 1, 1, 0.12)
+    // The flex-pace bar, a light violet that reads on navy.
+    readonly property color paceA: "#DDD6FC"
+    readonly property color paceB: "#A797EE"
+    // The gold button: lit from above.
+    readonly property color buttonA: "#FFCB45"
+    readonly property color buttonB: "#F2A900"
+    readonly property color buttonText: "#17110A"
 
-    readonly property color pressed: light ? Qt.rgba(0, 0, 0, 0.055)
-                                           : Qt.rgba(1, 1, 1, 0.075)
-    readonly property color pressedStrong: light ? Qt.rgba(0, 0, 0, 0.10)
-                                                 : Qt.rgba(1, 1, 1, 0.13)
-    readonly property color hairline: light ? Qt.rgba(0, 0, 0, 0.07)
-                                            : Qt.rgba(1, 1, 1, 0.07)
-    readonly property color scrim: light ? Qt.rgba(0.02, 0.07, 0.12, 0.36)
-                                         : Qt.rgba(0, 0, 0, 0.68)
+    readonly property color pressed: light ? Qt.rgba(0, 0, 0, 0.05) : Qt.rgba(1, 1, 1, 0.06)
 
-    readonly property int pageMargin: 18
-    readonly property int cardPadding: 20
+    // ---- Type. Registered by main.cpp from qml/fonts/ before QML loads.
+    // Bricolage for display figures and titles, Instrument Sans for the rest.
+    readonly property string display: "Bricolage Grotesque"
+    readonly property string ui: "Instrument Sans"
+
+    // ---- Metrics
+    readonly property int pageMargin: 16
     readonly property int cardRadius: 24
+    readonly property int heroRadius: 26
     readonly property int gap: 12
 }

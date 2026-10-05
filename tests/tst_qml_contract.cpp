@@ -17,10 +17,15 @@
 #include "ui/bridge.h"
 #include "ui/login.h"
 #include "ui/settings.h"
+#include "ui/sync.h"
+#include "ui/viewmodels/campus.h"
 #include "ui/viewmodels/chapel.h"
 #include "ui/viewmodels/curfew.h"
 #include "ui/viewmodels/dining.h"
-#include "ui/viewmodels/semester.h"
+#include "ui/viewmodels/hours.h"
+#include "ui/viewmodels/search.h"
+#include "ui/viewmodels/sourcestatus.h"
+#include "ui/viewmodels/today.h"
 
 #include <QMetaMethod>
 #include <QMetaProperty>
@@ -31,25 +36,48 @@ using namespace mycu;
 namespace {
 
 // The context-property name each viewmodel is published under in main.cpp.
+// All of them re-read the clock through refreshAll(), which is what
+// SyncCoordinator's tick calls.
 const QHash<QString, const QMetaObject *> VIEWMODELS = {
     {QStringLiteral("chapel"), &ChapelViewModel::staticMetaObject},
     {QStringLiteral("dining"), &DiningViewModel::staticMetaObject},
-    {QStringLiteral("semester"), &SemesterViewModel::staticMetaObject},
     {QStringLiteral("curfew"), &CurfewViewModel::staticMetaObject},
+    {QStringLiteral("hours"), &HoursViewModel::staticMetaObject},
+    {QStringLiteral("campus"), &CampusViewModel::staticMetaObject},
+    {QStringLiteral("today"), &TodayViewModel::staticMetaObject},
 };
 
 // Everything QML binds to by context-property name. `settings` is not a
-// viewmodel — it has no provider, no busy flag and no refreshAll — but it is
-// bound the same loose way, and by *every* Theme.qml instance, so a typo there
-// is the whole app stuck on one palette rather than one broken screen. `login`
-// and `bridge` carry the sign-in flow, where a typo means no sign-in at all.
+// viewmodel — it has no provider and no refreshAll — but it is bound the same
+// loose way, and by *every* Theme.qml instance, so a typo there is the whole
+// app stuck on one palette rather than one broken screen. `login` and `bridge`
+// carry the sign-in flow, where a typo means no sign-in at all; `sync` every
+// refresh; `search` the search page.
 QHash<QString, const QMetaObject *> boundObjects()
 {
     QHash<QString, const QMetaObject *> all = VIEWMODELS;
     all.insert(QStringLiteral("settings"), &SettingsController::staticMetaObject);
     all.insert(QStringLiteral("login"), &LoginController::staticMetaObject);
     all.insert(QStringLiteral("bridge"), &Bridge::staticMetaObject);
+    all.insert(QStringLiteral("sync"), &SyncCoordinator::staticMetaObject);
+    all.insert(QStringLiteral("search"), &SearchViewModel::staticMetaObject);
     return all;
+}
+
+// Every list model a delegate reads, for their role names.
+QSet<QString> allRoles()
+{
+    QSet<QString> roles;
+    const std::initializer_list<QAbstractItemModel *> models{
+        new ChapelListModel, new ScheduleListModel, new MenuListModel,    new StationListModel,
+        new ActivityListModel, new TimelineModel,   new AgendaModel,      new SearchResultModel,
+    };
+    for (QAbstractItemModel *model : models) {
+        for (const QByteArray &name : model->roleNames())
+            roles.insert(QString::fromLatin1(name));
+        delete model;
+    }
+    return roles;
 }
 
 QSet<QString> exposedNames(const QMetaObject *meta)
@@ -131,34 +159,77 @@ private slots:
         }
     }
 
-    // Both screens draw on more than one provider; refresh must cover them
-    // all.
+    // Every refresh goes through the coordinator.
     //
-    // A regression test. refreshCurrent() in Main.qml and both pull-to-refresh
-    // handlers used to call refresh(), which on the Dining screen fetches the
-    // public menu API and *not* the meal-plan balances — so the meals-left and
-    // dollar figures loaded once at sign-in and never moved again, no matter
-    // how hard you pulled.
-    void theRefreshGestureReachesEverySourceOnTheScreen()
+    // It started as a regression test: pull-to-refresh on the Dining screen
+    // called `dining.refresh()`, which fetches the public menu and *not* the
+    // meal-plan balances, so the meals-left and dollar figures never moved no
+    // matter how hard you pulled. Since v0.4 SyncCoordinator is the one place
+    // that knows what a refresh takes (and what is already in flight, and
+    // whether a silent sign-in is the real answer); a screen that called a
+    // viewmodel directly would go around it.
+    void everyRefreshGoesThroughTheCoordinator()
     {
-        for (const char *name : {"Main.qml", "ChapelView.qml", "DiningView.qml", "ChucksView.qml", "SummaryView.qml"}) {
-            const QString source =
-                stripComments(testing::readText(testing::sourceDir() + "/qml/" + QLatin1StringView(name)));
-            for (const QString &vm : VIEWMODELS.keys()) {
-                const QRegularExpression bare(QStringLiteral("\\b%1\\.refresh\\(\\)").arg(vm));
-                QVERIFY2(!bare.match(source).hasMatch(),
-                         qPrintable(QStringLiteral("%1 calls `%2.refresh()` as a user-facing refresh. Use "
-                                                   "`%2.refreshAll()`, which also reloads the other source on "
-                                                   "that screen.")
-                                        .arg(QLatin1StringView(name), vm)));
-            }
+        static const QRegularExpression direct(
+            QStringLiteral("\\b(%1)\\.(refresh\\w*)\\(").arg(QStringList(VIEWMODELS.keys()).join(u'|')));
+        for (const QString &path : qmlFiles()) {
+            const auto match = direct.match(stripComments(testing::readText(path)));
+            QVERIFY2(!match.hasMatch(),
+                     qPrintable(QStringLiteral("%1 calls `%2.%3()` itself. Use `sync.refreshAll()`, which "
+                                               "covers every source and the sign-in.")
+                                    .arg(QFileInfo(path).fileName(), match.captured(1), match.captured(2))));
+        }
+        const QString page = stripComments(testing::readText(testing::sourceDir() + "/qml/ScrollPage.qml"));
+        QVERIFY2(page.contains("sync.refreshAll()"), "pull-to-refresh must ask the coordinator");
+    }
+
+    // `chapel.skipsStatus.hasData` and friends: a status is a SourceStatus,
+    // reached from a viewmodel by name — directly, or through a local
+    // `property var skips: chapel.skipsStatus`. Both halves are checked.
+    void everyStatusFieldUsedInQmlExists_data() { everyMemberUsedInQmlExists_data(); }
+    void everyStatusFieldUsedInQmlExists()
+    {
+        QFETCH(QString, path);
+        const QString source = stripComments(testing::readText(path));
+        const QSet<QString> fields = exposedNames(&SourceStatus::staticMetaObject);
+        const auto objects = boundObjects();
+
+        auto check = [&](const QString &vm, const QString &status, const QString &field) {
+            QVERIFY2(exposedNames(objects.value(vm)).contains(status),
+                     qPrintable(QStringLiteral("%1: %2 has no %3").arg(QFileInfo(path).fileName(), vm, status)));
+            QVERIFY2(fields.contains(field),
+                     qPrintable(QStringLiteral("%1 reads `%2.%3.%4`, which SourceStatus does not have")
+                                    .arg(QFileInfo(path).fileName(), vm, status, field)));
+        };
+
+        static const QRegularExpression direct(QStringLiteral("\\b(chapel|dining)\\.(\\w+Status)\\.(\\w+)"));
+        auto it = direct.globalMatch(source);
+        while (it.hasNext()) {
+            const auto m = it.next();
+            check(m.captured(1), m.captured(2), m.captured(3));
+        }
+
+        static const QRegularExpression alias(
+            QStringLiteral("property\\s+var\\s+(\\w+)\\s*:\\s*(chapel|dining)\\.(\\w+Status)\\b"));
+        auto aliases = alias.globalMatch(source);
+        while (aliases.hasNext()) {
+            const auto a = aliases.next();
+            const QRegularExpression use(QStringLiteral("\\b%1\\.(\\w+)").arg(a.captured(1)));
+            auto uses = use.globalMatch(source);
+            while (uses.hasNext())
+                check(a.captured(2), a.captured(3), uses.next().captured(1));
         }
     }
 
+    // What SyncCoordinator::tick() relies on, for the ones that follow the
+    // clock.
     void refreshAllExistsOnEveryViewmodel()
     {
-        for (auto it = VIEWMODELS.cbegin(); it != VIEWMODELS.cend(); ++it)
-            QVERIFY2(exposedNames(it.value()).contains(QStringLiteral("refreshAll")), qPrintable(it.key()));
+        for (auto it = VIEWMODELS.cbegin(); it != VIEWMODELS.cend(); ++it) {
+            const QSet<QString> names = exposedNames(it.value());
+            QVERIFY2(names.contains(QStringLiteral("refreshAll")) || names.contains(QStringLiteral("tick")),
+                     qPrintable(it.key()));
+        }
     }
 
     // The list models' role names are part of the contract too: a delegate
@@ -166,14 +237,7 @@ private slots:
     // renamed on the C++ side.
     void everyRoleADelegateReadsExists()
     {
-        QSet<QString> roles;
-        for (QAbstractItemModel *model :
-             std::initializer_list<QAbstractItemModel *>{new ChapelListModel, new ScheduleListModel,
-                                                         new MenuListModel, new ActivityListModel}) {
-            for (const QByteArray &name : model->roleNames())
-                roles.insert(QString::fromLatin1(name));
-            delete model;
-        }
+        const QSet<QString> roles = allRoles();
         static const QRegularExpression modelRef(QStringLiteral("\\bmodel\\.(\\w+)"));
         for (const QString &path : qmlFiles()) {
             auto it = modelRef.globalMatch(stripComments(testing::readText(path)));
@@ -184,6 +248,27 @@ private slots:
                 QVERIFY2(roles.contains(role),
                          qPrintable(QStringLiteral("%1 reads model.%2, which no list model provides")
                                         .arg(QFileInfo(path).fileName(), role)));
+            }
+        }
+    }
+
+    // A delegate's `required property` is filled from the role of that name,
+    // and one with no such role stops the delegate being created at all — the
+    // list just stays empty. Components' own required properties (none, so
+    // far) would need listing here.
+    void everyRequiredPropertyIsARole()
+    {
+        const QSet<QString> roles = allRoles();
+        static const QRegularExpression required(QStringLiteral("required\\s+property\\s+\\w+\\s+(\\w+)"));
+        for (const QString &path : qmlFiles()) {
+            auto it = required.globalMatch(stripComments(testing::readText(path)));
+            while (it.hasNext()) {
+                const QString name = it.next().captured(1);
+                if (name == QStringLiteral("index") || name == QStringLiteral("modelData"))
+                    continue;
+                QVERIFY2(roles.contains(name),
+                         qPrintable(QStringLiteral("%1 requires `%2`, which no list model provides")
+                                        .arg(QFileInfo(path).fileName(), name)));
             }
         }
     }

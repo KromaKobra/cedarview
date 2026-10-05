@@ -52,7 +52,21 @@ public:
 class TransportError : public MycuError
 {
 public:
-    using MycuError::MycuError;
+    explicit TransportError(const QString &message, int httpStatus = 0)
+        : MycuError(message)
+        , m_httpStatus(httpStatus)
+    {}
+
+    // The status the server answered with, or 0 when no answer arrived at all
+    // (offline, timed out, the WebView not ready). The difference matters to
+    // the UI: only the second kind means "you're offline", and a 4xx on a
+    // request built from a remembered ID means the ID may be stale.
+    int httpStatus() const { return m_httpStatus; }
+
+    bool isClientError() const { return m_httpStatus >= 400 && m_httpStatus < 500; }
+
+private:
+    int m_httpStatus;
 };
 
 // The response arrived but did not have the shape we expect.

@@ -26,6 +26,9 @@ Item {
     // QtWebView it reports the URL that was *requested*, and a server-side
     // redirect never updates it. See onLoadingChanged.
     property string currentUrl: ""
+    readonly property bool loading: view.loading
+    readonly property int loadProgress: view.loadProgress
+    signal pageLoaded(string url)
     signal evalResult(string token, var result)
 
     function evalAsync(token, script) {
@@ -98,7 +101,9 @@ Item {
             if (request.url) {
                 root.currentUrl = request.url.toString()
             }
-            if (request.status === WebView.LoadFailedStatus) {
+            if (request.status === WebView.LoadSucceededStatus) {
+                root.pageLoaded(request.url.toString())
+            } else if (request.status === WebView.LoadFailedStatus) {
                 console.warn("load failed:", request.url, request.errorString)
             }
         }

@@ -22,6 +22,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QQuickWebEngineProfile>
+#include <QSignalSpy>
 #include <QTcpServer>
 #include <QTcpSocket>
 #include <QThread>
@@ -82,12 +83,38 @@ private:
             send(500, "text/plain", "server error");
         } else if (path.startsWith("/signin")) {
             send(200, "text/html", "<html><form action=\"x\"><input name=\"SAMLRequest\"></form></html>");
-        } else if (path.startsWith("/page")) {
+        } else if (path.startsWith("/page") || path.startsWith("/landing")) {
             send(200, "text/html", "<html><body>loopback</body></html>");
+        } else if (path.startsWith("/redirect")) {
+            // A sign-in's first hop: the page asked for sends the browser on.
+            socket->write("HTTP/1.0 302 Found\r\nLocation: /landing\r\nContent-Length: 0\r\n"
+                          "Connection: close\r\n\r\n");
+            socket->disconnectFromHost();
         } else {
             send(200, "application/json", largeBody());
         }
     }
+};
+
+// Writes down the surface's address every time it changes.
+class AddressLog : public QObject
+{
+    Q_OBJECT
+
+public:
+    explicit AddressLog(QObject *surface)
+        : m_surface(surface)
+    {
+        connect(surface, SIGNAL(currentUrlChanged()), this, SLOT(record()));
+    }
+
+    QStringList addresses;
+
+public slots:
+    void record() { addresses.append(m_surface->property("currentUrl").toString()); }
+
+private:
+    QObject *m_surface;
 };
 
 } // namespace
@@ -288,6 +315,26 @@ private slots:
 
     // get() blocks waiting for the GUI thread; on the GUI thread it would
     // deadlock, so it refuses instead.
+    // What the sign-in flow is built on (LoginController::onPageLoaded): the
+    // surface reports the address it was asked for at once, before the
+    // redirect — so an address alone is not a landing — and pageLoaded
+    // reports where the browser really ended up.
+    void aRedirectIsReportedAsTheAddressAskedForThenWhereItLanded()
+    {
+        AddressLog log(m_surface);
+        QSignalSpy loaded(m_surface, SIGNAL(pageLoaded(QString)));
+        QVERIFY(loaded.isValid());
+
+        QMetaObject::invokeMethod(m_surface, "navigate", Q_ARG(QVariant, m_server.origin() + "/redirect"));
+        QTRY_VERIFY_WITH_TIMEOUT(!loaded.isEmpty(), 20000);
+
+        QCOMPARE(loaded.size(), 1);
+        QCOMPARE(loaded.first().value(0).toString(), m_server.origin() + "/landing");
+        QVERIFY(!log.addresses.isEmpty());
+        QCOMPARE(log.addresses.first(), m_server.origin() + "/redirect");
+        QCOMPARE(log.addresses.last(), m_server.origin() + "/landing");
+    }
+
     void theGuiThreadIsRefused()
     {
         QVERIFY_THROWS_EXCEPTION(TransportError, m_transport->get(m_server.origin() + "/data"));

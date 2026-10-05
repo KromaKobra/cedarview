@@ -140,10 +140,16 @@ inline const QHash<QString, QString> SLOT_LABELS = {
 // `allergens` comes back from the API as a list of `{url, alt}` icon objects;
 // only the `alt` text ("dairy", "gluten", "egg", "soy"…) is worth keeping, so
 // the icon URLs are dropped at parse time.
+//
+// `name` is cleaned at parse time: the feed marks new dishes by appending
+// "NEW Menu ITEM!" to the name (in any case), and some Allergen Aware dishes
+// carry a trailing `*` that no key explains. The first becomes `isNew`, the
+// second is dropped, so neither ends up in a heading or a search.
 struct MenuItem
 {
     QString name;
     QStringList allergens;
+    bool isNew = false;
 
     QString allergenText() const { return allergens.join(QStringLiteral(", ")); }
 
@@ -215,6 +221,9 @@ struct UpcomingChapel
     QStringList speakers;
     QString description;
     bool willLivestream = false;
+    // The YouTube video the livestream plays in, or "". Opened in the
+    // browser by "Watch live"; nothing is loaded from YouTube by the app.
+    QString youtubeId;
 
     // Who is speaking, or the event's own name when nobody is named.
     QString who() const;
@@ -291,6 +300,9 @@ struct MealPlan
     std::optional<int> mealsRemaining;
     std::optional<double> diningDollars;
     std::optional<double> flexDollars;
+    // Meal exchanges left: swipes usable at the other venues (Chick-fil-A,
+    // Panda Express, The Cafe) during their exchange hours.
+    std::optional<int> mealExchanges;
 
     // The plan as Self-Service names it — "21 Meals", "Block 120" — or "".
     QString planName;
@@ -313,6 +325,11 @@ struct MealPlan
     // name when Self-Service gave one, with the cycle spelled out when the name
     // alone does not say it.
     QString planDescription() const;
+
+    // The count in the plan's name — 21 for "21 Meals", 120 for "Block 120" —
+    // which is how many meals a full period starts with. Nothing when the name
+    // has no number in it.
+    std::optional<int> mealsPerPeriod() const;
 
     bool hasAny() const;
 

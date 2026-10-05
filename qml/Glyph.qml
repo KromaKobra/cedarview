@@ -1,241 +1,153 @@
-// Every icon in the app, drawn rather than typed. (The header logo is the one
-// exception — since it became icon.png it is a raster image, which has the same
-// property that matters here: it does not depend on the device's fonts.)
+// Every icon in the app, drawn rather than typed. (The app's logo is the one
+// exception — it is icon.png, a raster image, which has the same property
+// that matters here: it does not depend on the device's fonts.)
 //
 // This is not a stylistic choice. The toolbar used to say "↻" (U+21BB); the
 // desktop font has it, and the phone's Roboto does not, so on a moto g power it
-// rendered as a tofu box — see the note that used to live in Main.qml. Any
-// character outside basic Latin is a per-device gamble, and an icon set is
-// exactly where that gamble is worst: a missing glyph in body text is ugly,
-// but a missing glyph in a tab bar leaves the user with no idea what the tab
-// is. Canvas is part of QtQuick proper, so this needs no font, no QtSvg (which
-// is not in the APK's module list) and no image assets.
+// rendered as a tofu box. Any character outside basic Latin is a per-device
+// gamble, and an icon set is exactly where that gamble is worst: a missing
+// glyph in a tab bar leaves the user with no idea what the tab is. Canvas is
+// part of QtQuick proper, so this needs no font, no QtSvg (which is not in
+// the APK's module list) and no image assets.
 //
-// Coordinates are fractions of the item's own size, so one drawing serves the
-// 22px tab icons and the 26px logo alike.
+// The drawings are SVG path data on a 24×24 grid — the same strings as the
+// v0.4 canvas's inline icons, so a new icon is copied, not redrawn. Context2D
+// takes a path as an SVG string directly. Strokes are 1.8 units with round
+// ends, scaled with the item, so one drawing serves a 14px chip and a 24px
+// tab alike. A part marked `fill` is filled instead (dots, the play button,
+// a filled star).
 
 import QtQuick
 
 Canvas {
     id: glyph
 
-    //: "tree" | "refresh" | "summary" | "chapel" | "dining" | "chucks"
-    //: | "buildings" | "chevronLeft" | "chevronRight"
-    //: "tree" is no longer drawn anywhere — the header uses icon.png now — but
-    //: it stays as the fallback mark for anywhere an image would be wrong.
-    property string kind: "tree"
+    property string kind: "info"
     property color color: "#FFFFFF"
+    // In 24ths of the item's size.
+    property real stroke: 1.8
 
-    implicitWidth: 22
-    implicitHeight: 22
+    implicitWidth: 20
+    implicitHeight: 20
     antialiasing: true
 
     // Canvas caches its last frame, so a colour change — which is exactly what
     // selecting a tab does — is invisible without an explicit repaint.
     onColorChanged: requestPaint()
     onKindChanged: requestPaint()
+    onWidthChanged: requestPaint()
+    onHeightChanged: requestPaint()
+
+    // A circle and a rounded rectangle as path data, since SVG's <circle> and
+    // <rect> are elements rather than path commands.
+    function circle(cx, cy, r) {
+        return "M" + (cx - r) + " " + cy + "a" + r + " " + r + " 0 1 0 " + (2 * r) + " 0"
+               + "a" + r + " " + r + " 0 1 0 " + (-2 * r) + " 0z"
+    }
+    function rect(x, y, w, h, r) {
+        return "M" + (x + r) + " " + y + "h" + (w - 2 * r) + "a" + r + " " + r + " 0 0 1 " + r + " " + r
+               + "v" + (h - 2 * r) + "a" + r + " " + r + " 0 0 1 " + (-r) + " " + r
+               + "h" + (-(w - 2 * r)) + "a" + r + " " + r + " 0 0 1 " + (-r) + " " + (-r)
+               + "v" + (-(h - 2 * r)) + "a" + r + " " + r + " 0 0 1 " + r + " " + (-r) + "z"
+    }
+
+    // Each icon is a list of parts: a path, or { d, fill: true }.
+    function parts(name) {
+        switch (name) {
+        // ---- The four tabs
+        case "today":
+            return [rect(3.5, 5, 17, 15.5, 4), "M3.5 10h17M8 3v4M16 3v4", { d: circle(12, 15, 1.6), fill: true }]
+        case "chapel":
+            return ["M12 2.5v4M10 4.5h4M5 21v-9.5l7-5 7 5V21M10 21v-4.5a2 2 0 0 1 4 0V21M3 21h18"]
+        case "dining":
+            return ["M7 3v6.5a2.5 2.5 0 0 0 5 0V3M9.5 3v18M17.5 21V3c-2.2 0-3.5 2.6-3.5 6.5 0 2.6 1.2 3.5 3.5 3.5"]
+        case "campus":
+            return ["M4 21V6.5L11 3v18M11 9l9 3.5V21M2.5 21h19M7 9.5v.01M7 13v.01M7 16.5v.01M15 15v.01M15 18v.01"]
+        // ---- Header and sheets
+        case "search":
+            return [circle(11, 11, 6.5), "M16 16l4.5 4.5"]
+        case "more":
+            return [{ d: circle(12, 5.5, 1.5), fill: true }, { d: circle(12, 12, 1.5), fill: true },
+                    { d: circle(12, 18.5, 1.5), fill: true }]
+        case "close":
+            return ["M6 6l12 12M18 6L6 18"]
+        case "back":
+        case "chevronLeft":
+            return ["M15 6l-6 6 6 6"]
+        case "chevronRight":
+            return ["M9 6l6 6-6 6"]
+        case "chevronDown":
+            return ["M6 9l6 6 6-6"]
+        case "chevronUp":
+            return ["M6 15l6-6 6 6"]
+        // ---- Status
+        case "checkCircle":
+            return [circle(12, 12, 8.5), "M8.5 12.3l2.3 2.3 4.7-5"]
+        case "info":
+            return [circle(12, 12, 8.5), "M12 11v5M12 8v.01"]
+        case "clock":
+            return [circle(12, 12, 8.5), "M12 7.5V12l3 2"]
+        case "wifiOff":
+            return ["M3 3l18 18M8.5 16.4a5 5 0 0 1 7 0M5 12.9a10 10 0 0 1 4.5-2.5M14.6 10.5A10 10 0 0 1 19 12.9"
+                    + "M2 9.4a14.5 14.5 0 0 1 4-2.6M10.5 5.6A14.5 14.5 0 0 1 22 9.4M12 20h.01"]
+        case "lock":
+            return [rect(5, 10.5, 14, 10, 3), "M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"]
+        case "shield":
+            return ["M12 3l7.5 3v5.5c0 4.5-3.2 8-7.5 9.5-4.3-1.5-7.5-5-7.5-9.5V6z", "M9 12l2 2 4-4"]
+        case "refresh":
+            return ["M20 11a8 8 0 1 0-2.3 5.7", "M20 4.5V11h-6.5"]
+        // ---- Dining
+        case "plate":
+            return [circle(12, 12, 8), circle(12, 12, 4)]
+        case "card":
+            return [rect(3, 6, 18, 13, 3), "M3 10.5h18M7 15h3"]
+        case "swap":
+            return ["M4 8h14l-3.5-3.5M20 16H6l3.5 3.5"]
+        case "leaf":
+            return ["M5 19c0-8 5-13 14-14 0 9-5 14-13 14z", "M5 19l7-7"]
+        case "pot":
+            return ["M4 10h16v6a4 4 0 0 1-4 4H8a4 4 0 0 1-4-4z", "M2 10h20M9 6.5c0-1 1-1.5 1-2.5M13.5 6.5c0-1 1-1.5 1-2.5"]
+        // ---- Campus and chapel
+        case "moon":
+            return ["M20 14.2A8.5 8.5 0 1 1 9.8 4a7 7 0 0 0 10.2 10.2z"]
+        case "live":
+            return [circle(12, 12, 2),
+                    "M8.5 8.5a5 5 0 0 0 0 7M15.5 8.5a5 5 0 0 1 0 7M5.6 5.6a9 9 0 0 0 0 12.8M18.4 5.6a9 9 0 0 1 0 12.8"]
+        case "play":
+            return [{ d: "M8 5.5v13l11-6.5z", fill: true }]
+        case "star":
+            return [{ d: "M12 3.8l2.5 5.1 5.6.8-4 3.9 1 5.6-5.1-2.7-5 2.7.9-5.6-4-3.9 5.6-.8z", fill: true }]
+        case "starOutline":
+            return ["M12 3.8l2.5 5.1 5.6.8-4 3.9 1 5.6-5.1-2.7-5 2.7.9-5.6-4-3.9 5.6-.8z"]
+        case "sun":
+            return [circle(12, 12, 4), "M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4"
+                    + "M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"]
+        case "external":
+            return ["M14 4h6v6M20 4l-9 9", "M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"]
+        case "signOut":
+            return ["M15 4h3a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2h-3M10 16l-4-4 4-4M6 12h10"]
+        }
+        return []
+    }
 
     onPaint: {
         const ctx = getContext("2d")
-        const w = width
-        const h = height
         ctx.reset()
+        ctx.scale(width / 24, height / 24)
         ctx.strokeStyle = glyph.color
         ctx.fillStyle = glyph.color
+        ctx.lineWidth = glyph.stroke
         ctx.lineCap = "round"
         ctx.lineJoin = "round"
 
-        switch (kind) {
-        case "tree":    paintTree(ctx, w, h);    break
-        case "refresh": paintRefresh(ctx, w, h); break
-        case "summary": paintSummary(ctx, w, h); break
-        case "chapel":  paintChapel(ctx, w, h);  break
-        case "dining":  paintDining(ctx, w, h);  break
-        case "chucks":  paintChucks(ctx, w, h);  break
-        case "buildings": paintBuildings(ctx, w, h); break
-        case "chevronLeft":  paintChevron(ctx, w, h, -1); break
-        case "chevronRight": paintChevron(ctx, w, h, 1);  break
-        }
-    }
-
-    // ---- The mark: a cedar, filled ---------------------------------------
-    function paintTree(ctx, w, h) {
-        ctx.beginPath()
-        ctx.moveTo(0.50 * w, 0.04 * h)
-        ctx.lineTo(0.79 * w, 0.45 * h)
-        ctx.lineTo(0.21 * w, 0.45 * h)
-        ctx.closePath()
-        ctx.fill()
-
-        ctx.beginPath()
-        ctx.moveTo(0.50 * w, 0.28 * h)
-        ctx.lineTo(0.93 * w, 0.80 * h)
-        ctx.lineTo(0.07 * w, 0.80 * h)
-        ctx.closePath()
-        ctx.fill()
-
-        ctx.fillRect(0.43 * w, 0.78 * h, 0.14 * w, 0.20 * h)
-    }
-
-    // ---- Refresh: an open circle with a head on the open end --------------
-    function paintRefresh(ctx, w, h) {
-        const cx = 0.5 * w
-        const cy = 0.52 * h
-        const r = 0.34 * Math.min(w, h)
-        const start = -0.42 * Math.PI
-        const stroke = 0.115 * Math.min(w, h)
-
-        ctx.lineWidth = stroke
-        ctx.beginPath()
-        ctx.arc(cx, cy, r, start, 1.30 * Math.PI, false)
-        ctx.stroke()
-
-        // Tip along the tangent, base across the stroke, so the head reads as
-        // part of the same line rather than a triangle parked beside it.
-        const size = 0.20 * Math.min(w, h)
-        const px = cx + r * Math.cos(start)
-        const py = cy + r * Math.sin(start)
-        const tx = Math.sin(start)
-        const ty = -Math.cos(start)
-        const nx = Math.cos(start)
-        const ny = Math.sin(start)
-
-        ctx.beginPath()
-        ctx.moveTo(px + tx * size * 1.1, py + ty * size * 1.1)
-        ctx.lineTo(px - nx * size * 0.85, py - ny * size * 0.85)
-        ctx.lineTo(px + nx * size * 0.85, py + ny * size * 0.85)
-        ctx.closePath()
-        ctx.fill()
-    }
-
-    // ---- Summary: bars ----------------------------------------------------
-    function paintSummary(ctx, w, h) {
-        const base = 0.84 * h
-        const bw = 0.17 * w
-        const tops = [0.46, 0.20, 0.58]
-        const xs = [0.15, 0.415, 0.68]
-        for (let i = 0; i < 3; ++i) {
-            ctx.fillRect(xs[i] * w, tops[i] * h, bw, base - tops[i] * h)
-        }
-    }
-
-    // ---- Chapel: a roof, walls and an arched door -------------------------
-    function paintChapel(ctx, w, h) {
-        ctx.lineWidth = 0.095 * Math.min(w, h)
-
-        ctx.beginPath()
-        ctx.moveTo(0.10 * w, 0.46 * h)
-        ctx.lineTo(0.50 * w, 0.13 * h)
-        ctx.lineTo(0.90 * w, 0.46 * h)
-        ctx.stroke()
-
-        ctx.beginPath()
-        ctx.moveTo(0.20 * w, 0.44 * h)
-        ctx.lineTo(0.20 * w, 0.88 * h)
-        ctx.lineTo(0.80 * w, 0.88 * h)
-        ctx.lineTo(0.80 * w, 0.44 * h)
-        ctx.stroke()
-
-        // Filled, not stroked. At the 18px the tab bar draws this at, a
-        // stroked doorway is three hairlines that merge into a smudge; a solid
-        // one still reads as a door.
-        ctx.beginPath()
-        ctx.arc(0.50 * w, 0.68 * h, 0.13 * w, Math.PI, 2 * Math.PI, false)
-        ctx.lineTo(0.63 * w, 0.88 * h)
-        ctx.lineTo(0.37 * w, 0.88 * h)
-        ctx.closePath()
-        ctx.fill()
-    }
-
-    // ---- Dining: fork and knife -------------------------------------------
-    function paintDining(ctx, w, h) {
-        ctx.lineWidth = 0.09 * Math.min(w, h)
-
-        // Fork: three tines onto a shoulder, then the handle.
-        for (const x of [0.22, 0.34, 0.46]) {
+        for (const part of parts(kind)) {
+            const filled = typeof part === "object"
             ctx.beginPath()
-            ctx.moveTo(x * w, 0.12 * h)
-            ctx.lineTo(x * w, 0.34 * h)
-            ctx.stroke()
+            ctx.path = filled ? part.d : part
+            if (filled)
+                ctx.fill()
+            else
+                ctx.stroke()
         }
-        ctx.beginPath()
-        ctx.moveTo(0.22 * w, 0.34 * h)
-        ctx.lineTo(0.46 * w, 0.34 * h)
-        ctx.moveTo(0.34 * w, 0.34 * h)
-        ctx.lineTo(0.34 * w, 0.90 * h)
-        ctx.stroke()
-
-        // Knife: a tapered blade over a straight handle.
-        ctx.beginPath()
-        ctx.moveTo(0.62 * w, 0.46 * h)
-        ctx.lineTo(0.62 * w, 0.24 * h)
-        ctx.quadraticCurveTo(0.71 * w, 0.06 * h, 0.76 * w, 0.24 * h)
-        ctx.lineTo(0.76 * w, 0.46 * h)
-        ctx.closePath()
-        ctx.fill()
-
-        ctx.beginPath()
-        ctx.moveTo(0.69 * w, 0.44 * h)
-        ctx.lineTo(0.69 * w, 0.90 * h)
-        ctx.stroke()
-    }
-
-    // ---- Chucks: a serving cloche on its tray -----------------------------
-    // Not a second fork and knife: Dining sits beside it in the tab bar, and
-    // two tabs with the same picture are two tabs you have to read.
-    function paintChucks(ctx, w, h) {
-        // The dome, filled: a half-disc standing on the tray.
-        ctx.beginPath()
-        ctx.arc(0.50 * w, 0.72 * h, 0.36 * w, Math.PI, 2 * Math.PI, false)
-        ctx.closePath()
-        ctx.fill()
-
-        // The knob on top.
-        ctx.beginPath()
-        ctx.arc(0.50 * w, 0.27 * h, 0.07 * Math.min(w, h), 0, 2 * Math.PI, false)
-        ctx.fill()
-
-        // The tray, a touch wider than the dome.
-        ctx.lineWidth = 0.09 * Math.min(w, h)
-        ctx.beginPath()
-        ctx.moveTo(0.06 * w, 0.84 * h)
-        ctx.lineTo(0.94 * w, 0.84 * h)
-        ctx.stroke()
-    }
-
-    // ---- Buildings: a tower with windows beside a lower block --------------
-    // Flat roofs and a grid of windows, so it cannot be mistaken for Chapel's
-    // pitched roof sitting beside it in the tab bar.
-    function paintBuildings(ctx, w, h) {
-        ctx.lineWidth = 0.095 * Math.min(w, h)
-
-        ctx.beginPath()
-        ctx.moveTo(0.16 * w, 0.88 * h)
-        ctx.lineTo(0.16 * w, 0.12 * h)
-        ctx.lineTo(0.58 * w, 0.12 * h)
-        ctx.lineTo(0.58 * w, 0.88 * h)
-        ctx.moveTo(0.58 * w, 0.44 * h)
-        ctx.lineTo(0.86 * w, 0.44 * h)
-        ctx.lineTo(0.86 * w, 0.88 * h)
-        ctx.moveTo(0.06 * w, 0.88 * h)
-        ctx.lineTo(0.94 * w, 0.88 * h)
-        ctx.stroke()
-
-        // Filled, like Chapel's door: stroked windows merge at 17px.
-        const size = 0.10 * w
-        for (const y of [0.26, 0.44, 0.62])
-            for (const x of [0.27, 0.42])
-                ctx.fillRect(x * w - size / 2, y * h, size, 0.10 * h)
-    }
-
-    // ---- Chevrons: day paging on the Chucks tab ---------------------------
-    // `dir` is -1 for left, 1 for right; one drawing mirrored about the middle.
-    function paintChevron(ctx, w, h, dir) {
-        ctx.lineWidth = 0.13 * Math.min(w, h)
-        ctx.beginPath()
-        ctx.moveTo((0.5 - 0.12 * dir) * w, 0.18 * h)
-        ctx.lineTo((0.5 + 0.18 * dir) * w, 0.50 * h)
-        ctx.lineTo((0.5 - 0.12 * dir) * w, 0.82 * h)
-        ctx.stroke()
     }
 }

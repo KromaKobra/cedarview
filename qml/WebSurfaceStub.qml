@@ -11,6 +11,10 @@ Item {
     id: root
 
     property string currentUrl: "https://selfservice.cedarville.edu/cedarinfo/chapelskip"
+    readonly property bool loading: false
+    readonly property int loadProgress: 100
+    // Never emitted: nothing loads here.
+    signal pageLoaded(string url)
     signal evalResult(string token, var result)
 
     function evalAsync(token, script) {

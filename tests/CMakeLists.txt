@@ -16,6 +16,7 @@ endfunction()
 # The core: parsing and persistence, no GUI.
 cedarview_test(tst_transport LIBS cedarview_core cedarview_ui)
 cedarview_test(tst_session LIBS cedarview_core)
+cedarview_test(tst_cache LIBS cedarview_core)
 cedarview_test(tst_calendar LIBS cedarview_core)
 cedarview_test(tst_curfew LIBS cedarview_core)
 cedarview_test(tst_chapel_provider LIBS cedarview_core)
@@ -28,8 +29,12 @@ cedarview_test(tst_core_is_gui_free LIBS cedarview_core)
 cedarview_test(tst_tasks LIBS cedarview_ui)
 cedarview_test(tst_login_flow LIBS cedarview_ui)
 cedarview_test(tst_viewmodels LIBS cedarview_ui)
+cedarview_test(tst_hours LIBS cedarview_ui)
+cedarview_test(tst_sync LIBS cedarview_ui)
 cedarview_test(tst_qml_contract LIBS cedarview_ui)
 cedarview_test(tst_surfaces LIBS cedarview_ui)
+# A QML component run for real: the sheet's open/close transitions.
+cedarview_test(tst_bottom_sheet LIBS Qt6::Gui Qt6::Quick)
 
 # The C++ transport against a real browser: offscreen QtWebEngine fetching
 # from a loopback server. The one test that exercises the in-page fetch end

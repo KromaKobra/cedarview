@@ -9,14 +9,19 @@
 // 2. Create QGuiApplication.
 // 3. backend->afterApp() — anything that needs the application but must come
 //    before the QML engine loads.
-// 4. Build the object graph, expose it to QML, load Main.qml.
+// 4. Build the object graph. The viewmodels read back what the last run saved
+//    as they are constructed, so the first frame already has figures in it.
+// 5. Expose it to QML and load Main.qml.
+// 6. Start the login flow, then the fetches (SyncCoordinator).
 //
 // Run it:
 //
-//     cedarview                      # real thing: log in, fetch live data
-//     cedarview --demo               # fixtures only; no network, no login
+//     cedarview                      # real thing: sign in, fetch live data
+//     cedarview --demo               # starts in sample-data preview; no network
 //     cedarview --demo -v            # …with debug logging
+//     cedarview --shoot shots/       # screenshots of every screen, then exit
 
+#include "core/cache.h"
 #include "core/httptransport.h"
 #include "core/log.h"
 #include "core/providers/chapel.h"
@@ -25,21 +30,35 @@
 #include "core/transport.h"
 #include "platform/backend.h"
 #include "ui/bridge.h"
-#include "ui/demotransport.h"
 #include "ui/login.h"
+#include "ui/modetransport.h"
 #include "ui/settings.h"
+#include "ui/sync.h"
+#include "ui/viewmodels/campus.h"
 #include "ui/viewmodels/chapel.h"
-#include "ui/viewmodels/dining.h"
 #include "ui/viewmodels/curfew.h"
-#include "ui/viewmodels/semester.h"
+#include "ui/viewmodels/dining.h"
+#include "ui/viewmodels/hours.h"
+#include "ui/viewmodels/search.h"
+#include "ui/viewmodels/today.h"
 #include "ui/webviewtransport.h"
 
 #ifdef Q_OS_ANDROID
 #  include "platform/android_sessiontransport.h"
 #  include "platform/android_urlprobe.h"
+#else
+#  include <QDir>
+#  include <QQuickItem>
+#  include <QQuickWindow>
+#  include <QTemporaryDir>
+#  include <QTimer>
+#  include <condition_variable>
+#  include <mutex>
 #endif
 
 #include <QCommandLineParser>
+#include <QDirIterator>
+#include <QFontDatabase>
 #include <QGuiApplication>
 #include <QLoggingCategory>
 #include <QQmlApplicationEngine>
@@ -57,9 +76,11 @@ namespace {
 struct Options
 {
     bool demo = false;
-    QString fixtures = QStringLiteral(CEDARVIEW_FIXTURES_DIR);
+    QString fixtures = QStringLiteral(":/fixtures");
     QString stateDir;
     bool verbose = false;
+    QString shootDir;
+    QDateTime clock;
 };
 
 // The command line, read before the application object exists — whether the
@@ -85,20 +106,29 @@ Options parseOptions(int argc, char **argv)
     const QCommandLineOption help = parser.addHelpOption();
     const QCommandLineOption version(QStringLiteral("version"), QStringLiteral("Show the version and exit."));
     const QCommandLineOption demo(QStringLiteral("demo"),
-                                  QStringLiteral("Run against tests/fixtures/ instead of the network — "
-                                                 "no login, no browser, no Cedarville. Use this to work "
-                                                 "on the UI."));
+                                  QStringLiteral("Start in sample-data preview, with no network, no sign-in "
+                                                 "and no browser. Use this to work on the UI."));
     const QCommandLineOption fixtures(QStringLiteral("fixtures"),
-                                      QStringLiteral("Fixture directory for --demo (default: %1).")
+                                      QStringLiteral("Where sample data comes from (default: the copy built "
+                                                     "into the app, %1).")
                                           .arg(options.fixtures),
                                       QStringLiteral("dir"));
     const QCommandLineOption stateDir(QStringLiteral("state-dir"),
-                                      QStringLiteral("Override where session metadata and the cookie "
-                                                     "jar live."),
+                                      QStringLiteral("Override where session metadata, the saved data and the "
+                                                     "cookie jar live."),
                                       QStringLiteral("dir"));
     const QCommandLineOption verbose({QStringLiteral("v"), QStringLiteral("verbose")},
                                      QStringLiteral("Debug logging."));
-    parser.addOptions({version, demo, fixtures, stateDir, verbose});
+    const QCommandLineOption shoot(QStringLiteral("shoot"),
+                                   QStringLiteral("Development: save a screenshot of every screen, in both "
+                                                  "themes and two phone widths, into <dir>, then exit. Implies "
+                                                  "--demo and a throwaway state directory."),
+                                   QStringLiteral("dir"));
+    const QCommandLineOption clock(QStringLiteral("clock"),
+                                   QStringLiteral("Development: pretend it is this local time "
+                                                  "(2026-09-17T09:42)."),
+                                   QStringLiteral("when"));
+    parser.addOptions({version, demo, fixtures, stateDir, verbose, shoot, clock});
 
     if (!parser.parse(args)) {
         std::fprintf(stderr, "%s\n\n%s", qPrintable(parser.errorText()), qPrintable(parser.helpText()));
@@ -118,15 +148,162 @@ Options parseOptions(int argc, char **argv)
         options.fixtures = parser.value(fixtures);
     options.stateDir = parser.value(stateDir);
     options.verbose = parser.isSet(verbose);
+    options.shootDir = parser.value(shoot);
+    if (!options.shootDir.isEmpty())
+        options.demo = true;
+    if (parser.isSet(clock)) {
+        options.clock = QDateTime::fromString(parser.value(clock), Qt::ISODate);
+        if (!options.clock.isValid()) {
+            std::fprintf(stderr, "--clock wants an ISO date and time, like 2026-09-17T09:42\n");
+            std::exit(2);
+        }
+    }
 #endif
     return options;
 }
+
+// The two typefaces, as static instances bundled with the QML (qml/fonts/,
+// with their OFL licences). Registered before QML loads so Theme.qml's family
+// names resolve on the first frame. A font that fails to load leaves the
+// platform's own in its place — the text still renders.
+void registerFonts()
+{
+    QDirIterator it(QStringLiteral(":/qt/qml/CedarView/fonts"), {QStringLiteral("*.ttf")});
+    int loaded = 0;
+    while (it.hasNext()) {
+        if (QFontDatabase::addApplicationFont(it.next()) >= 0)
+            ++loaded;
+        else
+            qCWarning(lcApp).noquote() << "could not load font" << it.filePath();
+    }
+    qCDebug(lcApp) << "fonts:" << loaded << "loaded";
+}
+
+#ifndef Q_OS_ANDROID
+// --shoot only: holds the sample data back until released, so the first
+// screenshots catch the loading state — skeletons — rather than racing it.
+class PausedTransport : public Transport
+{
+public:
+    explicit PausedTransport(TransportPtr inner) : m_inner(std::move(inner)) {}
+
+    Response get(const QString &path) override
+    {
+        {
+            std::unique_lock lock(m_mutex);
+            m_released.wait(lock, [this] { return m_open; });
+        }
+        return m_inner->get(path);
+    }
+
+    void release()
+    {
+        {
+            const std::lock_guard lock(m_mutex);
+            m_open = true;
+        }
+        m_released.notify_all();
+    }
+
+private:
+    TransportPtr m_inner;
+    std::mutex m_mutex;
+    std::condition_variable m_released;
+    bool m_open = false;
+};
+
+// --shoot: every screen, in both themes and at two phone widths, saved as
+// PNGs, then the app exits. Each shot is `<theme>-<width>-<screen>.png`. The
+// screens are put up by Main.qml's showScreen(), so nothing here knows the
+// QML's insides. Heights follow the canvas's boards, so a long tab is shot
+// whole.
+void shoot(QQmlApplicationEngine &engine, const QString &dir, SettingsController &settings,
+           LoginController &login, SyncCoordinator &sync, const std::shared_ptr<QDateTime> &clock,
+           const std::shared_ptr<PausedTransport> &paused)
+{
+    auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+    if (!window) {
+        qCCritical(lcApp) << "--shoot: no window";
+        QCoreApplication::exit(1);
+        return;
+    }
+    QDir().mkpath(dir);
+
+    struct Shot
+    {
+        QString screen;
+        int height;
+        QTime at; // a time of day for the clock, or null to leave it
+    };
+    const QList<Shot> shots = {
+        {QStringLiteral("welcome"), 844, {}},
+        {QStringLiteral("today"), 844, QTime(9, 42)},
+        {QStringLiteral("today-night"), 844, QTime(22, 48)},
+        {QStringLiteral("chapel"), 1600, QTime(9, 42)},
+        {QStringLiteral("chapel-sheet"), 844, QTime(9, 42)},
+        {QStringLiteral("plan"), 1250, QTime(9, 42)},
+        {QStringLiteral("menu"), 1500, QTime(9, 42)},
+        {QStringLiteral("hours"), 1300, QTime(9, 42)},
+        {QStringLiteral("campus"), 1800, QTime(22, 48)},
+        {QStringLiteral("search"), 844, QTime(9, 42)},
+    };
+
+    auto settle = [] {
+        // Long enough for bindings, a layout pass and the fade-ins.
+        QEventLoop loop;
+        QTimer::singleShot(700, &loop, &QEventLoop::quit);
+        loop.exec();
+    };
+    auto grab = [&](const QString &name) {
+        const QString path = QDir(dir).filePath(name + QStringLiteral(".png"));
+        if (!window->grabWindow().save(path))
+            qCWarning(lcApp).noquote() << "--shoot: could not write" << path;
+        else
+            qCInfo(lcApp).noquote() << "--shoot:" << path;
+    };
+    auto show = [&](const QString &screen) {
+        QMetaObject::invokeMethod(window, "showScreen", Q_ARG(QVariant, screen));
+    };
+
+    // Cold: nothing saved, nothing back yet — the skeletons.
+    window->resize(360, 844);
+    for (const bool light : {false, true}) {
+        settings.setLightMode(light);
+        show(QStringLiteral("today"));
+        settle();
+        grab(QStringLiteral("%1-360-cold-today").arg(light ? u"light" : u"dark"));
+    }
+    paused->release();
+    settle();
+
+    for (const bool light : {false, true}) {
+        settings.setLightMode(light);
+        for (const int width : {360, 412}) {
+            for (const Shot &shot : shots) {
+                if (shot.at.isValid()) {
+                    *clock = QDateTime(clock->date(), shot.at);
+                    sync.tick();
+                }
+                if (shot.screen == u"welcome")
+                    login.exitPreview();
+                else if (!login.inPreview())
+                    login.startPreview();
+                window->resize(width, shot.height);
+                show(shot.screen);
+                settle();
+                grab(QStringLiteral("%1-%2-%3").arg(light ? u"light" : u"dark").arg(width).arg(shot.screen));
+            }
+        }
+    }
+    QCoreApplication::exit(0);
+}
+#endif
 
 } // namespace
 
 int main(int argc, char **argv)
 {
-    const Options options = parseOptions(argc, argv);
+    Options options = parseOptions(argc, argv);
 
 #ifndef Q_OS_ANDROID
     // To the terminal, or to whatever the output is piped into — never quietly
@@ -135,6 +312,14 @@ int main(int argc, char **argv)
     // Qt's logcat handler.)
     if (!qEnvironmentVariableIsSet("QT_FORCE_STDERR_LOGGING"))
         qputenv("QT_FORCE_STDERR_LOGGING", "1");
+    // Screenshots are taken of a throwaway profile, never the user's.
+    std::unique_ptr<QTemporaryDir> shootState;
+    if (!options.shootDir.isEmpty()) {
+        shootState = std::make_unique<QTemporaryDir>();
+        options.stateDir = shootState->path();
+        if (!options.clock.isValid())
+            options.clock = QDateTime(QDate(2026, 9, 17), QTime(9, 42));
+    }
 #endif
 
     // "INFO mycu.login: …", the shape the log has always had.
@@ -163,10 +348,20 @@ int main(int argc, char **argv)
     // --- 3. Web engine init that must follow it -----------------------------
     if (!options.demo)
         backend->afterApp();
+    registerFonts();
 
     // --- 4. Object graph ----------------------------------------------------
     SessionStore store(options.stateDir);
     store.ensureDirs();
+    const PayloadCache cache(store.stateDir());
+    const Storage storage{store, cache};
+
+    // The clock everything reads. Real time, unless --clock (or --shoot) pins
+    // it — then the sample data is redated around that day too.
+    auto pinned = std::make_shared<QDateTime>(options.clock);
+    const std::function<QDateTime()> clock = options.clock.isValid()
+        ? std::function<QDateTime()>([pinned] { return *pinned; })
+        : std::function<QDateTime()>([] { return QDateTime::currentDateTime(); });
 
     // The app talks to three services with different auth, so requests are
     // routed by origin (see TransportRouter):
@@ -179,19 +374,17 @@ int main(int argc, char **argv)
     // Routing is a correctness requirement, not a shortcut: an in-page fetch()
     // is bound by the same-origin policy, so a WebView parked on Self-Service
     // could not reach the dining API even if we wanted it to.
+    //
+    // Sample-data preview swaps all of it for the bundled fixtures at runtime
+    // (ModeTransport). --demo has no live side at all.
     std::shared_ptr<WebViewTransport> sessionTransport;
-    TransportPtr transport;
+    TransportPtr live;
     QString surfaceQml;
+    bool nativeSession = false;
     if (options.demo) {
-        auto fixtures = std::make_shared<FixtureTransport>(options.fixtures);
-        // The captured menus are for two days in September 2026; this moves
-        // them onto whatever dates are asked for, so Home Cooking has a menu
-        // today and on any day paged to.
-        auto router = std::make_shared<TransportRouter>(fixtures);
-        router->route(DINING_BASE, std::make_shared<RedatedMenusTransport>(fixtures));
-        transport = router;
+        live = std::make_shared<UnavailableTransport>();
         surfaceQml = QStringLiteral("WebSurfaceStub.qml");
-        qCInfo(lcApp).noquote() << "demo mode: serving fixtures from" << options.fixtures;
+        qCInfo(lcApp).noquote() << "demo mode: sample data from" << options.fixtures;
     } else {
         sessionTransport = std::make_shared<WebViewTransport>();
         // Both of these are public services with no session of their own, so
@@ -204,32 +397,61 @@ int main(int argc, char **argv)
         // WebView's cookies. The WebView still signs you in, but no script
         // is run in it: QtWebView 6.11's runJavaScript runs its callback on
         // the wrong thread and crashes the app. See
-        // platform/android_sessiontransport.h.
+        // platform/android_sessiontransport.h. It also means the personal
+        // figures need no page loaded first, which is what lets a launch go
+        // straight to fetching them.
         router->route(BASE_URL, std::make_shared<AndroidSessionTransport>());
+        nativeSession = true;
 #endif
-        transport = router;
+        live = router;
         surfaceQml = backend->surfaceQml();
         backend->configureProfile(store.profileDir());
     }
+    TransportPtr preview = makePreviewTransport(options.fixtures, [clock] { return clock().date(); });
+#ifndef Q_OS_ANDROID
+    std::shared_ptr<PausedTransport> paused;
+    if (!options.shootDir.isEmpty()) {
+        paused = std::make_shared<PausedTransport>(preview);
+        preview = paused;
+    }
+#endif
+    auto mode = std::make_shared<ModeTransport>(live, preview);
 
     LoginController login(store, backend.get(), options.demo);
-    ChapelViewModel chapel(transport, store);
-    DiningViewModel dining(transport);
-    // No transport: the term's dates are in core/calendar.h, because no
-    // Cedarville service publishes them. See that file for the apology.
-    SemesterViewModel semester;
-    // The same again for curfew; its rule is in core/curfew.h.
+    ChapelViewModel chapel(mode, storage);
+    DiningViewModel dining(mode, storage);
+    // No transport for these: curfew and opening hours are hand-entered
+    // (core/curfew.h, core/hours.h), because no Cedarville service publishes
+    // them.
     CurfewViewModel curfew;
+    HoursViewModel hours;
+    CampusViewModel campus;
     // Default QSettings, so it must be built after setApplicationName and
     // setOrganizationName above — otherwise it writes to a file named after
     // the executable.
     SettingsController settings;
+    dining.attachSettings(&settings);
+    campus.attachSettings(&settings);
+    TodayViewModel today(&chapel, &dining, &curfew);
+    SearchViewModel search(&chapel, &dining, &settings);
+
+    chapel.now = clock;
+    dining.now = clock;
+    curfew.now = clock;
+    hours.now = clock;
+    campus.now = clock;
+    today.now = clock;
+    search.now = clock;
+
+    SyncCoordinator sync({&login, &chapel, &dining, &curfew, &hours, &campus, &today, mode, cache, nativeSession});
+    sync.now = clock;
+    sync.tick();
 
     // The system bars follow the app's theme, not the phone's. Edge to edge
     // (forced from targetSdk 35) puts the status bar over the app's own
-    // ribbon, and Android picks light or dark status-bar icons from the colour
+    // header, and Android picks light or dark status-bar icons from the colour
     // scheme Qt reports — so a dark app on a phone in light mode would
-    // otherwise get dark icons on a dark ribbon. Harmless on desktop, where
+    // otherwise get dark icons on a dark header. Harmless on desktop, where
     // the app paints every colour itself anyway.
     auto applyColorScheme = [&] {
         QGuiApplication::styleHints()->setColorScheme(settings.lightMode() ? Qt::ColorScheme::Light
@@ -238,27 +460,18 @@ int main(int argc, char **argv)
     applyColorScheme();
     QObject::connect(&settings, &SettingsController::changed, &app, applyColorScheme);
 
+    // Back in the foreground: whatever went stale while the app was away.
+    QObject::connect(&app, &QGuiApplication::applicationStateChanged, &sync, [&sync](Qt::ApplicationState state) {
+        if (state == Qt::ApplicationActive)
+            sync.resume();
+    });
+
     Bridge bridge(sessionTransport.get(), CHAPEL_PATH, backend->name(), surfaceQml);
 
-    // The expiry loop, in two connections:
-    //   a failed fetch  -> reopen the sign-in surface
-    //   a completed login -> retry the fetch
-    QObject::connect(&chapel, &ChapelViewModel::sessionExpired, &login, &LoginController::onSessionExpired);
-    QObject::connect(&login, &LoginController::loggedIn, &chapel, &ChapelViewModel::refresh);
-    QObject::connect(&login, &LoginController::loggedIn, &dining, &DiningViewModel::refreshPlan);
-    QObject::connect(&login, &LoginController::signedOut, &app, [] { qCInfo(lcApp) << "signed out"; });
-
-    if (!options.demo) {
-        // Neither of these needs a session, so they do not wait for the login
-        // flow — the menu and the next speaker are on screen while you sign in.
-        dining.refresh();
-        chapel.refreshSchedule();
-
+    if (sessionTransport) {
         // The WebView transport also detects expiry directly, before the
-        // exception has propagated back through the worker thread — connecting
-        // both means the login surface appears as soon as we know, not a beat
-        // later. Note this is the session transport, not the router: only the
-        // session-bearing transport can have an expired session.
+        // exception has propagated back through the worker thread — the login
+        // controller collapses the two into one check.
         QObject::connect(sessionTransport.get(), &WebViewTransport::sessionExpired, &login,
                          &LoginController::onSessionExpired);
     }
@@ -268,11 +481,15 @@ int main(int argc, char **argv)
     QQmlContext *ctx = engine->rootContext();
     ctx->setContextProperty(QStringLiteral("bridge"), &bridge);
     ctx->setContextProperty(QStringLiteral("login"), &login);
+    ctx->setContextProperty(QStringLiteral("sync"), &sync);
     ctx->setContextProperty(QStringLiteral("chapel"), &chapel);
     ctx->setContextProperty(QStringLiteral("dining"), &dining);
-    ctx->setContextProperty(QStringLiteral("semester"), &semester);
     ctx->setContextProperty(QStringLiteral("curfew"), &curfew);
-    // Read by every Theme.qml instance, which is how eight separate copies of
+    ctx->setContextProperty(QStringLiteral("hours"), &hours);
+    ctx->setContextProperty(QStringLiteral("campus"), &campus);
+    ctx->setContextProperty(QStringLiteral("today"), &today);
+    ctx->setContextProperty(QStringLiteral("search"), &search);
+    // Read by every Theme.qml instance, which is how many separate copies of
     // the palette agree on which one is showing.
     ctx->setContextProperty(QStringLiteral("settings"), &settings);
     ctx->setContextProperty(QStringLiteral("platformSurface"), surfaceQml);
@@ -292,11 +509,15 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    if (options.demo) {
-        // Nothing will trigger the first load, since there is no login flow.
-        chapel.refreshAll();
-        dining.refreshAll();
+    // --- 6. Sign-in, then the fetches ---------------------------------------
+    login.start(bridge.startPath(), nativeSession);
+    sync.start();
+
+#ifndef Q_OS_ANDROID
+    if (!options.shootDir.isEmpty()) {
+        QTimer::singleShot(0, &app, [&] { shoot(*engine, options.shootDir, settings, login, sync, pinned, paused); });
     }
+#endif
 
     const int code = QGuiApplication::exec();
 

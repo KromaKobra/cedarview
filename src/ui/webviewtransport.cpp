@@ -277,7 +277,8 @@ Response WebViewTransport::get(const QString &path, int timeoutMs)
     }
 
     if (!response.ok())
-        throw TransportError(QStringLiteral("%1 returned HTTP %2").arg(url).arg(response.status));
+        throw TransportError(QStringLiteral("%1 returned HTTP %2").arg(url).arg(response.status),
+                             response.status);
 
     qCDebug(lcWebView).noquote() << "fetched" << url << "->" << response.status << "("
                                  << response.body.size() << "chars)";

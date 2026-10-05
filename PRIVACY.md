@@ -1,6 +1,6 @@
 # CedarView privacy policy
 
-_Last updated: 23 September 2026_
+_Last updated: 5 October 2026_
 
 CedarView is an unofficial app, made by a student, that shows your own myCU
 information (chapel skips, meal-plan balances, dining menus, chapel schedule)
@@ -29,21 +29,39 @@ stays on your phone.
 
 The app contacts only those Cedarville addresses and Microsoft's sign-in
 service (`login.microsoftonline.com`). Nothing is sent to the developer or to
-anyone else.
+anyone else. "Watch live" on a chapel opens the livestream in your own
+browser; the app itself loads nothing from YouTube, and does not load the
+speaker photos the chapel schedule links to.
 
 ## What is stored on your phone
 
 - The sign-in session cookie, held by Android's WebView.
-- A small file with timestamps (such as when you last signed in) and which term
-  you were last viewing, so the app opens where you left off. It contains no
-  credentials.
-- Your light/dark theme preference.
+- A small file with timestamps (such as when you last signed in), which term
+  you were last viewing, and the ID numbers Self-Service uses to look up your
+  chapel and meal-plan records, so the app can ask for them directly. It
+  contains no credentials.
+- A copy of what the app last loaded — your chapel skips and ledger, your
+  meal-plan balances and recent activity, and the public menus and chapel
+  schedule — so it opens on your figures instead of a blank screen while it
+  refreshes. **Signing out deletes your chapel and meal-plan records** from the
+  phone; the public menus and schedule are kept.
+- Your preferences: light or dark theme, the allergens you hide on the menu,
+  the buildings you star, and your last few searches.
+
+The app also contains built-in **sample data**, shown when you choose "Look
+around with sample data": a sample student's records, with no real person's
+details in them, and a copy of past public menus and chapel schedules. It has
+nothing to do with your account, and it is never mixed with or saved over your
+own records.
 
 All of it lives in the app's private storage, which other apps cannot read.
 Android may include app data in your device backup if you have backups turned
-on. **Sign out** in the app's menu signs you out through Microsoft and clears
-the app's saved information. Uninstalling the app, or clearing its storage in
-Android's settings, deletes all of it.
+on. **Sign out** in the app's menu deletes the app's sign-in cookies, Microsoft's
+and Cedarville's, and clears the app's saved information about you, including
+its copy of your records. Signing in again means entering your account and
+password on Microsoft's page.
+Uninstalling the app, or clearing its storage in Android's settings, deletes
+all of it.
 
 ## Permissions
 

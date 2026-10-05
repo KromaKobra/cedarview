@@ -12,9 +12,12 @@ add_library(cedarview_core STATIC
     log.h log.cpp
     pyjson.h pyjson.cpp
     transport.h transport.cpp
+    jsonfile.h jsonfile.cpp
     session.h session.cpp
+    cache.h cache.cpp
     calendar.h calendar.cpp
     curfew.h curfew.cpp
+    hours.h hours.cpp
     models.h models.cpp
     htmlattrs.h htmlattrs.cpp
     providers/chapel.h providers/chapel.cpp

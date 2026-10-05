@@ -18,6 +18,12 @@
 // Never throws: every outcome comes back as {status, finalUrl, contentType,
 // body}, and a request that never completed has status "-1" with the reason in
 // the body slot. That keeps exceptions from ever crossing into native code.
+//
+// Connections are reused. A response read to the end and closed hands its
+// socket back to HttpURLConnection's keep-alive pool, so the chapel screen's
+// three concurrent requests, and the next refresh, skip the TLS handshake.
+// disconnect() would close the socket instead, so it is only called when a
+// request fails partway.
 package com.kromakobra.cedarview;
 
 import android.content.Context;
@@ -61,10 +67,9 @@ public final class HttpGet
                 body,
             };
         } catch (Exception e) {
-            return new String[] { "-1", "", "", String.valueOf(e) };
-        } finally {
             if (connection != null)
                 connection.disconnect();
+            return new String[] { "-1", "", "", String.valueOf(e) };
         }
     }
 
@@ -107,7 +112,8 @@ public final class HttpGet
                 final String location = connection.getHeaderField("Location");
                 if (status >= 300 && status < 400 && location != null) {
                     final URL next = new URL(new URL(current), location);
-                    connection.disconnect();
+                    // Read to the end, so the socket can carry the next hop.
+                    drain(connection);
                     connection = null;
                     if (!"https".equals(next.getProtocol()) || !host.equalsIgnoreCase(next.getHost()))
                         return new String[] { Integer.toString(status), next.toString(), "", "" };
@@ -128,10 +134,23 @@ public final class HttpGet
             }
             return new String[] { "-1", "", "", "more than " + MAX_REDIRECTS + " redirects" };
         } catch (Exception e) {
-            return new String[] { "-1", "", "", String.valueOf(e) };
-        } finally {
             if (connection != null)
                 connection.disconnect();
+            return new String[] { "-1", "", "", String.valueOf(e) };
+        }
+    }
+
+    // Read whatever body a response has and close it, which returns its
+    // socket to the keep-alive pool.
+    private static void drain(HttpURLConnection connection)
+    {
+        try {
+            final InputStream stream = connection.getResponseCode() >= 400 ? connection.getErrorStream()
+                                                                           : connection.getInputStream();
+            if (stream != null)
+                read(stream, StandardCharsets.UTF_8);
+        } catch (Exception ignored) {
+            connection.disconnect();
         }
     }
 

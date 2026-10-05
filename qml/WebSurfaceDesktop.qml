@@ -2,12 +2,19 @@
 //
 // This file and WebSurfaceAndroid.qml expose an IDENTICAL interface. If you
 // change one, change the other. Everything else in the app talks only to these
-// four members:
+// seven members:
 //
 //   property string currentUrl            the page we are on right now
+//   property bool loading                 a page is loading (SignInView's bar)
+//   property int loadProgress             0–100, how far
+//   signal  pageLoaded(url)               a page finished loading, and where
 //   signal  evalResult(token, result)     a runJavaScript result, tagged
 //   function evalAsync(token, script)     run JS, deliver via evalResult
 //   function navigate(url)                go somewhere
+//
+// `currentUrl` changes the moment navigate() is called, to the address asked
+// for, before any redirect; `pageLoaded` comes only once a page is really
+// there. The sign-in flow needs both (see LoginController::onPageLoaded).
 //
 // Nothing here reads cookies. See src/ui/webviewtransport.h for why: the
 // Android backend cannot, so neither does this one, and there is exactly one
@@ -20,6 +27,9 @@ Item {
     id: root
 
     property string currentUrl: view.url.toString()
+    readonly property bool loading: view.loading
+    readonly property int loadProgress: view.loadProgress
+    signal pageLoaded(string url)
     signal evalResult(string token, var result)
 
     function evalAsync(token, script) {
@@ -62,7 +72,9 @@ Item {
         }
 
         onLoadingChanged: function (info) {
-            if (info.status === WebEngineView.LoadFailedStatus) {
+            if (info.status === WebEngineView.LoadSucceededStatus) {
+                root.pageLoaded(info.url.toString())
+            } else if (info.status === WebEngineView.LoadFailedStatus) {
                 console.warn("load failed:", info.url, info.errorString)
             }
         }

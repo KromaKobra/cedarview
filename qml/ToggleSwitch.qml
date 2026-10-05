@@ -1,7 +1,7 @@
 // An on/off switch, drawn rather than imported.
 //
 // Qt Quick Controls has a perfectly good `Switch`, and it is not used here for
-// the reason DarkMenuItem.qml and InfoSheet.qml already record: the Basic
+// the reason BottomSheet.qml records: the Basic
 // style's controls arrive with their own colours, and one stock widget on a
 // sheet the app has painted itself is more conspicuous than a whole stock
 // dialog would be. Restyling Switch means replacing its `indicator` anyway, at
@@ -37,7 +37,7 @@ AbstractButton {
             width: 44
             height: 26
             radius: height / 2
-            color: control.on ? theme.accent : theme.track
+            color: control.on ? theme.gold : theme.line
             opacity: control.down ? 0.75 : 1.0
 
             // The colour change is the state; animating it stops the switch
@@ -55,7 +55,7 @@ AbstractButton {
                 width: 20
                 height: 20
                 radius: height / 2
-                color: theme.sheet
+                color: theme.surface
 
                 Behavior on x {
                     NumberAnimation { duration: 140; easing.type: Easing.OutCubic }

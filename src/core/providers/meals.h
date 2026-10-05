@@ -21,9 +21,11 @@
 //       "RecentTransactions": [...], "Admin": null
 //     }
 //
-// So MealsProvider::fetch() makes two requests, exactly as the page does. Both
-// are plain same-origin GETs with no token or custom header (the recorded
-// request had none), so the WebView transport needs nothing new.
+// So the first MealsProvider::fetch() makes two requests, exactly as the page
+// does. Both are plain same-origin GETs with no token or custom header (the
+// recorded request had none), so the WebView transport needs nothing new. The
+// target is then remembered (SessionState), and a refresh is the balance
+// request alone; a remembered target that stops working is re-read once.
 //
 // Which balance is which
 // ----------------------
@@ -41,7 +43,8 @@
 // the endpoint left it out is not the same as knowing it is $0.00.
 //
 // Tenders are matched by `Type` and name rather than by position, so a
-// reordering upstream cannot shift the values. "Meal Exchange" is not surfaced.
+// reordering upstream cannot shift the values. "Meal Exchange" is the count of
+// exchanges left (MealPlan::mealExchanges).
 //
 // Recent activity
 // ---------------
@@ -57,6 +60,8 @@
 
 #include "../models.h"
 #include "../transport.h"
+
+#include <QJsonObject>
 
 namespace mycu {
 
@@ -76,27 +81,49 @@ struct MealsTarget
     QString personId;
     QString card;
 
+    bool isKnown() const { return !personId.isEmpty() || !card.isEmpty(); }
+
     bool operator==(const MealsTarget &) const = default;
 };
 
 // Meal plan balances for the signed-in student.
+//
+// Keep one instance for the life of the screen: it remembers the target
+// between fetches.
 class MealsProvider
 {
 public:
     static inline const QString path = MEALS_PATH;
     static inline const QString label = QStringLiteral("Meal plan");
 
-    explicit MealsProvider(TransportPtr transport);
+    // `target` is one remembered from an earlier run, or empty to read it off
+    // the page on first use.
+    explicit MealsProvider(TransportPtr transport, MealsTarget target = {});
 
-    // Load the page for its target id, then the balances for that id.
+    // GetBalanceJson's object as it arrived, which is what the on-device cache
+    // keeps.
     //
-    // Both responses are checked for an expired session before parsing.
+    // One request with a known target; otherwise the page for its target,
+    // then the balances for it. A known target that is refused (ParseError, a
+    // 4xx) or finds nothing on file is re-read from the page, and asked again
+    // only if the page names someone else. Every response is checked for an
+    // expired session before parsing.
+    QJsonObject fetchPayload();
+
+    // fetchPayload(), parsed.
     MealPlan fetch();
+
+    // The target as it stands — empty until known.
+    MealsTarget target() const { return m_target; }
 
     static MealPlan parse(const Response &response);
 
 private:
+    QJsonObject balanceFor(const MealsTarget &target) const;
+    MealsTarget readTarget() const;
+
     TransportPtr m_transport;
+    MealsTarget m_target;
 };
 
 // Read `data-target-id` / `data-target-card` off the page's mount element.
@@ -114,5 +141,8 @@ QString balancePath(const MealsTarget &target);
 // an empty plan, rendered as blanks. A response that does not have the expected
 // shape throws ParseError.
 MealPlan parseBalance(const QString &body);
+
+// The same, from the already-decoded object — a fresh one or a cached one.
+MealPlan parseBalance(const QJsonObject &data);
 
 } // namespace mycu

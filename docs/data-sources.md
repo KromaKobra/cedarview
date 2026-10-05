@@ -32,7 +32,7 @@ and `14`; returns exactly N dates starting today. The server caps `days` at
 
 **`start=YYYY-MM-DD`** (undocumented; the site's `menu.js` never sends it) moves
 the first date in either direction. Verified 2026-09-22 against dates from
-2025-09-01 through 2026-11-15 — all real menus. The Chucks tab pages with it, a
+2025-09-01 through 2026-11-15 — all real menus. The Menu section moves with it, a
 week per request. A date with nothing posted (holidays, breaks, far future) is
 HTTP 200 with one placeholder block:
 

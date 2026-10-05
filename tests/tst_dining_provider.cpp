@@ -196,6 +196,34 @@ private slots:
         QVERIFY(findItem({blocks[0]}, "Eggs with Peppers and Onion"));
     }
 
+    // The kitchen marks a new dish in its name — "… NEW Menu ITEM!", in
+    // whatever case — which becomes a flag rather than part of the name.
+    void theNewMarkerBecomesAFlag()
+    {
+        const auto dinner = menus()[0].forVenue(HOME_COOKING)[2];
+        const auto schnitzel = findItem({dinner}, "Jagerschnitzel (Breaded Pork)");
+        QVERIFY(schnitzel);
+        QVERIFY(schnitzel->isNew);
+        QVERIFY(!findItem({dinner}, "Bratwurst")->isNew);
+
+        const auto aware = menus()[0].forVenue("Allergen Aware");
+        const auto bratwurst = findItem(aware, "Bratwurst");
+        QVERIFY(bratwurst);
+        QVERIFY(bratwurst->isNew);
+    }
+
+    // "Home Fries*": the asterisk is explained nowhere, and would end up in a
+    // search for "home fries".
+    void aTrailingAsteriskIsDropped()
+    {
+        QVERIFY(findItem(menus()[0].forVenue("Allergen Aware"), "Home Fries"));
+        const QList<DayMenu> parsed = parseMenus(QJsonDocument::fromJson(R"({"2026-09-16": [
+            {"venue": "Home Cooking", "meal": "Lunch", "slot": "lunch",
+             "items": [{"name": "Carrots* ", "allergens": []}, {"name": "*", "allergens": []}]}]})").object());
+        QCOMPARE(parsed[0].blocks[0].items.size(), 1);
+        QCOMPARE(parsed[0].blocks[0].items[0].name, QStringLiteral("Carrots"));
+    }
+
     void homeCookingForPicksTheRightDay()
     {
         QCOMPARE(meals(homeCookingFor(menus(), FIXTURE_DATE)), (QStringList{"Breakfast", "Lunch", "Dinner"}));

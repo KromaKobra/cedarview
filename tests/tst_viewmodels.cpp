@@ -6,6 +6,8 @@
 
 #include "testsupport.h"
 
+#include "core/providers/chapel.h"
+#include "core/providers/chapel_schedule.h"
 #include "core/providers/meals.h"
 #include "ui/viewmodels/chapel.h"
 #include "ui/viewmodels/curfew.h"
@@ -63,12 +65,14 @@ MenuBlock block(const QString &meal, const QString &slot, const QList<MenuItem> 
     return MenuBlock{venue, meal, slot, items};
 }
 
+// Home Cooking's breakfast, which is the sitting the dining viewmodel shows
+// first at the 7 AM these tests are pinned to.
 DayMenu home(QDate on, const QStringList &dishes)
 {
     QList<MenuItem> items;
     for (const QString &d : dishes)
         items.append(MenuItem{d, {}});
-    return DayMenu{on, {block("Lunch", "lunch", items)}};
+    return DayMenu{on, {block("Breakfast", "breakfast", items)}};
 }
 
 QVariant cell(QAbstractItemModel *model, int row, int role)
@@ -76,13 +80,29 @@ QVariant cell(QAbstractItemModel *model, int row, int role)
     return model->data(model->index(row, 0), role);
 }
 
+// The dishes the Menu section shows, without the station headers.
 QStringList texts(DiningViewModel &vm)
 {
     QStringList out;
-    auto *model = static_cast<QAbstractItemModel *>(vm.items());
-    for (int r = 0; r < model->rowCount(); ++r)
-        out.append(cell(model, r, MenuListModel::TextRole).toString());
+    auto *model = static_cast<QAbstractItemModel *>(vm.stations());
+    for (int r = 0; r < model->rowCount(); ++r) {
+        if (cell(model, r, StationListModel::RowTypeRole).toString() != u"header")
+            out.append(cell(model, r, StationListModel::TextRole).toString());
+    }
     return out;
+}
+
+// Each station row as [rowType, station, text, hiddenText, isLast].
+QList<QVariantList> stationRows(DiningViewModel &vm)
+{
+    auto *model = static_cast<QAbstractItemModel *>(vm.stations());
+    QList<QVariantList> rows;
+    for (int r = 0; r < model->rowCount(); ++r) {
+        rows.append({cell(model, r, StationListModel::RowTypeRole), cell(model, r, StationListModel::StationRole),
+                     cell(model, r, StationListModel::TextRole), cell(model, r, StationListModel::HiddenTextRole),
+                     cell(model, r, StationListModel::LastRole)});
+    }
+    return rows;
 }
 
 // Each schedule row as a list of the named roles.
@@ -139,10 +159,12 @@ class TestViewModels : public QObject
 
     QTemporaryDir m_dir;
 
+    QString freshDir() { return m_dir.path() + "/" + QUuid::createUuid().toString(QUuid::Id128); }
+
     std::unique_ptr<ChapelViewModel> chapelVm()
     {
         return std::make_unique<ChapelViewModel>(std::make_shared<FixtureTransport>(testing::fixturesDir()),
-                                                 SessionStore(m_dir.path() + "/" + QUuid::createUuid().toString(QUuid::Id128)));
+                                                 Storage::at(freshDir()));
     }
 
     // Pinned to breakfast time: which sitting is "next" is a function of the
@@ -180,7 +202,7 @@ private slots:
         QSet<QByteArray> names;
         for (const QByteArray &n : model.roleNames())
             names.insert(n);
-        QCOMPARE(names, (QSet<QByteArray>{"whenText", "reason", "entryType", "count", "isSkip"}));
+        QCOMPARE(names, (QSet<QByteArray>{"whenText", "reason", "entryType", "count", "isSkip", "title", "detail"}));
     }
 
     void aSkipRowExposesItsFields()
@@ -341,12 +363,12 @@ private slots:
     void theTermIsRememberedAcrossLaunches()
     {
         const QString dir = m_dir.path() + "/remember";
-        ChapelViewModel first(std::make_shared<FixtureTransport>(testing::fixturesDir()), SessionStore(dir));
+        ChapelViewModel first(std::make_shared<FixtureTransport>(testing::fixturesDir()), Storage::at(dir));
         ChapelSummary s;
         s.termName = "Fall Semester 2026";
         first.onLoaded(s);
 
-        ChapelViewModel second(std::make_shared<FixtureTransport>(testing::fixturesDir()), SessionStore(dir));
+        ChapelViewModel second(std::make_shared<FixtureTransport>(testing::fixturesDir()), Storage::at(dir));
         QCOMPARE(second.term(), QStringLiteral("Fall Semester 2026"));
     }
 
@@ -571,20 +593,15 @@ private slots:
         QCOMPARE(vm->hasFlexDollars(), true);
     }
 
-    // Each meal header carries its own sitting's hours, for the day shown.
-    void aMealHeaderCarriesThatDaysServingHours()
+    // Each sitting's tab carries its own hours, for the day shown.
+    void theMealTabsCarryThatDaysServingHours()
     {
-        MenuListModel model;
-        const QList<MenuBlock> blocks{block("Breakfast", "breakfast", {{"Bacon", {}}}),
-                                      block("", "anytime", {{"Salad", {}}})};
-
-        model.replaceFromBlocks(blocks, QDate(2026, 9, 25)); // a Friday
-        QCOMPARE(cell(&model, 0, MenuListModel::HoursRole).toString(), QStringLiteral("7am–9:30am"));
-        QCOMPARE(cell(&model, 1, MenuListModel::HoursRole).toString(), QString());
-        QCOMPARE(cell(&model, 2, MenuListModel::HoursRole).toString(), QString());
-
-        model.replaceFromBlocks(blocks, QDate(2026, 9, 26)); // a Saturday
-        QCOMPARE(cell(&model, 0, MenuListModel::HoursRole).toString(), QStringLiteral("8am–9am"));
+        auto vm = diningVm();
+        vm->now = [] { return local(2026, 9, 25, 7, 0); }; // a Friday
+        QCOMPARE(vm->mealTabs().first().toMap().value("hours").toString(), QStringLiteral("7:00–9:30"));
+        QCOMPARE(vm->mealTabs().at(1).toMap().value("hours").toString(), QStringLiteral("10:30–2:30"));
+        vm->selectDay(1); // Saturday
+        QCOMPARE(vm->mealTabs().first().toMap().value("hours").toString(), QStringLiteral("8:00–9:00"));
     }
 
     // The card's own header already names the meal; the list must not repeat it.
@@ -596,8 +613,7 @@ private slots:
 
         auto *model = static_cast<QAbstractItemModel *>(vm->nextMealItems());
         QCOMPARE(model->rowCount(), 2);
-        for (int r = 0; r < model->rowCount(); ++r)
-            QCOMPARE(cell(model, r, MenuListModel::HeaderRole).toBool(), false);
+        QCOMPARE(cell(model, 0, MenuListModel::TextRole).toString(), QStringLiteral("Bacon"));
         QCOMPARE(cell(model, 1, MenuListModel::AllergenRole).toString(), QStringLiteral("gluten, dairy"));
     }
 
@@ -661,9 +677,11 @@ private slots:
         vm->now = [] { return local(2026, 9, 16, 9, 0); };
         vm->onLoaded(wednesdayMenu());
 
-        QSignalSpy spy(vm.get(), &DiningViewModel::changed);
+        // The card's rows are rebuilt only when the sitting moves on: this
+        // runs twice a minute.
+        QSignalSpy spy(static_cast<QAbstractItemModel *>(vm->nextMealItems()), &QAbstractItemModel::modelReset);
 
-        vm->tick(); // still breakfast: nothing to say
+        vm->tick(); // still breakfast: nothing to rebuild
         QCOMPARE(spy.count(), 0);
 
         vm->now = [] { return local(2026, 9, 16, 9, 31); };
@@ -701,12 +719,12 @@ private slots:
         vm->onLoaded({home(today(), {"Bratwurst"})});
         vm->previousDay();
 
-        fetches[0].done({home(today().addDays(-1), {"Tacos"}), home(today().addDays(-2), {"Lasagna"})});
+        fetches[0].done({home(today().addDays(-1), {"Tacos"}), home(today().addDays(-2), {"Lasagna"})}, {});
 
-        QCOMPARE(texts(*vm), (QStringList{"Lunch", "Tacos"}));
+        QCOMPARE(texts(*vm), (QStringList{"Tacos"}));
         QCOMPARE(vm->dayLoading(), false);
         vm->previousDay();
-        QCOMPARE(texts(*vm), (QStringList{"Lunch", "Lasagna"}));
+        QCOMPARE(texts(*vm), (QStringList{"Lasagna"}));
         QCOMPARE(fetches.size(), 1);
     }
 
@@ -727,8 +745,8 @@ private slots:
         QList<Fetch> fetches;
         auto vm = diningVm(&fetches);
         vm->onLoaded({DayMenu{today(), {block("", "anytime", {}, "No Venues Found")}}});
-        QCOMPARE(static_cast<QAbstractItemModel *>(vm->items())->rowCount(), 0);
-        QCOMPARE(vm->dayEmptyText(), QStringLiteral("Nothing posted for Home Cooking on this day."));
+        QCOMPARE(static_cast<QAbstractItemModel *>(vm->stations())->rowCount(), 0);
+        QCOMPARE(vm->dayEmptyText(), QStringLiteral("Nothing posted for this day."));
         QVERIFY(fetches.isEmpty());
     }
 
@@ -746,7 +764,7 @@ private slots:
 
         vm->goToToday();
         QCOMPARE(vm->isToday(), true);
-        QCOMPARE(texts(*vm), (QStringList{"Lunch", "Bratwurst"}));
+        QCOMPARE(texts(*vm), (QStringList{"Bratwurst"}));
         QCOMPARE(vm->dayEmptyText(), QString());
     }
 
@@ -771,7 +789,7 @@ private slots:
         auto vm = diningVm(&fetches);
         vm->onLoaded({home(today(), {"Bratwurst"})});
         vm->previousDay();
-        fetches[0].done({home(today().addDays(-1), {"Tacos"})});
+        fetches[0].done({home(today().addDays(-1), {"Tacos"})}, {});
 
         vm->onLoaded({home(today(), {"Bratwurst"})});
 
@@ -808,14 +826,15 @@ private slots:
         vm->onPlanLoaded(plan);
         const QDate threeDaysAgo = today().addDays(-3);
 
+        // A day's header sums it.
         QCOMPARE(activityRows(*vm), (QList<QVariantList>{
-                                        {true, "Today", "", ""},
+                                        {true, "Today", "1 meal · $3.74", ""},
                                         {false, "Board meal", "Lunch · 12:25 PM", ""},
                                         {false, "Flex purchase", "12:05 AM", "−$3.74"},
-                                        {true, "Yesterday", "", ""},
+                                        {true, "Yesterday", "1 meal · $6.00", ""},
                                         {false, "Meal exchange", "Dinner · 5:45 PM", ""},
                                         {false, "Flex purchase", "Lunch · 12:00 PM", "−$6.00"},
-                                        {true, fmt::shortDate(threeDaysAgo), "", ""},
+                                        {true, fmt::shortDate(threeDaysAgo), "1 meal", ""},
                                         {false, "Board meal", "Breakfast · 7:40 AM", ""},
                                     }));
         QCOMPARE(vm->activitySummary(),
@@ -831,9 +850,9 @@ private slots:
         plan.transactions = activityFixture();
         vm->onPlanLoaded(plan);
 
-        vm->setFlexOnly(true);
+        vm->setActivityFilter(2);
 
-        QCOMPARE(vm->flexOnly(), true);
+        QCOMPARE(vm->activityFilter(), 2);
         QStringList titles;
         for (const auto &row : activityRows(*vm)) {
             if (!row[0].toBool())
@@ -842,7 +861,10 @@ private slots:
         QCOMPARE(titles, (QStringList{"Flex purchase", "Flex purchase"}));
         QVERIFY(vm->activitySummary().endsWith(" · 2 purchases · $9.74"));
 
-        vm->setFlexOnly(false);
+        vm->setActivityFilter(1);
+        QVERIFY(vm->activitySummary().endsWith(" · 3 meals"));
+
+        vm->setActivityFilter(0);
         int dishes = 0;
         for (const auto &row : activityRows(*vm))
             dishes += row[0].toBool() ? 0 : 1;
@@ -856,7 +878,7 @@ private slots:
         plan.transactions = {txn(atDaysAgo(0, 9), "Deposit", {}, 20.0, true),
                              txn(atDaysAgo(0, 8), "Flex purchase", {}, 3.0)};
         vm->onPlanLoaded(plan);
-        vm->setFlexOnly(true);
+        vm->setActivityFilter(2);
         QVERIFY(vm->activitySummary().endsWith(" · 1 purchase · $3.00 · +$20.00 added"));
     }
 
@@ -874,7 +896,7 @@ private slots:
         MealPlan swipesOnly;
         swipesOnly.transactions = activityFixture().mid(0, 1);
         vm->onPlanLoaded(swipesOnly);
-        vm->setFlexOnly(true);
+        vm->setActivityFilter(2);
         QCOMPARE(static_cast<QAbstractItemModel *>(vm->activity())->rowCount(), 0);
         QCOMPARE(vm->activityEmptyText(), QStringLiteral("No flex purchases in your recent activity."));
     }
@@ -931,6 +953,367 @@ private slots:
         QCOMPARE(vm->countdownText(), QStringLiteral("29:00"));
     }
 
+    // ---- Cache-first ----------------------------------------------------------
+
+    // What the last run saved is on screen before any request, stamped as such.
+    void theChapelScreenOpensOnWhatWasSaved()
+    {
+        const QString dir = freshDir();
+        const Storage storage = Storage::at(dir);
+        auto transport = std::make_shared<FixtureTransport>(testing::fixturesDir());
+        storage.cache.save(cachekey::CHAPEL, ChapelProvider(transport).fetchPayload(),
+                           QDateTime::currentDateTime().addSecs(-3600));
+        storage.cache.save(cachekey::SCHEDULE, fetchSchedulePayload(transport));
+        storage.session.update([](SessionState &state) { state.studentId = "1234567"; });
+
+        ChapelViewModel vm(transport, storage);
+
+        QCOMPARE(vm.remaining(), 16);
+        QVERIFY(vm.loaded());
+        QVERIFY(vm.skipsStatus()->hasData());
+        QVERIFY(vm.skipsStatus()->fromCache());
+        QVERIFY(vm.skipsStatus()->stale());
+        QVERIFY(vm.skipsStatus()->updatedText().startsWith("Updated "));
+        QVERIFY(vm.scheduleStatus()->hasData());
+        // The remembered ID goes to the provider, so the refresh skips the
+        // dashboard.
+        QCOMPARE(vm.m_provider->knownStudentId(), QStringLiteral("1234567"));
+
+        // A refresh replaces it, and it is no longer "from the cache".
+        vm.onPayloadLoaded(ChapelProvider(transport).fetchPayload());
+        QVERIFY(!vm.skipsStatus()->fromCache());
+        QVERIFY(!vm.skipsStatus()->stale());
+    }
+
+    void aRefreshIsSavedForNextTime()
+    {
+        const QString dir = freshDir();
+        auto transport = std::make_shared<FixtureTransport>(testing::fixturesDir());
+        {
+            ChapelViewModel vm(transport, Storage::at(dir));
+            vm.onPayloadLoaded(ChapelProvider(transport).fetchPayload());
+        }
+        ChapelViewModel next(transport, Storage::at(dir));
+        QCOMPARE(next.remaining(), 16);
+        QVERIFY(next.skipsStatus()->fromCache());
+    }
+
+    // A saved copy the parsers no longer accept is not shown, and not fatal.
+    void anUnreadableSavedCopyIsIgnored()
+    {
+        const QString dir = freshDir();
+        Storage::at(dir).cache.save(cachekey::CHAPEL, QJsonObject{{"summary", QJsonArray{1, 2}}});
+        ChapelViewModel vm(std::make_shared<FixtureTransport>(testing::fixturesDir()), Storage::at(dir));
+        QVERIFY(!vm.loaded());
+        QCOMPARE(vm.remaining(), -1);
+    }
+
+    void theDiningScreensOpenOnWhatWasSaved()
+    {
+        const QString dir = freshDir();
+        const Storage storage = Storage::at(dir);
+        auto transport = std::make_shared<FixtureTransport>(testing::fixturesDir());
+        storage.cache.save(cachekey::MENUS, DiningProvider(transport).fetchPayload());
+        storage.cache.save(cachekey::MEALS, MealsProvider(transport).fetchPayload());
+
+        DiningViewModel vm(transport, storage);
+
+        QVERIFY(vm.menuStatus()->hasData());
+        QVERIFY(vm.menuStatus()->fromCache());
+        QVERIFY(vm.hasMenuFor(QDate(2026, 9, 16)));
+        QCOMPARE(vm.mealsRemaining(), 16);
+        QCOMPARE(vm.diningDollars(), QStringLiteral("$102.34"));
+        QVERIFY(vm.planStatus()->fromCache());
+    }
+
+    void thePlanRemembersItsTarget()
+    {
+        const QString dir = freshDir();
+        auto transport = std::make_shared<FixtureTransport>(testing::fixturesDir());
+        DiningViewModel vm(transport, Storage::at(dir));
+        vm.m_mealsProvider->fetchPayload(); // reads the target off the page
+        vm.onPlanPayloadLoaded(MealsProvider(transport).fetchPayload());
+        QCOMPARE(SessionStore(dir).load().mealsPersonId, QStringLiteral("0000000"));
+    }
+
+    // ---- The meal plan's failures ---------------------------------------------
+
+    void anExpiredSessionOnThePlanIsRoutedToSignIn()
+    {
+        auto vm = diningVm();
+        QSignalSpy spy(vm.get(), &DiningViewModel::sessionExpired);
+        vm->m_planBusy = true;
+        vm->onPlanFailed(make<SessionExpired>("gone"));
+        QCOMPARE(spy.count(), 1);
+        QCOMPARE(vm->planStatus()->error(), QString());
+        QCOMPARE(vm->planStatus()->loading(), false);
+        QCOMPARE(vm->m_planBusy, false);
+    }
+
+    void planFailuresAreTranslated()
+    {
+        auto vm = diningVm();
+        vm->onPlanFailed(make<TransportError>("could not reach"));
+        QVERIFY(vm->planStatus()->error().startsWith("Couldn't reach Self-Service"));
+        QVERIFY(vm->planStatus()->failedOffline());
+
+        vm->onPlanFailed(std::make_exception_ptr(TransportError("HTTP 500", 500)));
+        QVERIFY(!vm->planStatus()->failedOffline());
+
+        // The server's own words, when it says the meal plan system is down.
+        vm->onPlanFailed(make<ParseError>("Self-Service could not load the meal plan: try later"));
+        QCOMPARE(vm->planStatus()->error(), QStringLiteral("Self-Service could not load the meal plan: try later"));
+    }
+
+    // A failed refresh never blanks what was there.
+    void aFailedRefreshKeepsTheFigures()
+    {
+        auto vm = diningVm();
+        MealPlan plan;
+        plan.mealsRemaining = 16;
+        vm->onPlanLoaded(plan);
+        vm->onPlanFailed(make<TransportError>("timed out"));
+        QCOMPARE(vm->mealsRemaining(), 16);
+        QVERIFY(vm->planStatus()->hasData());
+        QVERIFY(!vm->planStatus()->error().isEmpty());
+    }
+
+    void refreshPlanIsNotReEntrant()
+    {
+        auto vm = diningVm();
+        vm->m_planBusy = true;
+        QSignalSpy spy(vm.get(), &DiningViewModel::changed);
+        vm->refreshPlan();
+        QCOMPARE(spy.count(), 0);
+    }
+
+    // ---- Sign-out --------------------------------------------------------------
+
+    void clearPersonalDropsTheRecordsAndKeepsThePublicData()
+    {
+        auto chapelModel = chapelVm();
+        chapelModel->onLoaded(figures(2, 18, 16));
+        chapelModel->onScheduleLoaded({chapel(QDateTime::currentDateTime().addDays(1), "Worship Chapel")});
+        chapelModel->clearPersonal();
+        QCOMPARE(chapelModel->remaining(), -1);
+        QVERIFY(!chapelModel->loaded());
+        QVERIFY(chapelModel->hasNextChapel());
+
+        auto dining = diningVm();
+        dining->onLoaded({home(today(), {"Bacon"})});
+        MealPlan plan;
+        plan.mealsRemaining = 16;
+        plan.transactions = activityFixture();
+        dining->onPlanLoaded(plan);
+        dining->clearPersonal();
+        QCOMPARE(dining->mealsRemaining(), -1);
+        QVERIFY(!dining->planStatus()->hasData());
+        QCOMPARE(static_cast<QAbstractItemModel *>(dining->activity())->rowCount(), 0);
+        QVERIFY(dining->menuStatus()->hasData());
+        QCOMPARE(texts(*dining), QStringList{"Bacon"});
+    }
+
+    // ---- The Menu section ------------------------------------------------------
+
+    void theFeaturedStationsAreListedWithTheBarGathered()
+    {
+        auto vm = lunchVm();
+        QCOMPARE(stationRows(*vm), (QList<QVariantList>{
+                                       {"header", HOME_COOKING, "", "", false},
+                                       {"item", HOME_COOKING, "Beef Ragu", "", false},
+                                       {"item", HOME_COOKING, "Alfredo Sauce", "", false},
+                                       {"item", HOME_COOKING, "Garlic Breadsticks", "", true},
+                                       {"header", GARDEN_BITES, "", "", false},
+                                       {"item", GARDEN_BITES, "Broccoli Alfredo", "", false},
+                                       {"extras", GARDEN_BITES, "Potato bar: Whipped Butter, Baked Potatoes", "", true},
+                                       {"header", ALLERGEN_AWARE, "", "", false},
+                                       {"item", ALLERGEN_AWARE, "Chicken Cacciatore", "", true},
+                                   }));
+        auto *model = static_cast<QAbstractItemModel *>(vm->stations());
+        QCOMPARE(cell(model, 3, StationListModel::NewRole).toBool(), true);
+        QCOMPARE(cell(model, 2, StationListModel::AllergenRole).toString(), QStringLiteral("gluten, dairy"));
+        // An all-day station is not one of the three.
+        QCOMPARE(vm->allDayStations().size(), 1);
+        QCOMPARE(vm->allDayStations().first().toMap().value("name").toString(), QStringLiteral("Italian"));
+    }
+
+    void avoidingAnAllergenHidesWhatHasIt()
+    {
+        auto vm = lunchVm();
+        vm->toggleAvoid("dairy");
+
+        QCOMPARE(vm->hiddenCount(), 3);
+        QCOMPARE(vm->hiddenText(), QStringLiteral("Hiding 3 items with dairy"));
+        QCOMPARE(texts(*vm), (QStringList{"Beef Ragu", "Garlic Breadsticks", "Potato bar: Baked Potatoes",
+                                          "Chicken Cacciatore"}));
+        QCOMPARE(stationRows(*vm).at(3).at(3).toString(), QStringLiteral("2 hidden")); // Garden Bites
+
+        // Everything at a station hidden: it says so rather than vanishing.
+        vm->toggleAvoid("gluten");
+        vm->toggleAvoid("soy");
+        QVERIFY(texts(*vm).contains("Everything here has something you're avoiding."));
+
+        vm->clearAvoid();
+        QCOMPARE(vm->hiddenCount(), 0);
+        QCOMPARE(vm->hiddenText(), QString());
+    }
+
+    // 9:42 on a Thursday: breakfast is over, so the menu opens on lunch.
+    void theMenuOpensOnTheSittingTheClockSays()
+    {
+        auto vm = lunchVm();
+        vm->m_mealPinned = false;
+        vm->tick();
+        QCOMPARE(vm->selectedMeal(), QStringLiteral("lunch"));
+        QCOMPARE(vm->mealStatusText(), QStringLiteral("Opens in 48 min · 10:30 AM – 2:30 PM"));
+        QVERIFY(vm->mealStatusLive());
+
+        vm->selectMeal("breakfast");
+        QCOMPARE(vm->mealStatusText(), QStringLiteral("Ended at 9:30 AM"));
+        vm->selectMeal("dinner");
+        QCOMPARE(vm->mealStatusText(), QStringLiteral("Tonight · 4:30 PM – 7:30 PM"));
+        QVERIFY(!vm->mealStatusLive());
+        vm->selectDay(1);
+        QCOMPARE(vm->mealStatusText(), QStringLiteral("Tomorrow · 4:30 PM – 7:30 PM"));
+    }
+
+    void theDayStripIsAWeekAroundToday()
+    {
+        auto vm = lunchVm();
+        const QVariantList days = vm->days();
+        QCOMPARE(days.size(), 7);
+        QCOMPARE(days.at(3).toMap().value("isToday").toBool(), true);
+        QCOMPARE(days.at(3).toMap().value("dow").toString(), QStringLiteral("Thu"));
+        QCOMPARE(days.at(3).toMap().value("selected").toBool(), true);
+        // Fetched with nothing on it: not available. Never asked for: available.
+        QCOMPARE(days.at(4).toMap().value("available").toBool(), false);
+        QCOMPARE(days.at(0).toMap().value("available").toBool(), true);
+    }
+
+    // ---- The meal plan's figures -------------------------------------------------
+
+    // Thursday Sep 17: $102.34 left after $9.74 since Monday, 89 days to Dec 11.
+    void theFlexPaceSpreadsMondaysBalanceOverTheTerm()
+    {
+        auto vm = diningVm();
+        vm->now = [] { return local(2026, 9, 17, 12, 0); };
+        MealPlan plan;
+        plan.diningDollars = 102.34;
+        plan.planName = "21 Meals";
+        plan.period = "week";
+        plan.transactions = {txn(local(2026, 9, 16, 19, 30), "Flex purchase", "Dinner", 3.74),
+                             txn(local(2026, 9, 14, 15, 20), "Flex purchase", "Lunch", 6.00),
+                             txn(local(2026, 9, 12, 12, 0), "Flex purchase", "Lunch", 50.00)};
+        vm->onPlanLoaded(plan);
+
+        QVERIFY(vm->hasPace());
+        QCOMPARE(vm->flexPerWeekText(), QStringLiteral("$8.82 a week"));
+        QCOMPARE(vm->paceEndText(), QStringLiteral("Dec 11"));
+        QCOMPARE(vm->spentThisWeek(), QStringLiteral("$9.74"));
+        QVERIFY(vm->overPace());
+        QCOMPARE(vm->paceDeltaText(), QStringLiteral("$0.92 over pace"));
+        QCOMPARE(vm->paceSpentFraction(), 1.0);
+        QVERIFY(qAbs(vm->paceBudgetFraction() - (112.08 * 7 / 89) / 9.74) < 1e-9);
+        QCOMPARE(vm->mealsPerPeriod(), 21);
+        QCOMPARE(vm->planTitle(), QStringLiteral("21-meal plan"));
+    }
+
+    void thereIsNoPaceOutsideATermOrWithoutABalance()
+    {
+        auto vm = diningVm();
+        vm->now = [] { return local(2026, 7, 1, 12, 0); };
+        MealPlan plan;
+        plan.diningDollars = 50.0;
+        vm->onPlanLoaded(plan);
+        QVERIFY(!vm->hasPace());
+        QCOMPARE(vm->flexPerWeekText(), QString());
+        vm->now = [] { return local(2026, 9, 17, 12, 0); };
+        vm->onPlanLoaded(MealPlan());
+        QVERIFY(!vm->hasPace());
+    }
+
+    void exchangesNameWhereTheyWorkToday()
+    {
+        auto vm = diningVm();
+        vm->now = [] { return local(2026, 9, 17, 12, 0); };
+        QCOMPARE(vm->exchangeText(), QStringLiteral("Chick-fil-A, Panda Express, The Cafe until 8 PM"));
+        vm->now = [] { return local(2026, 9, 20, 12, 0); }; // Sunday
+        QCOMPARE(vm->exchangeText(), QStringLiteral("The Cafe until 8 PM"));
+    }
+
+    // ---- The Chapel screen's figures ---------------------------------------------
+
+    void consecutiveChapelsBySpeakerArePartsOfASeries()
+    {
+        const QStringList parts = seriesParts({
+            chapel(local(2026, 9, 21), "Dr. Thomas White", {"Dr. Thomas White"}),
+            chapel(local(2026, 9, 22), "Garrett Kell", {"Garrett Kell"}),
+            chapel(local(2026, 9, 23), "Garrett Kell", {"Garrett Kell"}),
+            chapel(local(2026, 9, 25), "Philip Miller", {"Philip Miller"}),
+            chapel(local(2026, 9, 28), "Philip Miller", {"Philip Miller"}), // Fri, then Mon
+            chapel(local(2026, 10, 6), "Worship Chapel"),
+            chapel(local(2026, 10, 7), "Worship Chapel"),
+            chapel(local(2026, 10, 12), "Dr. Thomas White", {"Dr. Thomas White"}),
+        });
+        QCOMPARE(parts, (QStringList{"", "Part 1 of 2", "Part 2 of 2", "Part 1 of 2", "Part 2 of 2", "", "", ""}));
+    }
+
+    void theRequirementReasonsFitOnChips()
+    {
+        auto vm = chapelVm();
+        ChapelSummary s = figures(2, 18, 16);
+        s.requirementReasons = {"Not a Distance Learner", "Registered for 15.5 credits (more than 6)",
+                                "Undergraduate Student"};
+        s.allowance = {{"Skips Allowed", 17, "Base semester allowance"}, {"Manual Arrangement", 1, {}}};
+        vm->onLoaded(s);
+        QCOMPARE(vm->requirementReasons(), (QStringList{"Not a distance learner", "15.5 credits", "Undergraduate"}));
+        const QVariantList allowance = vm->allowance();
+        QCOMPARE(allowance.size(), 2);
+        QCOMPARE(allowance.at(0).toMap().value("figure").toString(), QStringLiteral("17"));
+        QCOMPARE(allowance.at(0).toMap().value("label").toString(), QStringLiteral("Base allowance"));
+        QCOMPARE(allowance.at(1).toMap().value("figure").toString(), QStringLiteral("+1"));
+        QCOMPARE(allowance.at(1).toMap().value("label").toString(), QStringLiteral("Manual arrangement"));
+    }
+
+    // 16 left with 85 days to Dec 11.
+    void theSkipsLeftAreSpreadOverTheTerm()
+    {
+        auto vm = chapelVm();
+        vm->now = [] { return local(2026, 9, 17, 9, 42); };
+        vm->onLoaded(figures(2, 18, 16));
+        QCOMPARE(vm->skipsPerWeekText(), QStringLiteral("About 1 a week through Dec 11"));
+        vm->onLoaded(figures(13, 18, 5));
+        QCOMPARE(vm->skipsPerWeekText(), QStringLiteral("About 1 every 2 weeks through Dec 11"));
+        vm->onLoaded(figures(18, 18, 0));
+        QCOMPARE(vm->skipsPerWeekText(), QStringLiteral("None to spare through Dec 11"));
+        vm->now = [] { return local(2026, 7, 1, 9, 0); };
+        QCOMPARE(vm->skipsPerWeekText(), QString());
+    }
+
+    void aLedgerRowReadsAsWhatHappenedAndWhen()
+    {
+        ChapelListModel model;
+        model.replace({entry(local(2026, 8, 20), 1, "Chapel Skip", "Absent from Chapel 8/20/2026")});
+        QCOMPARE(cell(&model, 0, ChapelListModel::TitleRole).toString(), QStringLiteral("Absent from Chapel"));
+        QCOMPARE(cell(&model, 0, ChapelListModel::DetailRole).toString(), QStringLiteral("Thu, Aug 20 · chapel skip"));
+    }
+
+    void todaysChapelCountsDown()
+    {
+        auto vm = chapelVm();
+        vm->now = [] { return local(2026, 9, 17, 9, 42); };
+        vm->onScheduleLoaded({chapel(local(2026, 9, 17), "Garrett Higbee", {"Garrett Higbee"}, {}, true),
+                              chapel(local(2026, 9, 18), "Worship Chapel")});
+        QVERIFY(vm->chapelToday());
+        QCOMPARE(vm->nextChapelCountdown(), QStringLiteral("in 18 min"));
+        QCOMPARE(vm->fromNowText(local(2026, 9, 17)), QStringLiteral("18 min"));
+        QCOMPARE(scheduleRows(*vm, {"badge"}).at(1).first().toString(), QStringLiteral("Today · in 18 min"));
+        QCOMPARE(vm->watchUrl("ySIBhMll7k0"), QStringLiteral("https://www.youtube.com/watch?v=ySIBhMll7k0"));
+
+        vm->now = [] { return local(2026, 9, 17, 10, 10); };
+        QCOMPARE(vm->fromNowText(local(2026, 9, 17)), QStringLiteral("Now"));
+    }
+
 private:
     static std::unique_ptr<CurfewViewModel> curfewAt(QDateTime when)
     {
@@ -953,6 +1336,27 @@ private:
             chapel(local(2026, 10, 5, 11), "Majors Assembly"),
             chapel({}, "Undated"),
         });
+        return vm;
+    }
+
+    // Thursday Sep 17 at 9:42, the canvas's morning: three featured stations at
+    // lunch, and an all-day one.
+    std::unique_ptr<DiningViewModel> lunchVm()
+    {
+        auto vm = diningVm();
+        vm->now = [] { return local(2026, 9, 17, 9, 42); };
+        vm->onLoaded({DayMenu{
+            QDate(2026, 9, 17),
+            {block("Lunch", "lunch",
+                   {{"Beef Ragu", {}}, {"Alfredo Sauce", {"gluten", "dairy"}}, {"Garlic Breadsticks", {"gluten"}, true}}),
+             block("Lunch", "lunch",
+                   {{"Broccoli Alfredo", {"dairy"}}, {"Whipped Butter", {"dairy"}}, {"Baked Potatoes", {}}},
+                   GARDEN_BITES),
+             block("Lunch", "lunch", {{"Chicken Cacciatore", {"soy"}}}, ALLERGEN_AWARE),
+             block("", "anytime", {{"Pepperoni Pizza", {"gluten", "dairy"}}}, "Italian")}}});
+        // Tomorrow fetched, with nothing posted.
+        vm->store({QDate(2026, 9, 18)}, {});
+        vm->selectMeal("lunch");
         return vm;
     }
 

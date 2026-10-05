@@ -46,7 +46,7 @@
 // `start=YYYY-MM-DD` moves the first date, in either direction. The site's own
 // script never sends it, but it was verified on 2026-09-22 against dates from
 // 2025-09-01 to 2026-11-15, all of which returned real menus. It is what lets
-// the Chucks tab page back to last week or forward past the 31-day cap.
+// the Menu section move back to last week or forward past the 31-day cap.
 //
 // A date with nothing posted — a holiday, a break, or simply too far out — is
 // not an error. It comes back HTTP 200 with a single placeholder block:
@@ -95,6 +95,10 @@ public:
     QDate start() const { return m_start; }
     QString path() const;
 
+    // The feed's `{date: [blocks]}` object as it arrived — what the
+    // on-device cache keeps.
+    QJsonValue fetchPayload();
+
     QList<DayMenu> fetch();
     static QList<DayMenu> parse(const Response &response);
 
@@ -130,11 +134,11 @@ using ServingHours = std::pair<QTime, QTime>;
 // **Hardcoded, not the API's.** The menu feed carries no serving times at all —
 // only a `slot` label — so these are copied off Chuck's posted hours. A sitting
 // stops being "next" the moment its window closes: at 9:30 on a weekday the
-// summary card moves on to lunch. If Chuck's changes its hours, change the
-// table in dining.cpp and the Dining hours page (qml/HoursView.qml) together.
+// next meal moves on to lunch. If Chuck's changes its hours, change the table
+// in dining.cpp and the one in core/hours.cpp together.
 std::optional<ServingHours> servingHours(QDate on, const QString &slot);
 
-// "10:30am–2:30pm" — a serving window, for the summary card.
+// "10:30am–2:30pm" — a serving window, for the next-meal line.
 QString formatHours(QTime start, QTime end);
 
 // The sitting a reader is most likely about to eat, with its date.

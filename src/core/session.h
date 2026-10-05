@@ -23,14 +23,18 @@
 
 #include <QString>
 
+#include <functional>
+
 namespace mycu {
 
 inline const QString APP_DIR_NAME = QStringLiteral("mycu");
 
-// Bumped whenever the on-disk shape of `session.json` changes. A file with a
-// different value is discarded rather than migrated — it holds nothing
-// expensive to regenerate.
-inline constexpr int SCHEMA_VERSION = 1;
+// Bumped whenever the on-disk shape of `session.json` changes. A file with an
+// unknown value is discarded rather than migrated — it holds nothing expensive
+// to regenerate — with one exception: version 1 is read as it is, because v2
+// only added fields, and dropping v1's `last_login` would show every existing
+// user the first-run Welcome screen again.
+inline constexpr int SCHEMA_VERSION = 2;
 
 // Non-secret metadata about the current session.
 //
@@ -47,8 +51,24 @@ struct SessionState
     double lastExpiry = 0.0;
     // Whatever the chapel view was last showing, so a cold start looks right.
     QString lastTerm;
+
+    // Who Self-Service's pages look up, remembered so a refresh can skip the
+    // page that names them: the chapel dashboard (59 KB) for `studentId`, and
+    // the meal-plan page for the other two. Identifiers, not credentials —
+    // every one of them is useless without the session cookie, which this
+    // file never holds. Forgotten on sign-out with everything else here.
+    QString studentId;
+    QString mealsPersonId;
+    QString mealsCard;
+
     // Copy of SCHEMA_VERSION at write time; see SessionStore::load().
     int schema = SCHEMA_VERSION;
+
+    // Read from a version 1 file, which v0.3 wrote. v0.3 could lose
+    // `lastLogin` to the stale-copy bug update() describes, so a v1 file
+    // without one may still belong to a device the WebView is signed in on.
+    // Not saved: whatever is written back is version 2.
+    bool fromV1 = false;
 
     // Whether we have ever completed a login on this device.
     //
@@ -99,9 +119,20 @@ public:
     // back as "no session" — recoverable, but an avoidable surprise.
     void save(const SessionState &state) const;
 
-    SessionState &markLogin(SessionState &state) const;
-    SessionState &markSuccess(SessionState &state) const;
-    SessionState &markExpiry(SessionState &state) const;
+    // Read the file, apply `change`, write it back, and return the result.
+    //
+    // Every partial write goes through here. The login controller and the
+    // chapel viewmodel each used to keep their own copy of the state and save
+    // the whole struct, so chapel's "last success" wrote back the `lastLogin`
+    // it had read at startup — 0 on a first run — over the sign-in the login
+    // controller had just recorded. Reloading first means a writer can only
+    // change the fields it means to. (Every writer is on the GUI thread, so
+    // read-modify-write needs no lock.)
+    SessionState update(const std::function<void(SessionState &)> &change) const;
+
+    SessionState markLogin() const;
+    SessionState markSuccess() const;
+    SessionState markExpiry() const;
 
     // Forget the session metadata.
     //

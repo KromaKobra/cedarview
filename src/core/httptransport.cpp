@@ -53,7 +53,7 @@ Response HttpTransport::get(const QString &path)
     if (status < 0)
         throw TransportError(QStringLiteral("could not reach %1: %2").arg(url, field(3)));
     if (status < 200 || status >= 300)
-        throw TransportError(QStringLiteral("%1 returned HTTP %2").arg(url).arg(status));
+        throw TransportError(QStringLiteral("%1 returned HTTP %2").arg(url).arg(status), status);
 
     Response response;
     response.status = status;
@@ -91,7 +91,7 @@ Response HttpTransport::get(const QString &path)
     }
     const int status = statusAttr.toInt();
     if (status < 200 || status >= 300)
-        throw TransportError(QStringLiteral("%1 returned HTTP %2").arg(url).arg(status));
+        throw TransportError(QStringLiteral("%1 returned HTTP %2").arg(url).arg(status), status);
 
     const QByteArray raw = reply->readAll();
     const QString contentType = reply->header(QNetworkRequest::ContentTypeHeader).toString();

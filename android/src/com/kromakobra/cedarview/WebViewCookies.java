@@ -1,7 +1,7 @@
 // Sign-out's cookie wipe, called from src/platform/android.cpp over JNI.
 //
-// The federated logout ends the Entra session but not Self-Service's own: its
-// session cookie outlives the round trip, and the app relaunches signed in.
+// Sign-out is this and nothing more: Self-Service's session cookie and
+// Microsoft's both go, so the next sign-in starts from nothing.
 // android.webkit.CookieManager is the WebView's jar, shared by the whole
 // process, so emptying it here is the Android equivalent of the desktop's
 // deleteAllCookies().

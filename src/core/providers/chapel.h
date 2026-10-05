@@ -19,9 +19,13 @@
 // for *removing* entries, not reading them, so no anti-forgery handling is
 // needed on this path.
 //
-// Because the ID is a query parameter, the provider cannot skip straight to the
-// JSON: it fetches the dashboard first and reads the bootstrap out of it. One
-// extra request, once per refresh.
+// Because the ID is a query parameter, the JSON cannot be asked for until the
+// ID is known. The first time, the provider fetches the dashboard and reads
+// the bootstrap out of it. After that the ID is remembered (SessionState) and
+// passed back in, so a refresh is the three JSON requests alone — and they are
+// independent of each other, so they run at the same time. A remembered ID
+// that has gone stale (ParseError, or a 4xx) is re-read off the dashboard and
+// the three are asked once more.
 //
 // Summary payload (verified 2026-09-17)
 // -------------------------------------
@@ -60,6 +64,7 @@
 #include "../models.h"
 #include "../transport.h"
 
+#include <QJsonObject>
 #include <QJsonValue>
 
 namespace mycu {
@@ -72,23 +77,40 @@ inline const QString LEDGER_PATH = QStringLiteral("/CedarInfo/ChapelSkip/GetStud
 inline const QString FINES_PATH = QStringLiteral("/CedarInfo/ChapelSkip/GetStudentFinesJson");
 
 // Chapel skip balance and ledger for the signed-in student.
+//
+// Keep one instance for the life of the screen: it remembers the student ID
+// between fetches.
 class ChapelProvider
 {
 public:
     static inline const QString path = CHAPEL_PATH;
     static inline const QString label = QStringLiteral("Chapel");
 
-    explicit ChapelProvider(TransportPtr transport);
+    // `studentId` is one remembered from an earlier run, or empty to read it
+    // off the dashboard on first use.
+    explicit ChapelProvider(TransportPtr transport, QString studentId = QString());
 
-    // Read the dashboard for the ID, then the three JSON endpoints.
+    // The three endpoints' JSON as they arrived, as one object —
+    // `{"summary": {…}, "ledger": […], "fines": […]}` — which is what the
+    // on-device cache keeps. Every response is checked for an expired session
+    // first.
+    QJsonObject fetchPayload();
+
+    // fetchPayload(), parsed.
     ChapelSummary fetch();
 
-    // The signed-in student's ID, read from the dashboard's bootstrap.
+    // The signed-in student's ID: the one given or last read, else read from
+    // the dashboard's bootstrap now.
     QString studentId();
 
+    // The ID as it stands, without fetching anything — empty until known.
+    QString knownStudentId() const { return m_studentId; }
+
 private:
+    QJsonObject fetchFor(const QString &id) const;
+
     TransportPtr m_transport;
-    // Cached between fetches — it does not change for a given login, and
+    // Kept between fetches — it does not change for a given login, and
     // re-fetching a 59 KB page to re-read a constant would be wasteful.
     QString m_studentId;
 };
@@ -99,6 +121,9 @@ QString extractStudentId(const QString &html);
 // Combine the three payloads into one ChapelSummary.
 ChapelSummary buildSummary(const QJsonValue &summary, const QJsonValue &ledger,
                            const QJsonValue &fines = QJsonValue());
+
+// The same, from fetchPayload()'s single object — a fresh one or a cached one.
+ChapelSummary buildSummary(const QJsonObject &payload);
 
 // For `scripts/check-live`-style canaries: a summary payload on its own,
 // reporting what it can without the ledger.

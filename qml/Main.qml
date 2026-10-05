@@ -2,60 +2,110 @@ import QtQuick
 import QtQuick.Controls
 import QtQuick.Layouts
 
+// The window. What fills it follows login.phase:
+//
+//   welcome          WelcomeView — CedarView's own first screen
+//   signingIn        SignInView — Microsoft's page in CedarView's chrome
+//   everything else  the app: a large-title header, the banners, four tabs
+//                    and a bottom bar
+//
+// The sign-in surface's Loader lives inside SignInView and stays instantiated
+// in every phase: on the desktop the transport fetches through that page, so
+// it must stay attached even while hidden.
 ApplicationWindow {
     id: window
     visible: true
     width: 400
-    height: 800
+    height: 844
     title: "CedarView"
-    color: theme.background
-    bottomPadding: 0
-
-    readonly property string privacyPolicyUrl:
-        "https://github.com/KromaKobra/cedarview/blob/main/PRIVACY.md"
-    readonly property var pageTitles: ["Today", "Chapel", "Dining", "Buildings"]
-    readonly property var pageSubtitles: [
-        "Your Cedarville at a glance",
-        "Attendance and upcoming speakers",
-        "",  // Dining's comes from diningSubtitles.
-        "Curfew and building hours"
-    ]
-    // The Dining tab's subtitle follows its section bar.
-    readonly property var diningSubtitles: [
-        "Balances and recent activity",
-        "Home Cooking menus by day",
-        "Hours and meal periods"
-    ]
+    color: theme.bg
+    font.family: theme.ui
 
     Theme { id: theme }
 
-    property bool showingLogin: login.surfaceVisible
+    readonly property string phase: login.phase
+    readonly property bool showingApp: phase === "checking" || phase === "signedIn"
+                                       || phase === "needsSignIn" || phase === "preview"
+
     property int currentPage: 0
-    // Which of DiningSections' pages is showing: meal plan, menu or hours.
+    // Which of DiningSections' pages is showing: plan, menu or hours.
     property int diningSection: 0
+    property bool searchOpen: false
 
-    function openDining(section) {
-        window.diningSection = section
-        window.currentPage = 2
+    readonly property var pageTitles: ["Today", "Chapel", "Dining", "Campus"]
+
+    // Go wherever a tap points: a tab, a Dining section, and for a dish the
+    // day and sitting to open the menu at.
+    function navigateTo(tab, section, menuDay, menuMeal) {
+        searchOpen = false
+        if (tab === 2 && section >= 0)
+            diningSection = section
+        if (tab === 2 && section === 1) {
+            dining.selectDay(menuDay)
+            if (menuMeal && menuMeal.length > 0)
+                dining.selectMeal(menuMeal)
+        }
+        currentPage = tab
     }
-    property bool busy: chapel.busy || dining.busy
 
-    function refreshEverything() {
-        chapel.refreshAll()
-        dining.refreshAll()
-        semester.refreshAll()
+    function openSearch() {
+        searchOpen = true
+        searchPage.begin()
     }
 
-    // Android delivers Back (button or gesture) as a close request once no
-    // popup has taken it. The first Back goes to Today, wherever you are; only
-    // a second one, with no tab change in between, closes the app. Desktop's
-    // window close is left alone, and so is Back on the sign-in surface.
+    // For `cedarview --shoot`: put a named screen up. Not reachable from the
+    // UI.
+    function showScreen(name) {
+        searchOpen = false
+        chapelSheet.close()
+        moreSheet.close()
+        pages.contentItem.highlightMoveDuration = 0
+        if (name === "today" || name === "today-night") {
+            currentPage = 0
+        } else if (name === "chapel" || name === "chapel-sheet") {
+            currentPage = 1
+            if (name === "chapel-sheet")
+                chapelSheet.show({
+                    who: chapel.nextSpeaker, subtitle: chapel.nextChapelTitle,
+                    description: chapel.nextChapelDescription, dateText: chapel.nextChapelDateText.split(" · ")[0],
+                    timeText: chapel.nextChapelTime, startsAt: chapel.nextChapelStartsAt,
+                    livestream: chapel.nextChapelLivestream, youtubeId: chapel.nextChapelYoutubeId,
+                    isToday: chapel.chapelToday
+                })
+        } else if (name === "plan" || name === "menu" || name === "hours") {
+            diningSection = ["plan", "menu", "hours"].indexOf(name)
+            currentPage = 2
+        } else if (name === "campus") {
+            currentPage = 3
+        } else if (name === "search") {
+            openSearch()
+            searchPage.forceQuery("pizza")
+        }
+    }
+
+    // ---- Android Back ------------------------------------------------------------
+    // Delivered as a close request once no popup has taken it. Back closes a
+    // sheet, search or the sign-in surface first; then goes to Today; only a
+    // second Back with nothing in between closes the app. Desktop's window
+    // close is left alone.
     property bool backWillClose: false
     onCurrentPageChanged: backWillClose = false
-    onShowingLoginChanged: backWillClose = false
+    onPhaseChanged: backWillClose = false
 
     onClosing: (close) => {
-        if (Qt.platform.os === "android" && !window.showingLogin && !window.backWillClose) {
+        if (Qt.platform.os !== "android")
+            return
+        if (searchOpen) {
+            close.accepted = false
+            searchOpen = false
+            return
+        }
+        if (phase === "signingIn") {
+            close.accepted = false
+            login.cancelSignIn()
+            return
+        }
+        if (showingApp && !backWillClose) {
             close.accepted = false
             // The edge-swipe Back gesture's first touch lands on the pages,
             // then Android takes the gesture over and Qt never sees that touch
@@ -64,355 +114,243 @@ ApplicationWindow {
             // the tab bar. Turning interactive off cancels the stale press.
             pages.interactive = false
             pages.interactive = true
-            window.currentPage = 0
+            currentPage = 0
             // After the tab change, whose handler disarms.
-            window.backWillClose = true
+            backWillClose = true
         }
     }
 
-    header: Rectangle {
-        id: appHeader
-        implicitHeight: 70 + appHeader.SafeArea.margins.top
-        color: theme.ribbon
+    // ---- The app -------------------------------------------------------------------
+    Item {
+        id: app
+        anchors.fill: parent
+        visible: window.showingApp
 
-        RowLayout {
+        ColumnLayout {
             anchors.fill: parent
-            anchors.topMargin: appHeader.SafeArea.margins.top
-            anchors.leftMargin: 16 + appHeader.SafeArea.margins.left
-            anchors.rightMargin: 8 + appHeader.SafeArea.margins.right
-            spacing: 11
+            spacing: 0
 
-            Rectangle {
-                Layout.alignment: Qt.AlignVCenter
-                Layout.preferredWidth: 38
-                Layout.preferredHeight: 38
-                radius: 13
-                color: theme.cedarSoft
-
-                Image {
-                    anchors.centerIn: parent
-                    width: 28
-                    height: 28
-                    source: "icon.png"
-                    sourceSize: Qt.size(56, 56)
-                    fillMode: Image.PreserveAspectFit
-                    mipmap: true
-                }
-            }
-
-            ColumnLayout {
+            // The large-title header: the date and how fresh things are, the
+            // tab's name, search and More.
+            Item {
+                id: header
                 Layout.fillWidth: true
-                Layout.alignment: Qt.AlignVCenter
-                spacing: 1
+                implicitHeight: headerRow.implicitHeight + 26 + header.SafeArea.margins.top
 
-                Label {
-                    Layout.fillWidth: true
-                    text: window.pageTitles[window.currentPage]
-                    color: theme.text
-                    font.pixelSize: 18
-                    font.bold: true
-                    elide: Text.ElideRight
-                }
+                RowLayout {
+                    id: headerRow
+                    anchors.left: parent.left
+                    anchors.right: parent.right
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: 12
+                    anchors.leftMargin: 20 + header.SafeArea.margins.left
+                    anchors.rightMargin: 16 + header.SafeArea.margins.right
+                    spacing: 10
 
-                Label {
-                    Layout.fillWidth: true
-                    text: window.currentPage === 2 ? window.diningSubtitles[window.diningSection]
-                                                   : window.pageSubtitles[window.currentPage]
-                    color: theme.muted
-                    font.pixelSize: 10
-                    elide: Text.ElideRight
-                }
-            }
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.alignment: Qt.AlignBottom
+                        spacing: 2
 
-            AbstractButton {
-                id: refreshButton
-                Layout.alignment: Qt.AlignVCenter
-                implicitWidth: 40
-                implicitHeight: 40
-                enabled: !window.showingLogin && !window.busy
-                onClicked: window.refreshEverything()
-
-                background: Rectangle {
-                    radius: 14
-                    color: refreshButton.down ? theme.pressedStrong : theme.cardAlt
-                }
-
-                contentItem: Item {
-                    BusyIndicator {
-                        anchors.centerIn: parent
-                        visible: window.busy
-                        running: visible
-                        implicitWidth: 20
-                        implicitHeight: 20
-                    }
-
-                    Glyph {
-                        anchors.centerIn: parent
-                        visible: !window.busy
-                        kind: "refresh"
-                        color: refreshButton.enabled ? theme.cedar : theme.faint
-                        width: 15
-                        height: 15
-                    }
-                }
-            }
-
-            AbstractButton {
-                id: overflowButton
-                Layout.alignment: Qt.AlignVCenter
-                implicitWidth: 40
-                implicitHeight: 40
-                onClicked: overflow.open()
-
-                background: Rectangle {
-                    radius: 14
-                    color: overflowButton.down ? theme.pressedStrong : theme.cardAlt
-                }
-
-                contentItem: Item {
-                    Column {
-                        anchors.centerIn: parent
-                        spacing: 3
-                        Repeater {
-                            model: 3
-                            Rectangle {
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                width: 3.5
-                                height: 3.5
-                                radius: 2
-                                color: theme.muted
+                        Text {
+                            Layout.fillWidth: true
+                            text: {
+                                const lead = window.currentPage === 1 && chapel.termLabel.length > 0
+                                             ? chapel.termLabel : today.dateText
+                                const stamp = window.phase === "preview" ? "sample data"
+                                            : sync.offline ? "offline" : sync.lastUpdatedText
+                                return lead + (stamp.length > 0 ? "<font color=\"" + theme.faint + "\"> · "
+                                                                  + stamp + "</font>" : "")
                             }
+                            textFormat: Text.StyledText
+                            color: theme.muted
+                            font.family: theme.ui
+                            font.pixelSize: 13
+                            font.weight: Font.DemiBold
+                            elide: Text.ElideRight
+                        }
+                        Text {
+                            Layout.fillWidth: true
+                            text: window.pageTitles[window.currentPage]
+                            color: theme.text
+                            font.family: theme.display
+                            font.pixelSize: 34
+                            font.weight: Font.Bold
+                            elide: Text.ElideRight
                         }
                     }
-                }
 
-                Menu {
-                    id: overflow
-                    y: overflowButton.height + 6
-                    x: overflowButton.width - width
-                    implicitWidth: 190
-                    padding: 7
-
-                    background: Rectangle {
-                        color: theme.sheet
-                        radius: 17
-                        border.width: 1
-                        border.color: theme.cardBorder
+                    IconButton {
+                        Layout.alignment: Qt.AlignBottom
+                        glyph: "search"
+                        text: "Search"
+                        onClicked: window.openSearch()
                     }
-
-                    DarkMenuItem { text: "Appearance"; onTriggered: settingsSheet.open() }
-                    DarkMenuItem { text: "About CedarView"; onTriggered: aboutSheet.open() }
-                    DarkMenuItem {
-                        text: "Privacy policy"
-                        onTriggered: Qt.openUrlExternally(window.privacyPolicyUrl)
+                    IconButton {
+                        Layout.alignment: Qt.AlignBottom
+                        glyph: "more"
+                        text: "More options"
+                        onClicked: moreSheet.open()
                     }
-                    DarkMenuItem { text: "Sign out"; onTriggered: login.signOut() }
                 }
             }
-        }
 
-        Rectangle {
-            anchors.bottom: parent.bottom
-            width: parent.width
-            height: 1
-            color: theme.divider
-        }
-    }
-
-    StackLayout {
-        anchors.fill: parent
-        currentIndex: window.showingLogin ? 1 : 0
-
-        Item {
-            // A quiet ambient shape makes the space feel dimensional without
-            // competing with the data or adding image assets.
-            Rectangle {
-                x: parent.width - 105
-                y: parent.height * 0.46
-                width: 180
-                height: 180
-                radius: 90
-                color: theme.accentSoft
-                opacity: 0.16
+            TopProgress {
+                Layout.fillWidth: true
+                running: sync.busy
             }
 
+            // The banners: over the data, never instead of it.
             ColumnLayout {
-                anchors.fill: parent
-                spacing: 0
+                Layout.fillWidth: true
+                Layout.leftMargin: theme.pageMargin
+                Layout.rightMargin: theme.pageMargin
+                spacing: 8
 
-                SwipeView {
-                    id: pages
-                    Layout.fillWidth: true
-                    Layout.fillHeight: true
-                    currentIndex: window.currentPage
-                    onCurrentIndexChanged: window.currentPage = currentIndex
-
-                    SummaryView {
-                        onOpenTab: (index) => window.currentPage = index
-                        onOpenDining: (section) => window.openDining(section)
-                    }
-                    ChapelView {}
-                    DiningSections {
-                        section: window.diningSection
-                        onSectionRequested: (index) => window.diningSection = index
-                    }
-                    BuildingsView {}
+                Banner {
+                    visible: window.phase === "preview"
+                    Layout.topMargin: 4
+                    icon: "info"
+                    title: "Sample data"
+                    detail: "None of this is yours. Sign in to see your own."
+                    actionText: "Sign in"
+                    secondaryText: login.hasLoggedInBefore ? "Exit" : ""
+                    onAction: login.startSignIn()
+                    onSecondaryAction: login.exitPreview()
                 }
+                Banner {
+                    visible: window.phase === "needsSignIn"
+                    Layout.topMargin: 4
+                    icon: "lock"
+                    title: "Your session ended"
+                    detail: "Sign in again to refresh your skips and meal plan."
+                    actionText: "Sign in"
+                    onAction: login.startSignIn()
+                }
+                Banner {
+                    visible: sync.offline && window.phase !== "preview" && window.phase !== "needsSignIn"
+                    Layout.topMargin: 4
+                    icon: "wifiOff"
+                    title: "You're offline"
+                    detail: sync.savedAtText.length > 0 ? "Showing what was saved at " + sync.savedAtText
+                                                        : "Nothing has been saved yet."
+                    actionText: "Retry"
+                    onAction: sync.refreshAll()
+                }
+                Item { Layout.preferredHeight: 4 }
+            }
+
+            SwipeView {
+                id: pages
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                currentIndex: window.currentPage
+                onCurrentIndexChanged: window.currentPage = currentIndex
+
+                TodayView {
+                    onNavigate: (tab, section, menuDay, menuMeal) => window.navigateTo(tab, section, menuDay, menuMeal)
+                    onShowChapel: (details) => chapelSheet.show(details)
+                }
+                ChapelView {
+                    onShowChapel: (details) => chapelSheet.show(details)
+                }
+                DiningSections {
+                    section: window.diningSection
+                    onSectionRequested: (index) => window.diningSection = index
+                }
+                CampusView {}
+            }
+
+            // The bottom bar.
+            Rectangle {
+                id: bottomBar
+                Layout.fillWidth: true
+                implicitHeight: 66 + bottomBar.SafeArea.margins.bottom
+                color: theme.nav
 
                 Rectangle {
-                    id: bottomBar
-                    Layout.fillWidth: true
-                    implicitHeight: 68 + bottomBar.SafeArea.margins.bottom
-                    color: theme.nav
+                    anchors.top: parent.top
+                    width: parent.width
+                    height: 1
+                    color: theme.line
+                }
 
-                    Rectangle {
-                        anchors.top: parent.top
-                        width: parent.width
-                        height: 1
-                        color: theme.divider
-                    }
+                RowLayout {
+                    anchors.fill: parent
+                    anchors.leftMargin: 8
+                    anchors.rightMargin: 8
+                    anchors.bottomMargin: bottomBar.SafeArea.margins.bottom
+                    spacing: 0
 
-                    RowLayout {
-                        anchors.fill: parent
-                        anchors.leftMargin: 7
-                        anchors.rightMargin: 7
-                        anchors.topMargin: 4
-                        anchors.bottomMargin: bottomBar.SafeArea.margins.bottom + 2
-                        spacing: 0
-
+                    Repeater {
+                        model: [
+                            { label: "Today", icon: "today" },
+                            { label: "Chapel", icon: "chapel" },
+                            { label: "Dining", icon: "dining" },
+                            { label: "Campus", icon: "campus" }
+                        ]
                         NavButton {
+                            required property var modelData
+                            required property int index
                             Layout.fillWidth: true
-                            text: "Today"
-                            kind: "summary"
-                            selected: window.currentPage === 0
-                            onClicked: window.currentPage = 0
-                        }
-                        NavButton {
-                            Layout.fillWidth: true
-                            text: "Chapel"
-                            kind: "chapel"
-                            selected: window.currentPage === 1
-                            onClicked: window.currentPage = 1
-                        }
-                        NavButton {
-                            Layout.fillWidth: true
-                            text: "Dining"
-                            kind: "dining"
-                            selected: window.currentPage === 2
-                            onClicked: window.currentPage = 2
-                        }
-                        NavButton {
-                            Layout.fillWidth: true
-                            text: "Buildings"
-                            kind: "buildings"
-                            selected: window.currentPage === 3
-                            onClicked: window.currentPage = 3
+                            Layout.fillHeight: true
+                            text: modelData.label
+                            glyph: modelData.icon
+                            selected: window.currentPage === index
+                            onClicked: window.currentPage = index
                         }
                     }
                 }
             }
         }
+    }
 
-        Item {
-            id: surfacePage
+    WelcomeView {
+        anchors.fill: parent
+        visible: window.phase === "welcome"
+    }
 
-            Loader {
-                id: surfaceLoader
-                anchors.fill: parent
-                anchors.bottomMargin: surfacePage.SafeArea.margins.bottom
-                source: platformSurface
-                asynchronous: false
+    SignInView {
+        id: signIn
+        anchors.fill: parent
+        visible: login.surfaceVisible
 
-                onLoaded: {
-                    bridge.attachSurface(item)
-                    item.currentUrlChanged.connect(function () {
-                        login.onUrlChanged(item.currentUrl)
-                    })
-                    login.begin(bridge.startPath)
-                }
+        // Hand the surface to the transport and its address to the login
+        // flow, once. The Loader may finish before or after this handler
+        // exists, so both ends try.
+        property bool wired: false
+        function wire() {
+            if (wired || !surface)
+                return
+            wired = true
+            bridge.attachSurface(surface)
+            surface.currentUrlChanged.connect(function () {
+                login.onUrlChanged(surface.currentUrl)
+            })
+            surface.pageLoaded.connect(function (url) {
+                login.onPageLoaded(url)
+            })
+        }
+        onSurfaceChanged: wire()
+        Component.onCompleted: wire()
 
-                Connections {
-                    target: login
-                    function onNavigateRequested(url) {
-                        if (surfaceLoader.item)
-                            surfaceLoader.item.navigate(url)
-                    }
-                }
-            }
-
-            Label {
-                anchors.centerIn: parent
-                visible: surfaceLoader.status === Loader.Error
-                width: parent.width - 48
-                text: "The secure sign-in window could not be opened.\n\n"
-                      + "Please close CedarView and try again."
-                color: theme.muted
-                font.pixelSize: 13
-                horizontalAlignment: Text.AlignHCenter
-                wrapMode: Text.Wrap
+        Connections {
+            target: login
+            function onNavigateRequested(url) {
+                if (signIn.surface)
+                    signIn.surface.navigate(url)
             }
         }
     }
 
-    footer: Rectangle {
-        id: statusFooter
-        visible: login.status.length > 0
-        implicitHeight: visible
-                        ? statusLabel.implicitHeight + 18 + statusFooter.SafeArea.margins.bottom
-                        : 0
-        color: theme.ribbon
-
-        Label {
-            id: statusLabel
-            anchors.left: parent.left
-            anchors.right: parent.right
-            anchors.top: parent.top
-            anchors.topMargin: 9
-            anchors.leftMargin: 16 + statusFooter.SafeArea.margins.left
-            anchors.rightMargin: 16 + statusFooter.SafeArea.margins.right
-            text: login.status
-            color: theme.muted
-            font.pixelSize: 12
-            wrapMode: Text.Wrap
-        }
+    SearchView {
+        id: searchPage
+        anchors.fill: parent
+        visible: window.searchOpen && window.showingApp
+        onCloseRequested: window.searchOpen = false
+        onNavigate: (tab, section, menuDay, menuMeal) => window.navigateTo(tab, section, menuDay, menuMeal)
     }
 
-    InfoSheet {
-        id: aboutSheet
-        heading: "CedarView"
-        body: "The useful parts of myCU, gathered into one calm view.\n\n"
-              + "Backend: " + bridge.platformName + "\n\n"
-              + "Your password is never seen or stored by CedarView. Sign-in happens "
-              + "on Microsoft's own page, and your records remain on this device."
-    }
-
-    InfoSheet {
-        id: settingsSheet
-        heading: "Appearance"
-        body: "Choose the palette that is most comfortable where you are."
-
-        RowLayout {
-            Layout.fillWidth: true
-            spacing: 12
-
-            ColumnLayout {
-                Layout.fillWidth: true
-                spacing: 2
-                Label { text: "Light theme"; color: theme.text; font.pixelSize: 14; font.bold: true }
-                Label {
-                    Layout.fillWidth: true
-                    text: "A brighter palette for daylight."
-                    color: theme.faint
-                    font.pixelSize: 11
-                    wrapMode: Text.Wrap
-                }
-            }
-
-            ToggleSwitch {
-                Layout.alignment: Qt.AlignVCenter
-                on: settings.lightMode
-                onClicked: settings.toggleLightMode()
-            }
-        }
-    }
+    ChapelSheet { id: chapelSheet }
+    MoreSheet { id: moreSheet }
 }

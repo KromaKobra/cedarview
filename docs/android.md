@@ -243,7 +243,7 @@ is gone.)
 | Where | What to check |
 |---|---|
 | sign-in | That the Microsoft page appears in the surface, and that landing back on Self-Service hides it and fills the Summary. |
-| `src/platform/android.cpp` | Whether the federated logout round trip really drops the Self-Service cookie, not just the Entra one. |
+| `src/platform/android.cpp` | That sign-out's cookie wipe really drops both sessions: the next sign-in asks for the account and password, and a relaunch stays on Welcome. |
 | transport, end to end | That a large body survives `runJavaScript` on QtWebView. It is verified at 300 KB on QtWebEngine (`tests/tst_webview_transport.cpp`); the system WebView's marshalling limits are not documented. If it truncates, chunk the body in the read script. |
 | `HttpGet.java` | That the Chucks and Chapel tabs fill in — they come through the JNI HTTPS path, new with the C++ build. |
 | `qml/Main.qml`, edge to edge | The ribbon sits below the status bar with its colour behind it, and the tab bar above the gesture handle. |

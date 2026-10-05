@@ -14,6 +14,8 @@
 #include <QLocale>
 #include <QString>
 
+#include <algorithm>
+
 namespace mycu::fmt {
 
 // "Mon"
@@ -33,6 +35,48 @@ inline QString clock(QTime at)
         .arg(hour)
         .arg(at.minute(), 2, 10, QLatin1Char('0'))
         .arg(at.hour() < 12 ? QStringLiteral("AM") : QStringLiteral("PM"));
+}
+
+// "8 PM" / "10:30 AM" — the minutes only when there are some, as a sign
+// would put it.
+inline QString clockShort(QTime at)
+{
+    const int hour = at.hour() % 12 == 0 ? 12 : at.hour() % 12;
+    const QString minutes = at.minute() ? QStringLiteral(":%1").arg(at.minute(), 2, 10, QLatin1Char('0'))
+                                        : QString();
+    return QString::number(hour) + minutes + (at.hour() < 12 ? QStringLiteral(" AM") : QStringLiteral(" PM"));
+}
+
+// "7:00" / "2:30" — a time with no AM or PM, for where a range already says
+// which half of the day it is in.
+inline QString clockBare(QTime at)
+{
+    const int hour = at.hour() % 12 == 0 ? 12 : at.hour() % 12;
+    return QStringLiteral("%1:%2").arg(hour).arg(at.minute(), 2, 10, QLatin1Char('0'));
+}
+
+// "18 min" / "2 h 5 min" / "3 days" — a span of time, rounded up to the minute.
+inline QString span(qint64 secs)
+{
+    const qint64 minutes = (std::max<qint64>(0, secs) + 59) / 60;
+    if (minutes < 60)
+        return QString::number(minutes) + QStringLiteral(" min");
+    if (minutes < 24 * 60) {
+        const qint64 h = minutes / 60;
+        const qint64 m = minutes % 60;
+        return QString::number(h) + QStringLiteral(" h") + (m ? QStringLiteral(" %1 min").arg(m) : QString());
+    }
+    const qint64 days = (minutes + 12 * 60) / (24 * 60);
+    return QString::number(days) + (days == 1 ? QStringLiteral(" day") : QStringLiteral(" days"));
+}
+
+// "1h 11m" — a countdown, compact enough for a hero figure.
+inline QString countdown(qint64 secs)
+{
+    const qint64 minutes = (std::max<qint64>(0, secs) + 59) / 60;
+    if (minutes < 60)
+        return QString::number(minutes) + u'm';
+    return QStringLiteral("%1h %2m").arg(minutes / 60).arg(minutes % 60);
 }
 
 // "Mon, Sep 14" / "Fri, Dec 11".

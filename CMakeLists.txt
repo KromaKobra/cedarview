@@ -11,7 +11,7 @@ cmake_minimum_required(VERSION 3.21)
 
 # The single version source. The APK's versionName and versionCode, the About
 # sheet and `cedarview --version` are all read from here.
-project(CedarView VERSION 0.3.0 LANGUAGES CXX)
+project(CedarView VERSION 0.4.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -33,13 +33,20 @@ add_library(cedarview_ui STATIC
     src/ui/bridge.h src/ui/bridge.cpp
     src/ui/demotransport.h src/ui/demotransport.cpp
     src/ui/login.h src/ui/login.cpp
+    src/ui/modetransport.h src/ui/modetransport.cpp
     src/ui/settings.h src/ui/settings.cpp
+    src/ui/sync.h src/ui/sync.cpp
     src/ui/webviewtransport.h src/ui/webviewtransport.cpp
     src/ui/viewmodels/format.h
+    src/ui/viewmodels/storage.h
+    src/ui/viewmodels/sourcestatus.h src/ui/viewmodels/sourcestatus.cpp
     src/ui/viewmodels/chapel.h src/ui/viewmodels/chapel.cpp
     src/ui/viewmodels/dining.h src/ui/viewmodels/dining.cpp
-    src/ui/viewmodels/semester.h src/ui/viewmodels/semester.cpp
     src/ui/viewmodels/curfew.h src/ui/viewmodels/curfew.cpp
+    src/ui/viewmodels/hours.h src/ui/viewmodels/hours.cpp
+    src/ui/viewmodels/campus.h src/ui/viewmodels/campus.cpp
+    src/ui/viewmodels/search.h src/ui/viewmodels/search.cpp
+    src/ui/viewmodels/today.h src/ui/viewmodels/today.cpp
 )
 target_include_directories(cedarview_ui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(cedarview_ui PUBLIC cedarview_core Qt6::Core Qt6::Qml)
@@ -61,11 +68,18 @@ target_link_libraries(cedarview PRIVATE
     cedarview_ui cedarview_http cedarview_core
     Qt6::Gui Qt6::Qml Qt6::Quick
 )
-target_compile_definitions(cedarview PRIVATE
-    CEDARVIEW_VERSION="${PROJECT_VERSION}"
-    # Where --demo finds its fixtures by default. Only meaningful on the
-    # machine that built the binary, which is the only place --demo runs.
-    CEDARVIEW_FIXTURES_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures"
+target_compile_definitions(cedarview PRIVATE CEDARVIEW_VERSION="${PROJECT_VERSION}")
+
+# Sample-data preview's fixtures, built in (about 120 KB) so the preview works
+# on a phone as well as with --demo: the real captures in tests/fixtures/,
+# served from ":/fixtures" by a FixtureTransport like any other directory.
+# Only the top level — samples/ holds test-only oddities.
+file(GLOB CEDARVIEW_FIXTURES CONFIGURE_DEPENDS
+     ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/*.json ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/*.html)
+qt_add_resources(cedarview "fixtures"
+    PREFIX "/fixtures"
+    BASE tests/fixtures
+    FILES ${CEDARVIEW_FIXTURES}
 )
 
 # The QML, compiled ahead of time by qmlcachegen and embedded in the binary.
@@ -78,25 +92,41 @@ target_compile_definitions(cedarview PRIVATE
 set(CEDARVIEW_QML
     qml/Main.qml
     qml/Theme.qml
-    qml/BalanceTile.qml
-    qml/BuildingsView.qml
+    qml/Banner.qml
+    qml/BottomSheet.qml
+    qml/CampusView.qml
     qml/Card.qml
+    qml/ChapelSheet.qml
     qml/ChapelView.qml
-    qml/ChucksView.qml
-    qml/ComingSoon.qml
-    qml/DarkMenuItem.qml
+    qml/Chip.qml
+    qml/ClockText.qml
+    qml/CurfewHero.qml
     qml/DiningSections.qml
-    qml/DiningView.qml
+    qml/EmptyState.qml
     qml/Glyph.qml
+    qml/HeroCard.qml
     qml/HoursView.qml
-    qml/InfoSheet.qml
-    qml/MeterBar.qml
+    qml/IconButton.qml
+    qml/LiveDot.qml
+    qml/MealPlanView.qml
+    qml/MenuView.qml
+    qml/MoreSheet.qml
     qml/NavButton.qml
+    qml/ScrollPage.qml
+    qml/PipMeter.qml
+    qml/PlaceRow.qml
+    qml/PrimaryButton.qml
+    qml/SearchView.qml
+    qml/SectionCaption.qml
     qml/SegmentedControl.qml
-    qml/StatStrip.qml
-    qml/TabStrip.qml
-    qml/SummaryView.qml
+    qml/SignInView.qml
+    qml/Skeleton.qml
+    qml/StatusStamp.qml
+    qml/TimelineRow.qml
+    qml/TodayView.qml
     qml/ToggleSwitch.qml
+    qml/TopProgress.qml
+    qml/WelcomeView.qml
     qml/WebSurfaceStub.qml
 )
 if(ANDROID)
@@ -105,18 +135,34 @@ else()
     list(APPEND CEDARVIEW_QML qml/WebSurfaceDesktop.qml)
 endif()
 
+# The two typefaces (Bricolage Grotesque and Instrument Sans, OFL), as static
+# Latin instances. main.cpp registers every .ttf under fonts/ before QML loads.
+set(CEDARVIEW_FONTS
+    qml/fonts/BricolageGrotesque-SemiBold.ttf
+    qml/fonts/BricolageGrotesque-Bold.ttf
+    qml/fonts/BricolageGrotesque-ExtraBold.ttf
+    qml/fonts/InstrumentSans-Regular.ttf
+    qml/fonts/InstrumentSans-Medium.ttf
+    qml/fonts/InstrumentSans-SemiBold.ttf
+    qml/fonts/InstrumentSans-Bold.ttf
+)
+
 # The files live in qml/, but the module's resource paths must not carry that
 # prefix: Main.qml refers to "icon.png" and "WebSurface*.qml" by bare name.
 foreach(_file IN LISTS CEDARVIEW_QML ITEMS qml/icon.png)
     get_filename_component(_name ${_file} NAME)
     set_source_files_properties(${_file} PROPERTIES QT_RESOURCE_ALIAS ${_name})
 endforeach()
+foreach(_file IN LISTS CEDARVIEW_FONTS)
+    get_filename_component(_name ${_file} NAME)
+    set_source_files_properties(${_file} PROPERTIES QT_RESOURCE_ALIAS fonts/${_name})
+endforeach()
 
 qt_add_qml_module(cedarview
     URI CedarView
     VERSION 1.0
     QML_FILES ${CEDARVIEW_QML}
-    RESOURCES qml/icon.png
+    RESOURCES qml/icon.png ${CEDARVIEW_FONTS}
 )
 
 # --- Android packaging --------------------------------------------------------

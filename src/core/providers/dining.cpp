@@ -30,6 +30,18 @@ std::optional<MenuItem> parseItem(const QJsonValue &raw)
 
     MenuItem item;
     item.name = json::clean(obj.value(QStringLiteral("name")));
+
+    // "Jagerschnitzel (Breaded Pork)  NEW Menu ITEM!" — the marker is in the
+    // name itself, in whatever case the kitchen typed it.
+    static const QRegularExpression newMarker(QStringLiteral("\\s*\\bNEW\\s+MENU\\s+ITEM\\b!*\\s*"),
+                                              QRegularExpression::CaseInsensitiveOption);
+    if (item.name.contains(newMarker)) {
+        item.isNew = true;
+        item.name.replace(newMarker, QStringLiteral(" "));
+    }
+    while (item.name.endsWith(u'*') || item.name.endsWith(u' '))
+        item.name.chop(1);
+    item.name = item.name.simplified();
     if (item.name.isEmpty())
         return std::nullopt;
 
@@ -119,10 +131,14 @@ QString DiningProvider::path() const
     return path;
 }
 
+QJsonValue DiningProvider::fetchPayload()
+{
+    return m_transport->get(path()).raiseForSession().json();
+}
+
 QList<DayMenu> DiningProvider::fetch()
 {
-    const Response response = m_transport->get(path());
-    return parse(response.raiseForSession());
+    return parseMenus(fetchPayload());
 }
 
 QList<DayMenu> DiningProvider::parse(const Response &response)

@@ -12,8 +12,9 @@
 
 namespace {
 
-// Everything WebViewTransport and Main.qml use on a surface.
-const QStringList SURFACE_CONTRACT = {"currentUrl", "evalResult", "evalAsync", "navigate"};
+// Everything WebViewTransport, Main.qml and SignInView.qml use on a surface.
+const QStringList SURFACE_CONTRACT = {"currentUrl", "loading", "loadProgress", "pageLoaded",
+                                      "evalResult",  "evalAsync", "navigate"};
 
 const QStringList SURFACES = {"WebSurfaceDesktop.qml", "WebSurfaceAndroid.qml", "WebSurfaceStub.qml"};
 
@@ -74,6 +75,19 @@ private slots:
         static const QRegularExpression signal(
             QStringLiteral(R"(signal\s+evalResult\s*\(\s*string\s+token\s*,\s*var\s+result\s*\))"));
         QVERIFY2(signal.match(qml(name)).hasMatch(), qPrintable(name));
+    }
+
+    // SignInView shows a progress bar, and a spinner until the first page has
+    // painted, from these two — so every surface must have both, typed.
+    void loadingIsReportedEverywhere_data() { everySurfaceHonoursTheSameContract_data(); }
+    void loadingIsReportedEverywhere()
+    {
+        QFETCH(QString, name);
+        static const QRegularExpression loading(QStringLiteral(R"(property\s+bool\s+loading\b)"));
+        static const QRegularExpression progress(QStringLiteral(R"(property\s+int\s+loadProgress\b)"));
+        const QString source = qml(name);
+        QVERIFY2(loading.match(source).hasMatch(), qPrintable(name));
+        QVERIFY2(progress.match(source).hasMatch(), qPrintable(name));
     }
 
     // WebViewTransport follows `currentUrl` through its change signal, so the

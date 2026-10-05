@@ -56,7 +56,7 @@ Response AndroidSessionTransport::get(const QString &path)
     if (status >= 300 && status < 400)
         throw TransportError(QStringLiteral("%1 redirected off Self-Service, to %2").arg(url, response.url));
     if (!response.ok())
-        throw TransportError(QStringLiteral("%1 returned HTTP %2").arg(url).arg(status));
+        throw TransportError(QStringLiteral("%1 returned HTTP %2").arg(url).arg(status), status);
 
     qCDebug(lcTransport).noquote() << "fetched" << url << "->" << status << "(" << response.body.size()
                                    << "chars)";

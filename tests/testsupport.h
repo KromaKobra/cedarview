@@ -14,8 +14,9 @@
 //    application object exists, so the Qt-touching tests run over SSH and in a
 //    build sandbox.
 //
-// It also points MYCU_STATE_DIR at a throwaway directory, so no test can touch
-// the real session in ~/.local/share/mycu.
+// It also points MYCU_STATE_DIR and XDG_CONFIG_HOME at a throwaway directory,
+// so no test can touch the real session in ~/.local/share/mycu or the real
+// preferences QSettings keeps in ~/.config.
 
 #pragma once
 
@@ -113,6 +114,7 @@ inline void blockNetwork()
         qputenv("QT_FORCE_STDERR_LOGGING", "1");                                                \
         QTemporaryDir state;                                                                    \
         qputenv("MYCU_STATE_DIR", QFile::encodeName(state.path() + QStringLiteral("/state")));  \
+        qputenv("XDG_CONFIG_HOME", QFile::encodeName(state.path() + QStringLiteral("/config"))); \
         ApplicationClass app(argc, argv);                                                       \
         testing::blockNetwork();                                                                \
         TestClass tc;                                                                           \

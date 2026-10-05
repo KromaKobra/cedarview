@@ -76,4 +76,45 @@ void runInBackground(QObject *context, Work work, Done onDone, ErrorHandler onEr
         });
 }
 
+// The same, for work that has something worth showing before it is finished —
+// the chapel schedule's first page, say. `work` is called with a function it
+// may call (from the pool thread) with an early result; each one reaches
+// `onPartial` on `context`'s thread, in order, and always before `onDone` or
+// `onError`. Partial results go through the same relay as the final one, which
+// is what keeps them in order and keeps a destroyed `context` from being
+// called.
+template <typename Partial, typename Work, typename Done>
+void runInBackgroundWithPartial(QObject *context, Work work, std::function<void(const Partial &)> onPartial,
+                                Done onDone, ErrorHandler onError)
+{
+    Q_ASSERT(context && context->thread() == QThread::currentThread());
+
+    auto *relay = new QObject;
+    const QPointer<QObject> guard(context);
+    // Shared by the work (which posts) and the queued calls (which run it).
+    auto partial = std::make_shared<std::function<void(const Partial &)>>(std::move(onPartial));
+    std::function<void(const Partial &)> report = [relay, guard, partial](const Partial &value) {
+        QMetaObject::invokeMethod(
+            relay,
+            [guard, partial, value]() {
+                if (guard)
+                    (*partial)(value);
+            },
+            Qt::QueuedConnection);
+    };
+
+    runInBackground(
+        relay, [work = std::move(work), report]() mutable { return work(report); },
+        [relay, guard, onDone = std::move(onDone)](auto &&result) mutable {
+            relay->deleteLater();
+            if (guard)
+                onDone(std::forward<decltype(result)>(result));
+        },
+        [relay, guard, onError = std::move(onError)](std::exception_ptr error) {
+            relay->deleteLater();
+            if (guard)
+                onError(error);
+        });
+}
+
 } // namespace mycu

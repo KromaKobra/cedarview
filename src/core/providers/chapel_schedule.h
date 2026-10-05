@@ -59,8 +59,10 @@
 #include "../models.h"
 #include "../transport.h"
 
+#include <QJsonObject>
 #include <QJsonValue>
 
+#include <functional>
 #include <optional>
 
 namespace mycu {
@@ -115,12 +117,25 @@ private:
 // empty list lets the UI say so honestly instead of showing a failure.
 QList<UpcomingChapel> parseUpcoming(const QJsonValue &payload);
 
-// Every upcoming chapel in the feed, soonest first, across pages.
+// Called with the first page's envelope as soon as it arrives, on the thread
+// doing the fetching, while the later pages are still to come.
+using FirstPageHandler = std::function<void(const QJsonObject &firstPage)>;
+
+// Every upcoming item in the feed, across pages, as one `{"Items": […]}`
+// envelope that parseUpcoming() reads — which is what the on-device cache
+// keeps.
 //
 // Stops at the first page shorter than `pageSize`, which is how the feed says
-// it has run out — two requests for a typical term. Duplicates are dropped, in
-// case the feed shifts between page requests (a chapel starting between the
-// two would move every later one up a slot).
+// it has run out — two requests for a typical term. Duplicates are dropped
+// (by `Id`), in case the feed shifts between page requests (a chapel starting
+// between the two would move every later one up a slot).
+//
+// `onFirstPage`, when given, sees page 1 the moment it lands: the next chapel
+// is on it, and the summary card should not wait for the rest of the term.
+QJsonObject fetchSchedulePayload(const TransportPtr &transport, const FirstPageHandler &onFirstPage = {},
+                                 int pageSize = PAGE_SIZE, int maxPages = MAX_PAGES);
+
+// fetchSchedulePayload(), parsed: every upcoming chapel, soonest first.
 QList<UpcomingChapel> fetchSchedule(const TransportPtr &transport, int pageSize = PAGE_SIZE,
                                     int maxPages = MAX_PAGES);
 

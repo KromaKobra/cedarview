@@ -301,6 +301,47 @@ private slots:
         QCOMPARE(transport->paths, (QStringList{MEALS_PATH, BALANCE_PATH + "?id=0000000"}));
     }
 
+    // A remembered target makes a refresh one request.
+    void aKnownTargetSkipsThePage()
+    {
+        auto transport = std::make_shared<RecordingTransport>();
+        MealsProvider provider(transport, MealsTarget{"0000000", {}});
+        QCOMPARE(provider.fetch().mealsRemaining, 16);
+        QCOMPARE(transport->paths, QStringList{BALANCE_PATH + "?id=0000000"});
+    }
+
+    void theTargetReadOffThePageIsKept()
+    {
+        auto transport = std::make_shared<RecordingTransport>();
+        MealsProvider provider(transport);
+        provider.fetch();
+        QCOMPARE(provider.target(), (MealsTarget{"0000000", {}}));
+        provider.fetch();
+        QCOMPARE(transport->paths.count(MEALS_PATH), 1);
+    }
+
+    // A target that is refused is re-read from the page and asked again.
+    void aStaleTargetIsReReadOnce()
+    {
+        class Stale : public RecordingTransport
+        {
+        public:
+            Response get(const QString &path) override
+            {
+                if (path.contains("id=1111111")) {
+                    paths.append(path);
+                    throw TransportError(path + " returned HTTP 400", 400);
+                }
+                return RecordingTransport::get(path);
+            }
+        };
+        auto transport = std::make_shared<Stale>();
+        MealsProvider provider(transport, MealsTarget{"1111111", {}});
+        QCOMPARE(provider.fetch().mealsRemaining, 16);
+        QCOMPARE(transport->paths,
+                 (QStringList{BALANCE_PATH + "?id=1111111", MEALS_PATH, BALANCE_PATH + "?id=0000000"}));
+    }
+
     void anExpiredSessionOnEitherRequestIsReportedAsOne_data()
     {
         QTest::addColumn<QString>("expiresOn");

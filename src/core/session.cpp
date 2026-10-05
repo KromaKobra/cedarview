@@ -1,15 +1,12 @@
 #include "session.h"
 
-#include "log.h"
+#include "jsonfile.h"
 
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
-#include <QJsonDocument>
 #include <QJsonObject>
 #include <QStandardPaths>
-
-#include <cstdio>
 
 namespace mycu {
 
@@ -56,27 +53,20 @@ QString SessionStore::profileDir() const
 
 void SessionStore::ensureDirs() const
 {
-    if (QDir(m_stateDir).exists())
-        return;
-    QDir().mkpath(m_stateDir);
-    QFile::setPermissions(m_stateDir,
-                          QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+    ensurePrivateDir(m_stateDir);
 }
 
 SessionState SessionStore::load() const
 {
-    QFile file(path());
-    if (!file.open(QIODevice::ReadOnly))
+    const std::optional<QJsonObject> file = readJsonObject(path());
+    if (!file)
         return {};
+    const QJsonObject &raw = *file;
 
-    QJsonParseError error{};
-    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &error);
-    if (error.error != QJsonParseError::NoError || !doc.isObject())
-        return {};
-
-    const QJsonObject raw = doc.object();
+    // v1 had a subset of v2's keys and the same meaning for each, so it is
+    // read as it stands; see SCHEMA_VERSION.
     const QJsonValue schema = raw.value(QStringLiteral("schema"));
-    if (!schema.isDouble() || schema.toDouble() != SCHEMA_VERSION)
+    if (!schema.isDouble() || (schema.toDouble() != SCHEMA_VERSION && schema.toDouble() != 1))
         return {};
 
     // Unknown keys from a future version are ignored; known ones are read.
@@ -85,7 +75,11 @@ SessionState SessionStore::load() const
     state.lastSuccess = raw.value(QStringLiteral("last_success")).toDouble(0.0);
     state.lastExpiry = raw.value(QStringLiteral("last_expiry")).toDouble(0.0);
     state.lastTerm = raw.value(QStringLiteral("last_term")).toString();
+    state.studentId = raw.value(QStringLiteral("student_id")).toString();
+    state.mealsPersonId = raw.value(QStringLiteral("meals_person_id")).toString();
+    state.mealsCard = raw.value(QStringLiteral("meals_card")).toString();
     state.schema = SCHEMA_VERSION;
+    state.fromV1 = schema.toDouble() == 1;
     return state;
 }
 
@@ -98,45 +92,35 @@ void SessionStore::save(const SessionState &state) const
     raw.insert(QStringLiteral("last_success"), state.lastSuccess);
     raw.insert(QStringLiteral("last_expiry"), state.lastExpiry);
     raw.insert(QStringLiteral("last_term"), state.lastTerm);
+    raw.insert(QStringLiteral("student_id"), state.studentId);
+    raw.insert(QStringLiteral("meals_person_id"), state.mealsPersonId);
+    raw.insert(QStringLiteral("meals_card"), state.mealsCard);
     raw.insert(QStringLiteral("schema"), state.schema);
-
-    const QString target = path();
-    const QString tmp = target + QStringLiteral(".tmp");
-    {
-        QFile file(tmp);
-        if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
-            qCWarning(lcSession) << "could not write" << tmp << ":" << file.errorString();
-            return;
-        }
-        file.setPermissions(QFile::ReadOwner | QFile::WriteOwner);
-        file.write(QJsonDocument(raw).toJson(QJsonDocument::Indented));
-    }
-    QFile::setPermissions(tmp, QFile::ReadOwner | QFile::WriteOwner);
-
-    // rename(2) replaces the target atomically; QFile::rename refuses to.
-    if (std::rename(QFile::encodeName(tmp).constData(), QFile::encodeName(target).constData()) != 0)
-        qCWarning(lcSession) << "could not replace" << target;
+    atomicWriteJson(path(), raw, QJsonDocument::Indented);
 }
 
-SessionState &SessionStore::markLogin(SessionState &state) const
+SessionState SessionStore::update(const std::function<void(SessionState &)> &change) const
 {
-    state.lastLogin = now();
+    SessionState state = load();
+    change(state);
     save(state);
+    state.fromV1 = false;
     return state;
 }
 
-SessionState &SessionStore::markSuccess(SessionState &state) const
+SessionState SessionStore::markLogin() const
 {
-    state.lastSuccess = now();
-    save(state);
-    return state;
+    return update([](SessionState &state) { state.lastLogin = now(); });
 }
 
-SessionState &SessionStore::markExpiry(SessionState &state) const
+SessionState SessionStore::markSuccess() const
 {
-    state.lastExpiry = now();
-    save(state);
-    return state;
+    return update([](SessionState &state) { state.lastSuccess = now(); });
+}
+
+SessionState SessionStore::markExpiry() const
+{
+    return update([](SessionState &state) { state.lastExpiry = now(); });
 }
 
 void SessionStore::clear() const

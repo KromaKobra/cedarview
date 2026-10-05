@@ -1,5 +1,5 @@
-// The Dining tab: meal plan, Home Cooking menu and dining hours, switched by a
-// bar pinned above them.
+// The Dining tab: Plan, Menu and Hours, switched by a segmented control
+// pinned above them.
 //
 // A StackLayout, not a SwipeView: the pages already sit in the window's
 // SwipeView, and a nested one would take every horizontal drag, so you could
@@ -20,12 +20,12 @@ Item {
         anchors.fill: parent
         spacing: 0
 
-        TabStrip {
+        SegmentedControl {
             Layout.fillWidth: true
             Layout.leftMargin: theme.pageMargin
             Layout.rightMargin: theme.pageMargin
-            Layout.topMargin: 4
-            labels: ["Meal plan", "Menu", "Dining hours"]
+            Layout.bottomMargin: 10
+            labels: ["Plan", "Menu", "Hours"]
             currentIndex: root.section
             onActivated: (index) => root.sectionRequested(index)
         }
@@ -35,8 +35,8 @@ Item {
             Layout.fillHeight: true
             currentIndex: root.section
 
-            DiningView {}
-            ChucksView {}
+            MealPlanView {}
+            MenuView {}
             HoursView {}
         }
     }

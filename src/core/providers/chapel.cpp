@@ -9,6 +9,7 @@
 #include <QRegularExpression>
 
 #include <algorithm>
+#include <future>
 
 namespace mycu {
 
@@ -93,32 +94,85 @@ QList<ChapelLedgerEntry> parseLedger(const QJsonValue &raw)
 
 } // namespace
 
-ChapelProvider::ChapelProvider(TransportPtr transport)
+ChapelProvider::ChapelProvider(TransportPtr transport, QString studentId)
     : m_transport(std::move(transport))
+    , m_studentId(std::move(studentId))
 {}
 
-ChapelSummary ChapelProvider::fetch()
+QJsonObject ChapelProvider::fetchFor(const QString &id) const
 {
-    const QString id = studentId();
+    const QString query = QStringLiteral("?studentId=") + id;
+    auto json = [transport = m_transport](const QString &path) {
+        return transport->get(path).raiseForSession().json();
+    };
 
-    const Response summary =
-        m_transport->get(SUMMARY_PATH + QStringLiteral("?studentId=") + id);
-    summary.raiseForSession();
-    const Response ledger = m_transport->get(LEDGER_PATH + QStringLiteral("?studentId=") + id);
-    ledger.raiseForSession();
-
+    // All three at once. They are independent, and every transport here can
+    // carry concurrent requests: WebViewTransport keys each one by its own
+    // token, and the Android and desktop HTTPS paths are one connection per
+    // call. std::async rather than the thread pool, because the pool is where
+    // this function is already running — a worker that blocked waiting on
+    // tasks queued behind it could starve itself.
+    auto summary = std::async(std::launch::async, json, SUMMARY_PATH + query);
+    auto ledger = std::async(std::launch::async, json, LEDGER_PATH + query);
     // Fines is the least important of the three and the most likely to be
     // added, renamed or restricted later. A failure here must not cost you the
     // skip count, which is the whole point of the screen.
-    QJsonValue fines = QJsonArray();
+    auto fines = std::async(std::launch::async, [json, path = FINES_PATH + query]() -> QJsonValue {
+        try {
+            return json(path);
+        } catch (const std::exception &e) {
+            qCWarning(lcChapel) << "chapel fines unavailable (continuing):" << e.what();
+            return QJsonArray();
+        }
+    });
+
+    // get() rethrows a worker's exception here; a future that is never got
+    // still waits for its request in its destructor, so nothing outlives this.
+    QJsonObject payload;
+    payload.insert(QStringLiteral("summary"), summary.get());
+    payload.insert(QStringLiteral("ledger"), ledger.get());
+    payload.insert(QStringLiteral("fines"), fines.get());
+    return payload;
+}
+
+QJsonObject ChapelProvider::fetchPayload()
+{
+    const QString remembered = m_studentId;
+    if (remembered.isEmpty()) {
+        qCDebug(lcChapel) << "chapel: no student ID yet; 4 requests (the dashboard, then 3 at once)";
+        return fetchFor(studentId());
+    }
+    qCDebug(lcChapel) << "chapel: student ID known; 3 requests at once";
+
+    std::exception_ptr failure;
     try {
-        const Response response = m_transport->get(FINES_PATH + QStringLiteral("?studentId=") + id);
-        fines = response.raiseForSession().json();
-    } catch (const std::exception &e) {
-        qCWarning(lcChapel) << "chapel fines unavailable (continuing):" << e.what();
+        QJsonObject payload = fetchFor(remembered);
+        // A wrong ID shows up as a summary in the wrong shape as often as an
+        // error, so the parse is the check.
+        buildSummary(payload);
+        return payload;
+    } catch (const ParseError &e) {
+        qCInfo(lcChapel) << "chapel: the remembered student ID failed (" << e.what() << "); re-reading it";
+        failure = std::current_exception();
+    } catch (const TransportError &e) {
+        if (!e.isClientError())
+            throw;
+        qCInfo(lcChapel) << "chapel: the remembered student ID was refused (" << e.what() << "); re-reading it";
+        failure = std::current_exception();
     }
 
-    return buildSummary(summary.json(), ledger.json(), fines);
+    // Once, and only if the dashboard names someone else: when the ID was
+    // right all along, asking again would fail the same way.
+    m_studentId.clear();
+    if (studentId() == remembered)
+        std::rethrow_exception(failure);
+    qCDebug(lcChapel) << "chapel: the dashboard names another student; 3 requests more";
+    return fetchFor(m_studentId);
+}
+
+ChapelSummary ChapelProvider::fetch()
+{
+    return buildSummary(fetchPayload());
 }
 
 QString ChapelProvider::studentId()
@@ -176,6 +230,12 @@ ChapelSummary buildSummary(const QJsonValue &summaryValue, const QJsonValue &led
             out.fines.append(fine.toObject());
     }
     return out;
+}
+
+ChapelSummary buildSummary(const QJsonObject &payload)
+{
+    return buildSummary(payload.value(QStringLiteral("summary")), payload.value(QStringLiteral("ledger")),
+                        payload.value(QStringLiteral("fines")));
 }
 
 ChapelSummary parseBody(const QString &body)

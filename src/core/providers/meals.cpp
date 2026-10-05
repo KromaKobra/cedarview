@@ -76,6 +76,21 @@ QList<MealTransaction> transactionsFrom(const QJsonValue &rows)
     return out;
 }
 
+// The body as the JSON object it must be.
+QJsonObject balanceObject(const QString &body)
+{
+    if (body.trimmed().isEmpty())
+        throw ParseError(QStringLiteral("empty response body for the meal-plan balances"));
+
+    QJsonParseError error{};
+    const QJsonDocument doc = QJsonDocument::fromJson(body.toUtf8(), &error);
+    if (error.error != QJsonParseError::NoError)
+        throw ParseError(QStringLiteral("meal-plan balances are not JSON: %1").arg(error.errorString()));
+    if (!doc.isObject())
+        throw ParseError(QStringLiteral("meal-plan balances are not a JSON object"));
+    return doc.object();
+}
+
 // quote_plus, as the page's own query string would be built.
 QString formEncode(const QString &value)
 {
@@ -84,17 +99,64 @@ QString formEncode(const QString &value)
 
 } // namespace
 
-MealsProvider::MealsProvider(TransportPtr transport)
+MealsProvider::MealsProvider(TransportPtr transport, MealsTarget target)
     : m_transport(std::move(transport))
+    , m_target(std::move(target))
 {}
 
-MealPlan MealsProvider::fetch()
+MealsTarget MealsProvider::readTarget() const
 {
     const Response page = m_transport->get(path);
     page.raiseForSession();
-    const MealsTarget target = parseTarget(page.body);
+    return parseTarget(page.body);
+}
+
+QJsonObject MealsProvider::balanceFor(const MealsTarget &target) const
+{
     const Response response = m_transport->get(balancePath(target));
-    return parse(response.raiseForSession());
+    return balanceObject(response.raiseForSession().body);
+}
+
+QJsonObject MealsProvider::fetchPayload()
+{
+    const MealsTarget remembered = m_target;
+    if (!remembered.isKnown()) {
+        qCDebug(lcMeals) << "meals: no target yet; 2 requests (the page, then the balances)";
+        m_target = readTarget();
+        return balanceFor(m_target);
+    }
+    qCDebug(lcMeals) << "meals: target known; 1 request";
+
+    QJsonObject first;
+    std::exception_ptr failure;
+    try {
+        first = balanceFor(remembered);
+        if (parseBalance(first).hasAny())
+            return first;
+        qCInfo(lcMeals) << "meals: nothing on file for the remembered target; re-reading it";
+    } catch (const ParseError &e) {
+        qCInfo(lcMeals) << "meals: the remembered target failed (" << e.what() << "); re-reading it";
+        failure = std::current_exception();
+    } catch (const TransportError &e) {
+        if (!e.isClientError())
+            throw;
+        qCInfo(lcMeals) << "meals: the remembered target was refused (" << e.what() << "); re-reading it";
+        failure = std::current_exception();
+    }
+
+    // The page names the same person: the answer was right the first time.
+    m_target = readTarget();
+    if (m_target == remembered) {
+        if (failure)
+            std::rethrow_exception(failure);
+        return first;
+    }
+    return balanceFor(m_target);
+}
+
+MealPlan MealsProvider::fetch()
+{
+    return parseBalance(fetchPayload());
 }
 
 MealPlan MealsProvider::parse(const Response &response)
@@ -129,17 +191,11 @@ QString balancePath(const MealsTarget &target)
 
 MealPlan parseBalance(const QString &body)
 {
-    if (body.trimmed().isEmpty())
-        throw ParseError(QStringLiteral("empty response body for the meal-plan balances"));
+    return parseBalance(balanceObject(body));
+}
 
-    QJsonParseError error{};
-    const QJsonDocument doc = QJsonDocument::fromJson(body.toUtf8(), &error);
-    if (error.error != QJsonParseError::NoError)
-        throw ParseError(QStringLiteral("meal-plan balances are not JSON: %1").arg(error.errorString()));
-    if (!doc.isObject())
-        throw ParseError(QStringLiteral("meal-plan balances are not a JSON object"));
-    const QJsonObject data = doc.object();
-
+MealPlan parseBalance(const QJsonObject &data)
+{
     const QJsonValue statusValue = data.value(QStringLiteral("Status"));
     const QString status = textOr(statusValue).toLower();
     if (status == u"error") {
@@ -171,6 +227,9 @@ MealPlan parseBalance(const QString &body)
 
         if (kind == u"MEAL" && !plan.mealsRemaining) {
             plan.mealsRemaining = static_cast<int>(*amount);
+        } else if (kind == u"EXCHANGE") {
+            if (!plan.mealExchanges)
+                plan.mealExchanges = static_cast<int>(*amount);
         } else if (json::truthy(tender.value(QStringLiteral("IsCurrency"))) || kind == u"DEBIT") {
             const QString lowered = name.toLower();
             const bool voluntary = std::any_of(VOLUNTARY_WORDS.cbegin(), VOLUNTARY_WORDS.cend(),

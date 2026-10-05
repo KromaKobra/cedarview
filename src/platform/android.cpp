@@ -63,8 +63,9 @@ public:
     }
 
     // QtWebView has no cookie API, but the WebView's own CookieManager does.
-    // The federated logout alone is not enough: it leaves Self-Service's
-    // session cookie behind, and the app relaunched signed in.
+    // This is the whole of sign-out on the phone: Self-Service's session
+    // cookie and Microsoft's go together, so the app neither relaunches signed
+    // in nor signs straight back in without asking.
     void clearCookies() override
     {
         QJniObject::callStaticMethod<void>("com/kromakobra/cedarview/WebViewCookies", "clear");

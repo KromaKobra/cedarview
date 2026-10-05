@@ -5,6 +5,7 @@
 
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QSet>
 #include <QTimeZone>
 
 #include <algorithm>
@@ -53,6 +54,7 @@ std::optional<UpcomingChapel> parseItem(const QJsonValue &raw)
     chapel.title = obj.value(QStringLiteral("Title")).toString().trimmed();
     chapel.description = obj.value(QStringLiteral("Description")).toString().trimmed();
     chapel.willLivestream = json::truthy(obj.value(QStringLiteral("WillLiveStream")));
+    chapel.youtubeId = json::clean(obj.value(QStringLiteral("YouTubeId")));
     return chapel;
 }
 
@@ -132,16 +134,29 @@ QList<UpcomingChapel> parseUpcoming(const QJsonValue &payload)
     return soonestFirst(std::move(chapels));
 }
 
-QList<UpcomingChapel> fetchSchedule(const TransportPtr &transport, int pageSize, int maxPages)
+QJsonObject fetchSchedulePayload(const TransportPtr &transport, const FirstPageHandler &onFirstPage,
+                                 int pageSize, int maxPages)
 {
-    QList<UpcomingChapel> chapels;
+    QJsonArray items;
+    QSet<QString> seenIds;
     bool ranOut = false;
     for (int page = 1; page <= maxPages; ++page) {
-        const QList<UpcomingChapel> batch =
-            ChapelScheduleProvider(transport, pageSize, page).fetch();
-        for (const UpcomingChapel &chapel : batch) {
-            if (!chapels.contains(chapel))
-                chapels.append(chapel);
+        qCDebug(lcSchedule) << "chapel schedule: requesting page" << page;
+        const ChapelScheduleProvider provider(transport, pageSize, page);
+        const QJsonValue envelope = transport->get(provider.path()).raiseForSession().json();
+        // Parsed here, though only the raw items are kept, so a reshaped page
+        // fails the fetch rather than the cache that would hold it.
+        const QList<UpcomingChapel> batch = parseUpcoming(envelope);
+        if (page == 1 && onFirstPage)
+            onFirstPage(envelope.toObject());
+
+        for (const QJsonValue &item : envelope.toObject().value(QStringLiteral("Items")).toArray()) {
+            const QString id = item.toObject().value(QStringLiteral("Id")).toString();
+            if (id.isEmpty() ? items.contains(item) : seenIds.contains(id))
+                continue;
+            if (!id.isEmpty())
+                seenIds.insert(id);
+            items.append(item);
         }
         if (batch.size() < pageSize) {
             ranOut = true;
@@ -150,7 +165,13 @@ QList<UpcomingChapel> fetchSchedule(const TransportPtr &transport, int pageSize,
     }
     if (!ranOut)
         qCWarning(lcSchedule) << "chapel schedule: stopped after" << maxPages << "pages";
-    return soonestFirst(std::move(chapels));
+    qCDebug(lcSchedule) << "chapel schedule:" << items.size() << "items";
+    return QJsonObject{{QStringLiteral("Items"), items}};
+}
+
+QList<UpcomingChapel> fetchSchedule(const TransportPtr &transport, int pageSize, int maxPages)
+{
+    return parseUpcoming(fetchSchedulePayload(transport, {}, pageSize, maxPages));
 }
 
 std::optional<UpcomingChapel> nextChapel(const QList<UpcomingChapel> &chapels, const QDateTime &now)

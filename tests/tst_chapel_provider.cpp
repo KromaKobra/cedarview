@@ -7,6 +7,9 @@
 
 #include "testsupport.h"
 
+#include <condition_variable>
+#include <mutex>
+
 #include "core/providers/chapel.h"
 
 #include <functional>
@@ -37,6 +40,8 @@ QJsonValue parse(const char *text)
 }
 
 // Serves the fixtures, remembers what was asked for, and can be told to fail.
+// Records what was asked for. Thread-safe: the provider asks for the three
+// JSON endpoints at once.
 class Recording : public Transport
 {
 public:
@@ -45,12 +50,23 @@ public:
 
     Response get(const QString &path) override
     {
-        seen.append(path);
+        {
+            const std::lock_guard lock(mutex);
+            seen.append(path);
+        }
         if (handler)
             return handler(path);
         return inner.get(path);
     }
 
+    int count(const QString &fragment)
+    {
+        const std::lock_guard lock(mutex);
+        return static_cast<int>(std::count_if(seen.cbegin(), seen.cend(),
+                                              [&](const QString &p) { return p.contains(fragment); }));
+    }
+
+    std::mutex mutex;
     FixtureTransport inner{testing::fixturesDir()};
 };
 
@@ -316,17 +332,102 @@ private slots:
         QCOMPARE(s.entries.size(), 3);
     }
 
-    // Four requests: the page for the ID, then summary, ledger and fines.
+    // Four requests the first time: the page for the ID, then summary, ledger
+    // and fines (in no particular order — they go at once).
     void providerRequestsTheDashboardThenTheJson()
     {
         auto recording = std::make_shared<Recording>();
-        ChapelProvider(recording).fetch();
+        ChapelProvider provider(recording);
+        provider.fetch();
 
         QCOMPARE(recording->seen[0], CHAPEL_PATH);
-        QVERIFY(recording->seen[1].contains(SUMMARY_PATH));
-        QVERIFY(recording->seen[1].contains("studentId=1234567"));
-        QVERIFY(recording->seen[2].contains(LEDGER_PATH));
         QCOMPARE(recording->seen.size(), 4);
+        for (const QString &endpoint : {SUMMARY_PATH, LEDGER_PATH, FINES_PATH})
+            QCOMPARE(recording->count(endpoint + "?studentId=1234567"), 1);
+        QCOMPARE(provider.knownStudentId(), QStringLiteral("1234567"));
+    }
+
+    // A remembered ID makes a refresh three requests, not four.
+    void aKnownStudentIdSkipsTheDashboard()
+    {
+        auto recording = std::make_shared<Recording>();
+        const ChapelSummary s = ChapelProvider(recording, "1234567").fetch();
+        QCOMPARE(s.remaining, 16);
+        QVERIFY(!recording->seen.contains(CHAPEL_PATH));
+        QCOMPARE(recording->seen.size(), 3);
+    }
+
+    // A remembered ID that the server no longer answers for is re-read off the
+    // dashboard, and the JSON asked for once more.
+    void aStaleStudentIdFallsBackOnce()
+    {
+        auto recording = std::make_shared<Recording>();
+        recording->handler = [&](const QString &path) -> Response {
+            if (path.contains("studentId=9999999"))
+                throw TransportError(path + " returned HTTP 404", 404);
+            return recording->inner.get(path);
+        };
+        ChapelProvider provider(recording, "9999999");
+        const ChapelSummary s = provider.fetch();
+        QCOMPARE(s.remaining, 16);
+        QCOMPARE(provider.knownStudentId(), QStringLiteral("1234567"));
+        QCOMPARE(recording->seen.count(CHAPEL_PATH), 1);
+        QCOMPARE(recording->count("studentId=9999999"), 3);
+        QCOMPARE(recording->count("studentId=1234567"), 3);
+    }
+
+    // When the dashboard names the same student, the ID was not the problem:
+    // the error stands, rather than a second identical round.
+    void aServerErrorIsNotRetriedAsAStaleId()
+    {
+        auto recording = std::make_shared<Recording>();
+        recording->handler = [&](const QString &path) -> Response {
+            if (path.contains("Summary"))
+                throw TransportError(path + " returned HTTP 403", 403);
+            return recording->inner.get(path);
+        };
+        QVERIFY_THROWS_EXCEPTION(TransportError, ChapelProvider(recording, "1234567").fetch());
+        QCOMPARE(recording->count("Summary"), 1);
+    }
+
+    // Offline is not a stale ID; nothing is re-read.
+    void aNetworkFailureIsNotRetried()
+    {
+        auto recording = std::make_shared<Recording>();
+        recording->handler = [](const QString &path) -> Response {
+            throw TransportError("could not reach " + path);
+        };
+        QVERIFY_THROWS_EXCEPTION(TransportError, ChapelProvider(recording, "1234567").fetch());
+        QVERIFY(!recording->seen.contains(CHAPEL_PATH));
+    }
+
+    // The three JSON requests are in flight together: each one here waits
+    // until all three have arrived, which only works if they run at once.
+    void theThreeRequestsRunConcurrently()
+    {
+        auto recording = std::make_shared<Recording>();
+        std::mutex mutex;
+        std::condition_variable arrived;
+        int waiting = 0;
+        recording->handler = [&](const QString &path) -> Response {
+            std::unique_lock lock(mutex);
+            ++waiting;
+            arrived.notify_all();
+            if (!arrived.wait_for(lock, std::chrono::seconds(5), [&] { return waiting >= 3; }))
+                throw TransportError(QStringLiteral("the requests were made one at a time"));
+            lock.unlock();
+            return recording->inner.get(path);
+        };
+        QCOMPARE(ChapelProvider(recording, "1234567").fetch().remaining, 16);
+    }
+
+    void thePayloadKeepsAllThreeAsTheyArrived()
+    {
+        const QJsonObject payload =
+            ChapelProvider(std::make_shared<FixtureTransport>(testing::fixturesDir())).fetchPayload();
+        QCOMPARE(payload.keys(), (QStringList{"fines", "ledger", "summary"}));
+        QCOMPARE(payload.value("summary").toObject().value("SkipsRemaining").toInt(), 16);
+        QCOMPARE(buildSummary(payload).remaining, 16);
     }
 
     void theStudentIdIsFetchedOnceAndReused()

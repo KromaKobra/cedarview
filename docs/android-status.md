@@ -79,7 +79,7 @@ account`, Microsoft's page on screen, and after you authenticate, `login: `
 | Edge to edge: ribbon under the status bar, tab bar above the gesture handle | Needs real insets |
 | Status-bar icons contrast in both themes | Needs the real system bars |
 | Back gesture behaves at targetSdk 36 | Needs the real system |
-| Sign out drops the Self-Service cookie, not just the Entra one | QtWebView has no cookie API |
+| Sign out is immediate, the next sign-in asks for the account and password, and a relaunch stays on Welcome | The cookie wipe goes through `CookieManager` over JNI; QtWebView has no cookie API |
 | Theme and "signed in before" after the upgrade | The state directory moved from p4a's to `<filesDir>/mycu`; a one-time reset is expected, the login cookie is not affected |
 
 ### 3. The first real `--aab`

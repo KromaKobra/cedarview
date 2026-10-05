@@ -52,9 +52,8 @@ private slots:
     {
         QTemporaryDir dir;
         SessionStore store(dir.path());
-        SessionState state = store.load();
-        state.lastTerm = "Fall 2026";
-        store.markLogin(state);
+        store.update([](SessionState &state) { state.lastTerm = "Fall 2026"; });
+        store.markLogin();
 
         const SessionState reloaded = SessionStore(dir.path()).load();
         QVERIFY(reloaded.hasLoggedIn());
@@ -91,14 +90,75 @@ private slots:
         QVERIFY(!store.load().hasLoggedIn());
     }
 
-    void anOlderSchemaIsDiscarded()
+    void anUnknownSchemaIsDiscarded()
     {
         QTemporaryDir dir;
         SessionStore store(dir.path());
         store.ensureDirs();
-        writeFile(store.path(), QByteArray(R"({"schema": )") + QByteArray::number(SCHEMA_VERSION - 1)
-                                    + R"(, "last_login": 123.0})");
-        QVERIFY(!store.load().hasLoggedIn());
+        for (const int schema : {0, SCHEMA_VERSION + 1}) {
+            writeFile(store.path(), QByteArray(R"({"schema": )") + QByteArray::number(schema)
+                                        + R"(, "last_login": 123.0})");
+            QVERIFY(!store.load().hasLoggedIn());
+        }
+    }
+
+    // v2 only added fields. Discarding a v1 file would show every existing
+    // user the first-run Welcome screen on upgrade.
+    void aV1FileKeepsItsLogin()
+    {
+        QTemporaryDir dir;
+        SessionStore store(dir.path());
+        store.ensureDirs();
+        writeFile(store.path(), R"({"schema": 1, "last_login": 123.0, "last_term": "Fall Semester 2026"})");
+        const SessionState state = store.load();
+        QCOMPARE(state.lastLogin, 123.0);
+        QCOMPARE(state.lastTerm, QStringLiteral("Fall Semester 2026"));
+        QCOMPARE(state.studentId, QString());
+        QVERIFY(state.fromV1);
+
+        // …and is written back as v2 by the next change.
+        QVERIFY(!store.markSuccess().fromV1);
+        const QJsonObject raw = QJsonDocument::fromJson(testing::readText(store.path()).toUtf8()).object();
+        QCOMPARE(raw.value("schema").toInt(), SCHEMA_VERSION);
+        QCOMPARE(raw.value("last_login").toDouble(), 123.0);
+        QVERIFY(!store.load().fromV1);
+    }
+
+    // Regression: the login controller and the chapel viewmodel each held a
+    // copy of the state and saved the whole thing, so chapel's "last success"
+    // wrote back the lastLogin of 0 it had read at startup over the sign-in
+    // just recorded.
+    void eachWriterChangesOnlyItsOwnField()
+    {
+        QTemporaryDir dir;
+        SessionStore login(dir.path());
+        SessionStore chapel(dir.path());
+        const SessionState stale = chapel.load(); // read before the sign-in
+
+        login.markLogin();
+        chapel.update([](SessionState &state) { state.studentId = "1234567"; });
+        chapel.markSuccess();
+
+        const SessionState now = SessionStore(dir.path()).load();
+        QVERIFY(now.hasLoggedIn());
+        QVERIFY(now.lastSuccess > 0);
+        QCOMPARE(now.studentId, QStringLiteral("1234567"));
+        QVERIFY(!stale.hasLoggedIn());
+    }
+
+    void theRememberedIdsRoundTrip()
+    {
+        QTemporaryDir dir;
+        SessionStore store(dir.path());
+        store.update([](SessionState &state) {
+            state.studentId = "1234567";
+            state.mealsPersonId = "0000000";
+            state.mealsCard = "C1";
+        });
+        const SessionState state = SessionStore(dir.path()).load();
+        QCOMPARE(state.studentId, QStringLiteral("1234567"));
+        QCOMPARE(state.mealsPersonId, QStringLiteral("0000000"));
+        QCOMPARE(state.mealsCard, QStringLiteral("C1"));
     }
 
     void unknownKeysFromAFutureVersionAreIgnored()
@@ -135,20 +195,22 @@ private slots:
     {
         QTemporaryDir dir;
         SessionStore store(dir.path());
-        store.save(SessionState{1.0, 2.0, 3.0, "T", SCHEMA_VERSION});
+        store.save(SessionState{1.0, 2.0, 3.0, "T", "1", "2", "3", SCHEMA_VERSION});
         const QJsonObject raw = QJsonDocument::fromJson(testing::readText(store.path()).toUtf8()).object();
         QStringList keys = raw.keys();
         keys.sort();
-        QCOMPARE(keys, (QStringList{"last_expiry", "last_login", "last_success", "last_term", "schema"}));
+        QCOMPARE(keys, (QStringList{"last_expiry", "last_login", "last_success", "last_term", "meals_card",
+                                    "meals_person_id", "schema", "student_id"}));
     }
 
     void clearForgetsEverything()
     {
         QTemporaryDir dir;
         SessionStore store(dir.path());
-        SessionState state = store.load();
-        store.markLogin(state);
+        store.update([](SessionState &state) { state.studentId = "1234567"; });
+        store.markLogin();
         store.clear();
+        QCOMPARE(store.load().studentId, QString());
         QVERIFY(!store.load().hasLoggedIn());
     }
 

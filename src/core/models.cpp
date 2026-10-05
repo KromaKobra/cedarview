@@ -1,6 +1,7 @@
 #include "models.h"
 
 #include <QLocale>
+#include <QRegularExpression>
 
 #include <algorithm>
 #include <cmath>
@@ -118,6 +119,16 @@ QString MealPlan::planDescription() const
     if (period == u"term")
         return QStringLiteral("Semester meal plan");
     return {};
+}
+
+std::optional<int> MealPlan::mealsPerPeriod() const
+{
+    static const QRegularExpression number(QStringLiteral("(\\d+)"));
+    const QRegularExpressionMatch match = number.match(planName);
+    if (!match.hasMatch())
+        return std::nullopt;
+    const int count = match.captured(1).toInt();
+    return count > 0 ? std::optional<int>(count) : std::nullopt;
 }
 
 bool MealPlan::hasAny() const
