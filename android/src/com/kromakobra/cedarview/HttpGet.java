@@ -1,7 +1,8 @@
 // HTTPS GETs over the platform's own stack, called from C++ over JNI.
 //
-// get() is a plain request, for the public services (the dining menu and the
-// chapel schedule), from src/core/httptransport.cpp.
+// get() is a plain request, for the public services (the dining menu, the
+// chapel schedule and the Commons Express menu), from
+// src/core/httptransport.cpp.
 //
 // getWithWebViewCookies() is the Self-Service request, from
 // src/platform/android_sessiontransport.cpp. It carries the WebView's session
@@ -43,7 +44,8 @@ public final class HttpGet
 {
     private HttpGet() {}
 
-    public static String[] get(String url, String userAgent, String accept, int timeoutMs)
+    // `headers` is extra request headers, flat: name, value, name, value…
+    public static String[] get(String url, String userAgent, String accept, int timeoutMs, String[] headers)
     {
         HttpURLConnection connection = null;
         try {
@@ -53,6 +55,8 @@ public final class HttpGet
             connection.setReadTimeout(timeoutMs);
             connection.setRequestProperty("User-Agent", userAgent);
             connection.setRequestProperty("Accept", accept);
+            for (int i = 0; headers != null && i + 1 < headers.length; i += 2)
+                connection.setRequestProperty(headers[i], headers[i + 1]);
 
             final int status = connection.getResponseCode();
             final InputStream stream =

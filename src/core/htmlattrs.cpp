@@ -9,8 +9,8 @@ bool isSpace(QChar c)
     return c == u' ' || c == u'\t' || c == u'\n' || c == u'\r' || c == u'\f';
 }
 
-// `&amp;`, `&quot;`, `&#39;`, `&#x27;`, `&nbsp;` and friends. Anything not
-// recognised is left as written, which is what a browser does too.
+} // namespace
+
 QString decodeEntities(const QString &text)
 {
     if (!text.contains(u'&'))
@@ -61,8 +61,6 @@ QString decodeEntities(const QString &text)
     }
     return out;
 }
-
-} // namespace
 
 std::optional<Attributes> firstElementWith(const QString &page, const QString &attribute)
 {

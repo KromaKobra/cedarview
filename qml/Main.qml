@@ -30,6 +30,8 @@ ApplicationWindow {
     property int currentPage: 0
     // Which of DiningSections' pages is showing: plan, menu or hours.
     property int diningSection: 0
+    // Under Menu: The Commons or The Commons Express.
+    property int menuVenue: 0
     property bool searchOpen: false
 
     readonly property var pageTitles: ["Today", "Chapel", "Dining", "Campus"]
@@ -41,6 +43,8 @@ ApplicationWindow {
         if (tab === 2 && section >= 0)
             diningSection = section
         if (tab === 2 && section === 1) {
+            // A dish is on The Commons' menu.
+            menuVenue = 0
             dining.selectDay(menuDay)
             if (menuMeal && menuMeal.length > 0)
                 dining.selectMeal(menuMeal)
@@ -257,6 +261,8 @@ ApplicationWindow {
                 DiningSections {
                     section: window.diningSection
                     onSectionRequested: (index) => window.diningSection = index
+                    menuVenue: window.menuVenue
+                    onMenuVenueRequested: (index) => window.menuVenue = index
                 }
                 CampusView {}
             }

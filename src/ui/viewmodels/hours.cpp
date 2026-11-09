@@ -49,6 +49,58 @@ QString spanText(int open, int close)
     return fmt::clock(timeOf(open)) + QStringLiteral(" – ") + fmt::clock(timeOf(close));
 }
 
+// "1 PM–4 PM, 8 PM–11 PM", or "closed".
+QString shortSpans(QDate day, const DayWindows &windows)
+{
+    QStringList spans;
+    for (const Window &window : windows)
+        spans.append(fmt::clockShort(at(day, window.open).time()) + QStringLiteral("–")
+                     + fmt::clockShort(at(day, window.close).time()));
+    return spans.isEmpty() ? QStringLiteral("closed") : spans.join(QStringLiteral(", "));
+}
+
+// The days of `day`'s type whose hours are not that type's usual ones, Monday
+// first: "Wed 1 PM–4 PM", "Fri closed". A day that keeps the usual hours and
+// adds to them is named with what it adds. The usual hours are the ones most
+// of those days have. Only published hours can differ within a day type; the
+// posted tables never do, so for them this is always "".
+QString exceptionsTo(QDate day, const std::function<DayWindows(QDate)> &on)
+{
+    QList<QDate> days;
+    for (int i = 0; i < 7; ++i) {
+        if (diningDayOf(day.addDays(i)) == diningDayOf(day))
+            days.append(day.addDays(i));
+    }
+    std::sort(days.begin(), days.end(), [](QDate a, QDate b) { return a.dayOfWeek() < b.dayOfWeek(); });
+
+    QList<DayWindows> windows;
+    for (QDate d : days)
+        windows.append(on(d));
+    DayWindows usual;
+    qsizetype most = 0;
+    for (const DayWindows &candidate : windows) {
+        const qsizetype n = windows.count(candidate);
+        if (n > most) {
+            most = n;
+            usual = candidate;
+        }
+    }
+
+    QStringList notes;
+    for (qsizetype i = 0; i < days.size(); ++i) {
+        if (windows[i] == usual)
+            continue;
+        DayWindows extra;
+        for (const Window &window : windows[i]) {
+            if (!usual.contains(window))
+                extra.append(window);
+        }
+        const bool adds = !usual.isEmpty() && windows[i].size() == usual.size() + extra.size();
+        notes.append(fmt::dayShort(days[i]) + u' ' + shortSpans(days[i], adds ? extra : windows[i]));
+    }
+    return notes.join(QStringLiteral(" · "));
+}
+
 // Back-to-back windows (hot breakfast, then continental) read as one opening:
 // The Commons is open "until 9:30 AM", not "until 8:15 AM".
 QDateTime runEnd(const Schedule &schedule, QDateTime closes)
@@ -73,7 +125,11 @@ QDateTime runEnd(const Schedule &schedule, QDateTime closes)
 
 QHash<int, QByteArray> TimelineModel::roleNames() const
 {
-    return {{NameRole, "name"}, {StatusRole, "status"}, {LiveRole, "live"}, {SegmentsRole, "segments"}};
+    return {{NameRole, "name"},
+            {StatusRole, "status"},
+            {LiveRole, "live"},
+            {SegmentsRole, "segments"},
+            {NoteRole, "note"}};
 }
 
 int TimelineModel::rowCount(const QModelIndex &parent) const
@@ -95,6 +151,8 @@ QVariant TimelineModel::data(const QModelIndex &index, int role) const
         return row.live;
     case SegmentsRole:
         return row.segments;
+    case NoteRole:
+        return row.note;
     default:
         return {};
     }
@@ -321,6 +379,15 @@ void HoursViewModel::refreshAll()
     emit changed();
 }
 
+void HoursViewModel::reload()
+{
+    m_now = now();
+    if (m_followToday)
+        m_dayType = todayType();
+    rebuild();
+    emit changed();
+}
+
 void HoursViewModel::rebuild()
 {
     const bool today = showingToday();
@@ -365,33 +432,46 @@ void HoursViewModel::rebuild()
     for (const Venue &venue : venues()) {
         TimelineModel::Row row;
         row.name = venue.name;
-        const auto &window = venue.hours[m_dayType];
-        const auto &exchange = venue.exchange[m_dayType];
-        if (!window) {
+        // Through on(), which is the venue's published hours when it has
+        // some (core/hours.h, setLiveHours).
+        const DayWindows windows = venue.on(day);
+        row.note = exceptionsTo(day, [&venue](QDate d) { return venue.on(d); });
+        if (windows.isEmpty()) {
             row.status = QStringLiteral("Closed");
             rows.append(row);
             continue;
         }
-        const int open = window->open;
-        const int close = window->close;
-        if (exchange && exchange->close < close) {
-            row.segments.append(segment(open, exchange->close,
-                                        kindOf(open, exchange->close, minute, today, QStringLiteral("next"))));
-            row.segments.append(segment(exchange->close, close,
-                                        kindOf(exchange->close, close, minute, today, QStringLiteral("flexOnly"))));
-        } else {
-            row.segments.append(segment(open, close, kindOf(open, close, minute, today, QStringLiteral("next"))));
+        const auto &exchange = venue.exchange[m_dayType];
+        for (const Window &window : windows) {
+            const int open = window.open;
+            const int close = window.close;
+            // Exchange tails come from the posted table, which has one window.
+            if (windows.size() == 1 && exchange && exchange->close < close) {
+                row.segments.append(segment(open, exchange->close,
+                                            kindOf(open, exchange->close, minute, today, QStringLiteral("next"))));
+                row.segments.append(segment(exchange->close, close,
+                                            kindOf(exchange->close, close, minute, today, QStringLiteral("flexOnly"))));
+            } else {
+                row.segments.append(segment(open, close, kindOf(open, close, minute, today, QStringLiteral("next"))));
+            }
         }
 
         if (!today) {
-            row.status = spanText(open, close);
-        } else if (window->contains(minute)) {
-            row.status = QStringLiteral("Open until ") + fmt::clock(timeOf(close));
+            QStringList spans;
+            for (const Window &window : windows)
+                spans.append(spanText(window.open, window.close));
+            row.status = spans.join(QStringLiteral(", "));
+        } else if (const auto current = std::find_if(windows.cbegin(), windows.cend(),
+                                                     [minute](const Window &w) { return w.contains(minute); });
+                   current != windows.cend()) {
+            row.status = QStringLiteral("Open until ") + fmt::clock(timeOf(current->close));
             row.live = true;
-        } else if (open > minute) {
-            row.status = QStringLiteral("Opens ") + fmt::clock(timeOf(open));
+        } else if (const auto next = std::find_if(windows.cbegin(), windows.cend(),
+                                                  [minute](const Window &w) { return w.open > minute; });
+                   next != windows.cend()) {
+            row.status = QStringLiteral("Opens ") + fmt::clock(timeOf(next->open));
         } else {
-            row.status = QStringLiteral("Closed at ") + fmt::clock(timeOf(close));
+            row.status = QStringLiteral("Closed at ") + fmt::clock(timeOf(windows.last().close));
         }
         rows.append(row);
     }

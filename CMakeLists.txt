@@ -42,6 +42,7 @@ add_library(cedarview_ui STATIC
     src/ui/viewmodels/sourcestatus.h src/ui/viewmodels/sourcestatus.cpp
     src/ui/viewmodels/chapel.h src/ui/viewmodels/chapel.cpp
     src/ui/viewmodels/dining.h src/ui/viewmodels/dining.cpp
+    src/ui/viewmodels/express.h src/ui/viewmodels/express.cpp
     src/ui/viewmodels/curfew.h src/ui/viewmodels/curfew.cpp
     src/ui/viewmodels/hours.h src/ui/viewmodels/hours.cpp
     src/ui/viewmodels/campus.h src/ui/viewmodels/campus.cpp
@@ -100,7 +101,9 @@ set(CEDARVIEW_QML
     qml/ChapelView.qml
     qml/Chip.qml
     qml/ClockText.qml
+    qml/CommonsExpressView.qml
     qml/CurfewHero.qml
+    qml/DiningMenus.qml
     qml/DiningSections.qml
     qml/EmptyState.qml
     qml/Glyph.qml

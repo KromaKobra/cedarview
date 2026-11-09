@@ -2,7 +2,9 @@
 // periods and every campus building.
 //
 // **Hand-entered, like calendar.h and curfew.h.** Nothing Cedarville publishes
-// carries these as data. They are copied from two pages:
+// carries these as data — with one exception: The Commons Express's storefront
+// publishes its own, and while they are loaded they replace its row here (see
+// setLiveHours). They are copied from two pages:
 //
 //   dining   https://www.cedarville.edu/offices/the-commons/dining-information
 //            (2026-09-28)
@@ -81,7 +83,13 @@ struct Venue
     std::array<std::optional<Window>, 3> hours;
     std::array<std::optional<Window>, 3> exchange;
 
+    // Its hours on `day`: the published ones while there are some
+    // (setLiveHours), the posted ones in the table otherwise.
     DayWindows on(QDate day) const;
+    // The table's alone.
+    DayWindows postedOn(QDate day) const;
+    // Published hours stand in for the table's.
+    bool live() const;
 };
 
 const QList<Venue> &venues();
@@ -138,6 +146,11 @@ struct Opening
 std::optional<Opening> currentOpening(const Schedule &schedule, const QDateTime &now);
 
 bool isOpen(const Schedule &schedule, const QDateTime &now);
+
+// Hours a venue in venues() publishes itself, used in place of its posted ones
+// wherever they are read — the Hours tab, Today, search. An empty schedule
+// goes back to the posted ones. Read and written on the GUI thread only.
+void setLiveHours(const QString &venue, Schedule schedule);
 
 // When the current opening ends; nothing when closed.
 std::optional<QDateTime> closesAt(const Schedule &schedule, const QDateTime &now);

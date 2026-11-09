@@ -30,6 +30,7 @@ namespace mycu {
 
 namespace cachekey {
 inline const QString CHAPEL = QStringLiteral("chapel");
+inline const QString EXPRESS = QStringLiteral("express");
 inline const QString MEALS = QStringLiteral("meals");
 inline const QString MENUS = QStringLiteral("menus");
 inline const QString SCHEDULE = QStringLiteral("schedule");

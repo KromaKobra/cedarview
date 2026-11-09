@@ -15,9 +15,10 @@
 
 namespace mycu {
 
-HttpTransport::HttpTransport(int timeoutMs, QString userAgent)
+HttpTransport::HttpTransport(int timeoutMs, QString userAgent, QList<HttpHeader> headers)
     : m_timeoutMs(timeoutMs)
     , m_userAgent(userAgent.isEmpty() ? USER_AGENT_SUFFIX : std::move(userAgent))
+    , m_headers(std::move(headers))
 {}
 
 #ifdef Q_OS_ANDROID
@@ -26,18 +27,31 @@ Response HttpTransport::get(const QString &path)
 {
     const QString url = resolve(path);
 
+    QJniEnvironment env;
+
+    // The extra headers as one flat array, name then value.
+    jobjectArray headers = env->NewObjectArray(jsize(m_headers.size() * 2), env.findClass("java/lang/String"), nullptr);
+    for (qsizetype i = 0; i < m_headers.size(); ++i) {
+        for (int part = 0; part < 2; ++part) {
+            const QByteArray &bytes = part == 0 ? m_headers[i].first : m_headers[i].second;
+            jstring value = env->NewStringUTF(bytes.constData());
+            env->SetObjectArrayElement(headers, jsize(i * 2 + part), value);
+            env->DeleteLocalRef(value);
+        }
+    }
+
     // HttpGet.get returns {status, finalUrl, contentType, body}; a status of -1
     // means the request never completed, and the body slot carries why. It
     // catches its own exceptions, so nothing is left pending on the JNI side.
     const QJniObject result = QJniObject::callStaticObjectMethod(
         "com/kromakobra/cedarview/HttpGet", "get",
-        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)[Ljava/lang/String;",
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I[Ljava/lang/String;)[Ljava/lang/String;",
         QJniObject::fromString(url).object<jstring>(),
         QJniObject::fromString(m_userAgent).object<jstring>(),
         QJniObject::fromString(QStringLiteral("application/json, */*")).object<jstring>(),
-        jint(m_timeoutMs));
+        jint(m_timeoutMs), headers);
+    env->DeleteLocalRef(headers);
 
-    QJniEnvironment env;
     if (env.checkAndClearExceptions() || !result.isValid())
         throw TransportError(QStringLiteral("could not reach %1: the Java HTTP helper failed").arg(url));
 
@@ -75,6 +89,8 @@ Response HttpTransport::get(const QString &path)
     QNetworkRequest request{QUrl(url)};
     request.setHeader(QNetworkRequest::UserAgentHeader, m_userAgent);
     request.setRawHeader("Accept", "application/json, */*");
+    for (const HttpHeader &header : m_headers)
+        request.setRawHeader(header.first, header.second);
     request.setTransferTimeout(m_timeoutMs);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                          QNetworkRequest::NoLessSafeRedirectPolicy);

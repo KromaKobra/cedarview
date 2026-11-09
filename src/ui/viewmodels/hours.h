@@ -2,7 +2,9 @@
 // timeline of the day, and the meal-swipe periods.
 //
 // Like CurfewViewModel this wraps hand-entered tables (core/hours.h) and a
-// clock, not a provider: there is nothing to fetch. It is a viewmodel rather
+// clock, not a provider: there is nothing to fetch here. The one venue that
+// publishes its own hours (The Commons Express) has them fetched by its own
+// viewmodel, which hands them to core/hours.h, and reload() picks them up. It is a viewmodel rather
 // than JavaScript in the QML so the arithmetic is tested and the bindings are
 // checked by tst_qml_contract.
 //
@@ -26,7 +28,9 @@ namespace mycu {
 inline constexpr int TIMELINE_START = 7 * 60;
 inline constexpr int TIMELINE_END = 24 * 60;
 
-// One bar per place, for the day type shown. `segments` is a list of
+// One bar per place, for the day type shown. `note` names the days of that
+// type whose hours differ from the one shown ("Wed 1 PM–4 PM"), which
+// only published hours can (core/hours.h, setLiveHours). `segments` is a list of
 // {left, width, kind}, the first two as fractions of the axis and `kind` one
 // of "past", "now", "next" or "flexOnly" (the tail of an exchange venue's day,
 // after meal exchanges stop).
@@ -40,6 +44,7 @@ public:
         StatusRole,
         LiveRole,
         SegmentsRole,
+        NoteRole,
     };
 
     struct Row
@@ -48,6 +53,7 @@ public:
         QString status;
         bool live = false;
         QVariantList segments;
+        QString note;
 
         bool operator==(const Row &) const = default;
     };
@@ -146,6 +152,8 @@ public slots:
     void setDayType(int type);
     // Re-read the clock. Named to match the other viewmodels.
     void refreshAll();
+    // Rebuild now: a venue's published hours changed.
+    void reload();
 
 signals:
     void changed();

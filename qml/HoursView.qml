@@ -190,6 +190,7 @@ ScrollPage {
                 required property string status
                 required property bool live
                 required property var segments
+                required property string note
                 Layout.fillWidth: true
                 Layout.topMargin: 9
                 Layout.bottomMargin: 0
@@ -214,6 +215,18 @@ ScrollPage {
                         font.pixelSize: 12
                         font.weight: Font.DemiBold
                     }
+                }
+
+                // Days of this type with other hours: "Wed 1 PM–4 PM".
+                Text {
+                    visible: place.note.length > 0
+                    Layout.fillWidth: true
+                    Layout.topMargin: -3
+                    text: place.note
+                    color: theme.muted
+                    font.family: theme.ui
+                    font.pixelSize: 12
+                    wrapMode: Text.Wrap
                 }
 
                 Item {

@@ -12,6 +12,7 @@
 #include "ui/viewmodels/chapel.h"
 #include "ui/viewmodels/curfew.h"
 #include "ui/viewmodels/dining.h"
+#include "ui/viewmodels/express.h"
 #include "ui/viewmodels/format.h"
 
 #include <QJsonDocument>
@@ -1182,6 +1183,139 @@ private slots:
         QCOMPARE(vm.mealsRemaining(), 16);
         QCOMPARE(vm.diningDollars(), QStringLiteral("$102.34"));
         QVERIFY(vm.planStatus()->fromCache());
+    }
+
+    // ---- The Commons Express ----------------------------------------------------
+
+    // Fetches run in line, so the tests need no event loop.
+    static void fetchInLine(ExpressViewModel &vm)
+    {
+        vm.fetchMenu = [](ExpressProvider provider, ExpressViewModel::Done done, ExpressViewModel::Failed failed) {
+            try {
+                const QJsonValue payload = provider.fetchPayload();
+                done(parseExpress(payload), payload);
+            } catch (...) {
+                failed(std::current_exception());
+            }
+        };
+    }
+
+    void theExpressMenuLoadsAndIsSavedForNextTime()
+    {
+        const QString dir = freshDir();
+        auto transport = std::make_shared<FixtureTransport>(testing::fixturesDir());
+        {
+            ExpressViewModel vm(transport, Storage::at(dir));
+            fetchInLine(vm);
+            QVERIFY(!vm.menuStatus()->hasData());
+            vm.refresh();
+            QVERIFY(vm.menuStatus()->hasData());
+            QVERIFY(!vm.menuStatus()->fromCache());
+            const QVariantMap first = vm.categories().first().toMap();
+            QCOMPARE(first.value("name").toString(), QStringLiteral("Pizza by the Slice"));
+            QCOMPARE(first.value("items").toList().first().toMap().value("price").toString(), QStringLiteral("$1.00"));
+        }
+        ExpressViewModel next(transport, Storage::at(dir));
+        QVERIFY(next.menuStatus()->fromCache());
+        QCOMPARE(next.categories().size(), 7);
+    }
+
+    void aFailedExpressRefreshKeepsTheMenuAndSaysWhy()
+    {
+        ExpressViewModel vm(std::make_shared<FixtureTransport>(testing::fixturesDir()));
+        fetchInLine(vm);
+        vm.refresh();
+        const int shown = vm.categories().size();
+
+        vm.fetchMenu = [](ExpressProvider, ExpressViewModel::Done, ExpressViewModel::Failed failed) {
+            failed(make<TransportError>("HTTP 401"));
+        };
+        vm.refresh();
+        QCOMPARE(vm.categories().size(), shown);
+        QVERIFY(vm.menuStatus()->error().startsWith("Couldn't reach the Commons Express menu"));
+        QVERIFY(!vm.menuStatus()->loading());
+    }
+
+    void anExpressFetchFromBeforePreviewIsDropped()
+    {
+        ExpressViewModel vm(std::make_shared<FixtureTransport>(testing::fixturesDir()));
+        ExpressViewModel::Done late;
+        vm.fetchMenu = [&late](ExpressProvider, ExpressViewModel::Done done, ExpressViewModel::Failed) {
+            late = done;
+        };
+        vm.refresh();
+        vm.setPreview(true);
+        late(ExpressMenu{{ExpressCategory{"Stale", {ExpressItem{"Old", "$9.99", ""}}}}, {}}, QJsonValue());
+        QVERIFY(vm.categories().isEmpty());
+        QVERIFY(!vm.menuStatus()->hasData());
+    }
+
+    // Monday 2026-11-09, the day the hours were captured: 8–11 PM.
+    void expressHoursSayWhetherItIsOpen()
+    {
+        ExpressViewModel vm(std::make_shared<FixtureTransport>(testing::fixturesDir()));
+        fetchInLine(vm);
+        vm.refresh();
+        QVERIFY(vm.liveHours());
+        const QDate monday(2026, 11, 9);
+
+        vm.now = [&] { return QDateTime(monday, QTime(12, 0)); };
+        QVERIFY(!vm.open());
+        QCOMPARE(vm.hoursStatus(), QStringLiteral("Opens 8:00 PM"));
+
+        vm.now = [&] { return QDateTime(monday, QTime(21, 30)); };
+        QVERIFY(vm.open());
+        QCOMPARE(vm.hoursStatus(), QStringLiteral("Open until 11:00 PM"));
+
+        vm.now = [&] { return QDateTime(monday, QTime(23, 30)); };
+        QCOMPARE(vm.hoursStatus(), QStringLiteral("Opens tomorrow 8:00 PM"));
+
+        // Friday night, past closing: Saturday is closed, so Sunday.
+        vm.now = [&] { return QDateTime(monday.addDays(4), QTime(23, 30)); };
+        QCOMPARE(vm.hoursStatus(), QStringLiteral("Opens Sun 8:00 PM"));
+
+        const QVariantList week = vm.weekHours();
+        QCOMPARE(week.size(), 7);
+        QCOMPARE(week.at(0).toMap().value("day").toString(), QStringLiteral("Mon"));
+        QCOMPARE(week.at(2).toMap().value("hours").toString(), QStringLiteral("1 PM–4 PM, 8 PM–11 PM"));
+        QCOMPARE(week.at(5).toMap().value("hours").toString(), QStringLiteral("Closed"));
+        QVERIFY(week.at(4).toMap().value("today").toBool());
+    }
+
+    // The Hours tab, Today and search read the storefront's hours too, for as
+    // long as they are loaded.
+    void theStorefrontsHoursArePublished()
+    {
+        const auto expressVenue = [] {
+            for (const hours::Venue &venue : hours::venues()) {
+                if (venue.name == ExpressProvider::label)
+                    return venue;
+            }
+            return hours::Venue{};
+        };
+        const QDate wednesday(2026, 11, 11);
+        {
+            ExpressViewModel vm(std::make_shared<FixtureTransport>(testing::fixturesDir()));
+            QVERIFY(!expressVenue().live());
+            fetchInLine(vm);
+            QSignalSpy spy(&vm, &ExpressViewModel::hoursChanged);
+            vm.refresh();
+            QCOMPARE(spy.count(), 1);
+            QVERIFY(expressVenue().live());
+            QCOMPARE(expressVenue().on(wednesday).size(), 2);
+        }
+        QVERIFY(!expressVenue().live());
+        QCOMPARE(expressVenue().on(wednesday).size(), 1);
+    }
+
+    // Before anything is fetched, the posted hours stand in.
+    void expressHoursFallBackToThePostedOnes()
+    {
+        ExpressViewModel vm(std::make_shared<FixtureTransport>(testing::fixturesDir()));
+        QVERIFY(!vm.liveHours());
+        vm.now = [] { return QDateTime(QDate(2026, 11, 9), QTime(21, 0)); };
+        QVERIFY(vm.open());
+        QCOMPARE(vm.weekHours().at(5).toMap().value("hours").toString(), QStringLiteral("Closed"));
     }
 
     void thePlanRemembersItsTarget()

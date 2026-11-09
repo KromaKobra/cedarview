@@ -17,6 +17,40 @@ important fact for planning, and it is why the transport now routes by origin.
 
 ---
 
+## ✅ The Commons Express menu — DONE (not on a Cedarville service)
+
+Not in the dining feed: checked 2026-11-09, `/api/menus` carries The Commons'
+twelve stations and nothing else, and the dining site's `menu.js` calls no other
+endpoint. The Commons Express lives only on its ordering site, an OnCampusPOS
+storefront for Pioneer College Caterers:
+
+```
+GET https://cedarville.oncampuspos.com/api/frontend/item-category/items/the-commons-express
+    ?slug=the-commons-express&order_column=sort&order_type=asc
+x-api-key: <the key written into the storefront's own page>
+```
+
+What the storefront's page itself sends. No sign-in, but every request needs
+the `x-api-key` header; the key is served to every visitor in the page's HTML,
+so it is not a secret — but it is the storefront's, not ours, and could change.
+If it does, the fetch fails (401/403) and the page still has its Order button.
+Response: `{"data": [{name, items: [{name, currency_price, description_alt, …}]}]}`,
+categories in the storefront's order. Details and the parsing rules are in
+`src/core/providers/express.h`; a capture is in `tests/fixtures/`.
+
+Its hours come from a second request, the storefront's restaurant record
+(`/api/frontend/restaurant/show/the-commons-express`): `time_slots`, with `day`
+0 = Sunday … 6 = Saturday. On 2026-11-09: 8–11 PM Sunday to Friday, 1–4 PM on
+Wednesday as well, Saturday closed. Only `time_slots` is kept — the record also
+has reviews, a phone number and an email. If that request fails, the menu
+still loads and the page uses the posted hours in `core/hours.h`.
+
+While they are loaded, these hours also replace The Commons Express's row in
+`core/hours.h` (`hours::setLiveHours`), so the Hours tab, Today's "Still open"
+and search use them too. The Hours tab groups days as Mon–Fri / Sat / Sun, so
+a day that differs from the rest of its group gets a note under the row
+("Wed 1 PM–4 PM").
+
 ## ✅ 2. Home Cooking for every meal — DONE
 
 Fully working, live, committed, and tested against a real capture.

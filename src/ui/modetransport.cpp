@@ -1,6 +1,7 @@
 #include "modetransport.h"
 
 #include "core/providers/chapel_schedule.h"
+#include "core/providers/express.h"
 #include "demotransport.h"
 
 namespace mycu {
@@ -20,7 +21,9 @@ TransportPtr makePreviewTransport(const QString &root, std::function<QDate()> to
     auto fixtures = std::make_shared<FixtureTransport>(root);
     auto router = std::make_shared<TransportRouter>(std::make_shared<RedatedBalanceTransport>(fixtures, today));
     router->route(DINING_BASE, std::make_shared<RedatedMenusTransport>(fixtures, today))
-        .route(CHAPEL_MEDIA_BASE, std::make_shared<RedatedScheduleTransport>(fixtures, today));
+        .route(CHAPEL_MEDIA_BASE, std::make_shared<RedatedScheduleTransport>(fixtures, today))
+        // Not dated, so served as captured.
+        .route(ORDERING_BASE, fixtures);
     return router;
 }
 

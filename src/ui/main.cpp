@@ -26,6 +26,7 @@
 #include "core/log.h"
 #include "core/providers/chapel.h"
 #include "core/providers/chapel_schedule.h"
+#include "core/providers/express.h"
 #include "core/session.h"
 #include "core/transport.h"
 #include "platform/backend.h"
@@ -38,6 +39,7 @@
 #include "ui/viewmodels/chapel.h"
 #include "ui/viewmodels/curfew.h"
 #include "ui/viewmodels/dining.h"
+#include "ui/viewmodels/express.h"
 #include "ui/viewmodels/hours.h"
 #include "ui/viewmodels/search.h"
 #include "ui/viewmodels/today.h"
@@ -363,13 +365,14 @@ int main(int argc, char **argv)
         ? std::function<QDateTime()>([pinned] { return *pinned; })
         : std::function<QDateTime()>([] { return QDateTime::currentDateTime(); });
 
-    // The app talks to three services with different auth, so requests are
+    // The app talks to four services with different auth, so requests are
     // routed by origin (see TransportRouter):
     //
     //   selfservice.cedarville.edu   SAML/Entra session   -> the WebView (desktop),
     //                                                        HTTPS with its cookies (Android)
     //   diningdata.cedarville.edu    none at all          -> plain HTTPS
     //   mediaserve.cedarville.edu    none at all          -> plain HTTPS
+    //   cedarville.oncampuspos.com   a public API key     -> plain HTTPS
     //
     // Routing is a correctness requirement, not a shortcut: an in-page fetch()
     // is bound by the same-origin policy, so a WebView parked on Self-Service
@@ -391,7 +394,11 @@ int main(int argc, char **argv)
         // they go straight out over HTTPS rather than through the browser.
         auto router = std::make_shared<TransportRouter>(sessionTransport);
         router->route(DINING_BASE, std::make_shared<HttpTransport>())
-            .route(CHAPEL_MEDIA_BASE, std::make_shared<HttpTransport>());
+            .route(CHAPEL_MEDIA_BASE, std::make_shared<HttpTransport>())
+            // The Commons Express storefront wants the key its own page sends;
+            // see core/providers/express.h.
+            .route(ORDERING_BASE, std::make_shared<HttpTransport>(
+                                      20000, QString(), QList<HttpHeader>{{"x-api-key", ORDERING_API_KEY}}));
 #ifdef Q_OS_ANDROID
         // Self-Service, too, goes over plain HTTPS on Android, with the
         // WebView's cookies. The WebView still signs you in, but no script
@@ -420,6 +427,7 @@ int main(int argc, char **argv)
     LoginController login(store, backend.get(), options.demo);
     ChapelViewModel chapel(mode, storage);
     DiningViewModel dining(mode, storage);
+    ExpressViewModel express(mode, storage);
     // No transport for these: curfew and opening hours are hand-entered
     // (core/curfew.h, core/hours.h), because no Cedarville service publishes
     // them.
@@ -434,16 +442,22 @@ int main(int argc, char **argv)
     campus.attachSettings(&settings);
     TodayViewModel today(&chapel, &dining, &curfew);
     SearchViewModel search(&chapel, &dining, &settings);
+    // The Commons Express's own hours, once its storefront has sent them,
+    // replace the posted ones (core/hours.h); search reads them on each query.
+    QObject::connect(&express, &ExpressViewModel::hoursChanged, &hours, &HoursViewModel::reload);
+    QObject::connect(&express, &ExpressViewModel::hoursChanged, &today, &TodayViewModel::refreshAll);
 
     chapel.now = clock;
     dining.now = clock;
+    express.now = clock;
     curfew.now = clock;
     hours.now = clock;
     campus.now = clock;
     today.now = clock;
     search.now = clock;
 
-    SyncCoordinator sync({&login, &chapel, &dining, &curfew, &hours, &campus, &today, mode, cache, nativeSession});
+    SyncCoordinator sync(
+        {&login, &chapel, &dining, &curfew, &hours, &campus, &today, mode, cache, nativeSession, &express});
     sync.now = clock;
     sync.tick();
 
@@ -484,6 +498,7 @@ int main(int argc, char **argv)
     ctx->setContextProperty(QStringLiteral("sync"), &sync);
     ctx->setContextProperty(QStringLiteral("chapel"), &chapel);
     ctx->setContextProperty(QStringLiteral("dining"), &dining);
+    ctx->setContextProperty(QStringLiteral("express"), &express);
     ctx->setContextProperty(QStringLiteral("curfew"), &curfew);
     ctx->setContextProperty(QStringLiteral("hours"), &hours);
     ctx->setContextProperty(QStringLiteral("campus"), &campus);

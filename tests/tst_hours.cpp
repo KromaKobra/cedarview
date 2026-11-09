@@ -11,6 +11,10 @@
 #include "ui/viewmodels/curfew.h"
 #include "ui/viewmodels/hours.h"
 
+#include <QScopeGuard>
+
+#include <algorithm>
+
 using namespace mycu;
 using namespace mycu::hours;
 
@@ -33,6 +37,32 @@ const Building &building(const QString &name)
 Schedule scheduleOf(const Building &b)
 {
     return [b](QDate day) { return b.on(day); };
+}
+
+// The Commons Express's storefront, as captured 2026-11-09: 8–11 PM every day
+// but Saturday, and 1–4 PM on Wednesday as well.
+DayWindows storefront(QDate day)
+{
+    DayWindows windows;
+    if (day.dayOfWeek() == 3)
+        windows.append({13 * 60, 16 * 60});
+    if (day.dayOfWeek() != 6)
+        windows.append({20 * 60, 23 * 60});
+    return windows;
+}
+
+// The timeline row for `name`, as {status, live, note, segment count}.
+QVariantList timelineRow(HoursViewModel &vm, const QString &name)
+{
+    auto *model = static_cast<QAbstractItemModel *>(vm.timeline());
+    const auto role = [&](const char *r) { return model->roleNames().key(r); };
+    for (int r = 0; r < model->rowCount(); ++r) {
+        const QModelIndex i = model->index(r, 0);
+        if (model->data(i, role("name")).toString() == name)
+            return {model->data(i, role("status")), model->data(i, role("live")), model->data(i, role("note")),
+                    model->data(i, role("segments")).toList().size()};
+    }
+    return {};
 }
 
 QStringList names(const QVariantList &list)
@@ -161,6 +191,44 @@ private slots:
             if (name == u"Chick-fil-A / Tossed")
                 QCOMPARE(segments.last().toMap().value("kind").toString(), QStringLiteral("flexOnly"));
         }
+    }
+
+    // ---- Published hours -------------------------------------------------------
+
+    void publishedHoursReplaceThePostedOnes()
+    {
+        const QString express = QStringLiteral("The Commons Express");
+        setLiveHours(express, storefront);
+        const auto withdraw = qScopeGuard([&] { setLiveHours(express, {}); });
+
+        // Wednesday afternoon: open on the storefront's word, not the table's.
+        HoursViewModel vm;
+        vm.now = [] { return at(11, 11, 14, 0); };
+        vm.refreshAll();
+        QCOMPARE(timelineRow(vm, express),
+                 (QVariantList{"Open until 4:00 PM", true, "Wed 1 PM–4 PM", 2}));
+        QVERIFY(vm.alsoOpen().contains(express));
+        const auto open = HoursViewModel::openDiningPlaces(at(11, 11, 14, 0));
+        QVERIFY(std::any_of(open.cbegin(), open.cend(), [&](const auto &p) { return p.name == express; }));
+
+        // Monday: Monday's hours, and Wednesday's extra noted.
+        vm.now = [] { return at(11, 9, 14, 0); };
+        vm.refreshAll();
+        QCOMPARE(timelineRow(vm, express), (QVariantList{"Opens 8:00 PM", false, "Wed 1 PM–4 PM", 1}));
+
+        // Withdrawn: the posted hours again, which never differ within a type.
+        setLiveHours(express, {});
+        vm.reload();
+        QCOMPARE(timelineRow(vm, express), (QVariantList{"Opens 8:00 PM", false, "", 1}));
+    }
+
+    void postedHoursHaveNoNotes()
+    {
+        HoursViewModel vm;
+        vm.now = [] { return at(9, 17, 9, 42); };
+        vm.refreshAll();
+        for (const Venue &venue : venues())
+            QCOMPARE(timelineRow(vm, venue.name).at(2).toString(), QString());
     }
 
     // Hot breakfast hands straight over to continental: one opening.

@@ -32,4 +32,8 @@ using Attributes = QHash<QString, QString>;
 // `attribute`; nothing if no element does. Never throws on malformed markup.
 std::optional<Attributes> firstElementWith(const QString &page, const QString &attribute);
 
+// `&amp;`, `&quot;`, `&#39;`, `&#x27;`, `&nbsp;` and friends. Anything not
+// recognised is left as written, which is what a browser does too.
+QString decodeEntities(const QString &text);
+
 } // namespace mycu::html
