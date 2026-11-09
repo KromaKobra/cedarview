@@ -1282,6 +1282,32 @@ private slots:
         QVERIFY(week.at(4).toMap().value("today").toBool());
     }
 
+    // The Hours tab, Today and search read the storefront's hours too, for as
+    // long as they are loaded.
+    void theStorefrontsHoursArePublished()
+    {
+        const auto expressVenue = [] {
+            for (const hours::Venue &venue : hours::venues()) {
+                if (venue.name == ExpressProvider::label)
+                    return venue;
+            }
+            return hours::Venue{};
+        };
+        const QDate wednesday(2026, 11, 11);
+        {
+            ExpressViewModel vm(std::make_shared<FixtureTransport>(testing::fixturesDir()));
+            QVERIFY(!expressVenue().live());
+            fetchInLine(vm);
+            QSignalSpy spy(&vm, &ExpressViewModel::hoursChanged);
+            vm.refresh();
+            QCOMPARE(spy.count(), 1);
+            QVERIFY(expressVenue().live());
+            QCOMPARE(expressVenue().on(wednesday).size(), 2);
+        }
+        QVERIFY(!expressVenue().live());
+        QCOMPARE(expressVenue().on(wednesday).size(), 1);
+    }
+
     // Before anything is fetched, the posted hours stand in.
     void expressHoursFallBackToThePostedOnes()
     {

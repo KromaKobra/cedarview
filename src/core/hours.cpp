@@ -1,5 +1,7 @@
 #include "hours.h"
 
+#include <QHash>
+
 namespace mycu::hours {
 
 namespace {
@@ -74,10 +76,39 @@ DayWindows commonsOn(QDate day)
     return windows;
 }
 
+namespace {
+
+QHash<QString, Schedule> &published()
+{
+    static QHash<QString, Schedule> byVenue;
+    return byVenue;
+}
+
+} // namespace
+
+void setLiveHours(const QString &venue, Schedule schedule)
+{
+    if (schedule)
+        published().insert(venue, std::move(schedule));
+    else
+        published().remove(venue);
+}
+
 DayWindows Venue::on(QDate day) const
+{
+    const auto live = published().constFind(name);
+    return live != published().cend() ? (*live)(day) : postedOn(day);
+}
+
+DayWindows Venue::postedOn(QDate day) const
 {
     const W &window = hours[static_cast<int>(diningDayOf(day))];
     return window ? DayWindows{*window} : DayWindows{};
+}
+
+bool Venue::live() const
+{
+    return published().contains(name);
 }
 
 const QList<Venue> &venues()

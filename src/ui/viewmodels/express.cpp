@@ -59,6 +59,7 @@ ExpressViewModel::ExpressViewModel(TransportPtr transport, std::optional<Storage
     connect(&m_status, &SourceStatus::changed, this, &ExpressViewModel::changed);
     connect(this, &ExpressViewModel::changed, this, &ExpressViewModel::clockChanged);
     hydrate();
+    publishHours();
 }
 
 void ExpressViewModel::hydrate()
@@ -130,7 +131,19 @@ hours::Schedule ExpressViewModel::schedule() const
                                      [](const hours::Venue &v) { return v.name == ExpressProvider::label; });
     if (posted == venues.cend())
         return [](QDate) { return hours::DayWindows{}; };
-    return [venue = *posted](QDate day) { return venue.on(day); };
+    return [venue = *posted](QDate day) { return venue.postedOn(day); };
+}
+
+void ExpressViewModel::publishHours()
+{
+    // An empty schedule hands the Hours tab back the posted hours.
+    hours::setLiveHours(ExpressProvider::label, m_menu.hours.isEmpty() ? hours::Schedule() : schedule());
+    emit hoursChanged();
+}
+
+ExpressViewModel::~ExpressViewModel()
+{
+    hours::setLiveHours(ExpressProvider::label, {});
 }
 
 bool ExpressViewModel::open() const
@@ -183,8 +196,10 @@ void ExpressViewModel::onLoaded(const ExpressMenu &menu)
     m_status.succeeded(now());
     qCInfo(lcDining) << "express:" << menu.categories.size() << "categories loaded"
                      << (menu.hours.isEmpty() ? "(posted hours)" : "") << (same ? "(unchanged)" : "");
-    if (!same)
-        emit changed();
+    if (same)
+        return;
+    publishHours();
+    emit changed();
 }
 
 void ExpressViewModel::onFailed(std::exception_ptr error)
@@ -204,6 +219,7 @@ void ExpressViewModel::setPreview(bool on)
     m_menu = ExpressMenu();
     m_status.reset();
     hydrate();
+    publishHours();
     emit changed();
 }
 

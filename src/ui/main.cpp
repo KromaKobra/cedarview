@@ -442,6 +442,10 @@ int main(int argc, char **argv)
     campus.attachSettings(&settings);
     TodayViewModel today(&chapel, &dining, &curfew);
     SearchViewModel search(&chapel, &dining, &settings);
+    // The Commons Express's own hours, once its storefront has sent them,
+    // replace the posted ones (core/hours.h); search reads them on each query.
+    QObject::connect(&express, &ExpressViewModel::hoursChanged, &hours, &HoursViewModel::reload);
+    QObject::connect(&express, &ExpressViewModel::hoursChanged, &today, &TodayViewModel::refreshAll);
 
     chapel.now = clock;
     dining.now = clock;

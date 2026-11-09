@@ -52,6 +52,8 @@ class ExpressViewModel : public QObject
 public:
     explicit ExpressViewModel(TransportPtr transport, std::optional<Storage> storage = std::nullopt,
                               QObject *parent = nullptr);
+    // Hands the Hours tab back the posted hours.
+    ~ExpressViewModel() override;
 
     SourceStatus *menuStatus() { return &m_status; }
     QVariantList categories() const;
@@ -62,7 +64,10 @@ public:
     bool liveHours() const { return !m_menu.hours.isEmpty(); }
 
     const ExpressMenu &menu() const { return m_menu; }
-    // What open, hoursStatus and weekHours read.
+    // What open, hoursStatus and weekHours read: the storefront's hours, or
+    // the posted ones in core/hours.h when there are none. The storefront's
+    // are also published (hours::setLiveHours), so the Hours tab, Today and
+    // search read them too.
     hours::Schedule schedule() const;
 
     // Sample-data preview: drop what is shown, stop saving, and read the
@@ -88,10 +93,13 @@ signals:
     void changed();
     // Only the clock moved: the hours' wording, not the menu.
     void clockChanged();
+    // The published hours changed, or went back to the posted ones.
+    void hoursChanged();
 
 private:
     bool persisting() const { return m_storage.has_value() && !m_preview; }
     void hydrate();
+    void publishHours();
     void onLoaded(const ExpressMenu &menu);
     void onFailed(std::exception_ptr error);
 

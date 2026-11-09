@@ -45,6 +45,12 @@ Wednesday as well, Saturday closed. Only `time_slots` is kept — the record als
 has reviews, a phone number and an email. If that request fails, the menu
 still loads and the page uses the posted hours in `core/hours.h`.
 
+While they are loaded, these hours also replace The Commons Express's row in
+`core/hours.h` (`hours::setLiveHours`), so the Hours tab, Today's "Still open"
+and search use them too. The Hours tab groups days as Mon–Fri / Sat / Sun, so
+a day that differs from the rest of its group gets a note under the row
+("Wed 1 PM–4 PM").
+
 ## ✅ 2. Home Cooking for every meal — DONE
 
 Fully working, live, committed, and tested against a real capture.
