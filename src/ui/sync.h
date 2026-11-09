@@ -10,7 +10,8 @@
 // 1. The viewmodels have already read back what the last run saved (in their
 //    constructors, before QML loads), so there is something to show.
 // 2. The public sources are fetched — unless what was saved is fresh: menus
-//    under 30 minutes old with today in them, a schedule under two hours.
+//    under 30 minutes old with today in them, a schedule under two hours, the
+//    Commons Express menu under an hour.
 // 3. The personal sources (skips, meal plan), by phase: signed in → fetch;
 //    checking → wait for the check; Welcome after an upgrade from v0.3 → on
 //    Android, a silent probe (the WebView may hold a session after all, and
@@ -44,6 +45,7 @@ class CampusViewModel;
 class ChapelViewModel;
 class CurfewViewModel;
 class DiningViewModel;
+class ExpressViewModel;
 class HoursViewModel;
 class ModeTransport;
 class SourceStatus;
@@ -81,6 +83,8 @@ public:
         std::optional<PayloadCache> cache;
         // Personal data can be fetched with no page loaded (Android).
         bool nativeSession = false;
+        // The Commons Express menu; null in tests that are not about it.
+        ExpressViewModel *express = nullptr;
     };
 
     explicit SyncCoordinator(Parts parts, QObject *parent = nullptr);
@@ -113,6 +117,7 @@ private:
     QList<SourceStatus *> personal() const;
     bool menusFresh() const;
     bool scheduleFresh() const;
+    bool expressFresh() const;
     bool personalFresh() const;
     void fetchPublic(bool force);
     void fetchPersonal();

@@ -1,5 +1,6 @@
 // The Dining tab: Plan, Menu and Hours, switched by a segmented control
-// pinned above them.
+// pinned above them. Menu has its own, for The Commons and The Commons
+// Express.
 //
 // A StackLayout, not a SwipeView: the pages already sit in the window's
 // SwipeView, and a nested one would take every horizontal drag, so you could
@@ -13,6 +14,9 @@ Item {
 
     property int section: 0
     signal sectionRequested(int index)
+    // Under Menu, which place: The Commons or The Commons Express.
+    property int menuVenue: 0
+    signal menuVenueRequested(int index)
 
     Theme { id: theme }
 
@@ -36,7 +40,10 @@ Item {
             currentIndex: root.section
 
             MealPlanView {}
-            MenuView {}
+            DiningMenus {
+                venue: root.menuVenue
+                onVenueRequested: (index) => root.menuVenueRequested(index)
+            }
             HoursView {}
         }
     }

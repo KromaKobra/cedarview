@@ -23,6 +23,7 @@ add_library(cedarview_core STATIC
     providers/chapel.h providers/chapel.cpp
     providers/chapel_schedule.h providers/chapel_schedule.cpp
     providers/dining.h providers/dining.cpp
+    providers/express.h providers/express.cpp
     providers/meals.h providers/meals.cpp
 )
 target_include_directories(cedarview_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/..)

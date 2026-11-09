@@ -22,6 +22,7 @@
 #include "ui/viewmodels/chapel.h"
 #include "ui/viewmodels/curfew.h"
 #include "ui/viewmodels/dining.h"
+#include "ui/viewmodels/express.h"
 #include "ui/viewmodels/hours.h"
 #include "ui/viewmodels/search.h"
 #include "ui/viewmodels/sourcestatus.h"
@@ -41,6 +42,7 @@ namespace {
 const QHash<QString, const QMetaObject *> VIEWMODELS = {
     {QStringLiteral("chapel"), &ChapelViewModel::staticMetaObject},
     {QStringLiteral("dining"), &DiningViewModel::staticMetaObject},
+    {QStringLiteral("express"), &ExpressViewModel::staticMetaObject},
     {QStringLiteral("curfew"), &CurfewViewModel::staticMetaObject},
     {QStringLiteral("hours"), &HoursViewModel::staticMetaObject},
     {QStringLiteral("campus"), &CampusViewModel::staticMetaObject},

@@ -6,6 +6,7 @@
 #include "viewmodels/chapel.h"
 #include "viewmodels/curfew.h"
 #include "viewmodels/dining.h"
+#include "viewmodels/express.h"
 #include "viewmodels/format.h"
 #include "viewmodels/hours.h"
 #include "viewmodels/sourcestatus.h"
@@ -53,8 +54,11 @@ QList<SourceStatus *> SyncCoordinator::personal() const
 
 QList<SourceStatus *> SyncCoordinator::statuses() const
 {
-    return {m_parts.chapel->skipsStatus(), m_parts.dining->planStatus(), m_parts.dining->menuStatus(),
-            m_parts.chapel->scheduleStatus()};
+    QList<SourceStatus *> all{m_parts.chapel->skipsStatus(), m_parts.dining->planStatus(),
+                              m_parts.dining->menuStatus(), m_parts.chapel->scheduleStatus()};
+    if (m_parts.express)
+        all.append(m_parts.express->menuStatus());
+    return all;
 }
 
 namespace {
@@ -75,6 +79,11 @@ bool SyncCoordinator::menusFresh() const
 bool SyncCoordinator::scheduleFresh() const
 {
     return fresh(m_parts.chapel->scheduleStatus());
+}
+
+bool SyncCoordinator::expressFresh() const
+{
+    return m_parts.express && fresh(m_parts.express->menuStatus());
 }
 
 bool SyncCoordinator::personalFresh() const
@@ -165,6 +174,12 @@ void SyncCoordinator::fetchPublic(bool force)
         m_parts.chapel->refreshSchedule();
     else
         qCDebug(lcApp) << "sync: the saved schedule is fresh; not fetching";
+    if (m_parts.express) {
+        if (force || !expressFresh())
+            m_parts.express->refresh();
+        else
+            qCDebug(lcApp) << "sync: the saved Commons Express menu is fresh; not fetching";
+    }
 }
 
 void SyncCoordinator::fetchPersonal()
@@ -204,6 +219,8 @@ void SyncCoordinator::tick()
 {
     m_parts.chapel->tick();
     m_parts.dining->tick();
+    if (m_parts.express)
+        m_parts.express->refreshAll();
     if (m_parts.curfew)
         m_parts.curfew->refreshAll();
     if (m_parts.hours)
@@ -242,6 +259,8 @@ void SyncCoordinator::onPreviewChanged(bool on)
         m_parts.mode->setPreview(on);
     m_parts.chapel->setPreview(on);
     m_parts.dining->setPreview(on);
+    if (m_parts.express)
+        m_parts.express->setPreview(on);
 
     if (on) {
         // Fixtures, so everything at once and at once.

@@ -22,6 +22,7 @@ cedarview_test(tst_curfew LIBS cedarview_core)
 cedarview_test(tst_chapel_provider LIBS cedarview_core)
 cedarview_test(tst_chapel_schedule_provider LIBS cedarview_core)
 cedarview_test(tst_dining_provider LIBS cedarview_core)
+cedarview_test(tst_express_provider LIBS cedarview_core)
 cedarview_test(tst_meals_provider LIBS cedarview_core)
 cedarview_test(tst_core_is_gui_free LIBS cedarview_core)
 

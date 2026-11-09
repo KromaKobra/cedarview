@@ -23,7 +23,8 @@
 //   exactly what it means everywhere else on the device.
 //
 // Both: 20 s timeout, redirects followed, the same User-Agent,
-// `Accept: application/json, */*`, and any non-2xx answer is a TransportError.
+// `Accept: application/json, */*`, any extra headers the transport was built
+// with, and any non-2xx answer is a TransportError.
 //
 // Deliberately a separate library from the rest of the core (see
 // src/core/CMakeLists.txt): it is the one piece that needs a network stack, and
@@ -33,18 +34,29 @@
 
 #include "transport.h"
 
+#include <QByteArray>
+#include <QList>
+
+#include <utility>
+
 namespace mycu {
+
+// A request header sent with every request, beyond the User-Agent and Accept
+// that every request carries. For a public key a service asks its visitors
+// to send (the Commons Express storefront's), never for credentials.
+using HttpHeader = std::pair<QByteArray, QByteArray>;
 
 class HttpTransport : public Transport
 {
 public:
-    explicit HttpTransport(int timeoutMs = 20000, QString userAgent = QString());
+    explicit HttpTransport(int timeoutMs = 20000, QString userAgent = QString(), QList<HttpHeader> headers = {});
 
     Response get(const QString &path) override;
 
 private:
     int m_timeoutMs;
     QString m_userAgent;
+    QList<HttpHeader> m_headers;
 };
 
 } // namespace mycu
